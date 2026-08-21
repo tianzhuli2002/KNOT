@@ -1,0 +1,217 @@
+general:
+  model: transformer
+  topology: ttbar1L
+  mode: train
+  device: cuda
+  seed: 42
+logging:
+  level: INFO
+  format: '%(asctime)s | %(levelname)s | %(name)s | %(message)s'
+  datefmt: '%Y-%m-%d %H:%M:%S'
+  colors: auto
+  file: null
+  capture_warnings: true
+  train:
+    output_dir: training_logs
+    experiment_name: transformer_ttbar1L_joint
+model:
+  name: transformer
+  d_model: 105
+  nhead: 3
+  num_layers: 4
+  dim_feedforward: 292
+  dropout: 0.04889685146434
+  pooling: cls
+  use_type_embedding: true
+  classifier_hidden_dim: 128
+tasks:
+  classification:
+    enabled: true
+    weight: 0.5
+  reconstruction:
+    enabled: true
+    weight: 1.0
+    label_source: LABELS
+    ignore_index: -100
+    targets:
+      Whad:
+      - - JET
+        - 3
+      - - JET
+        - 4
+      tlep:
+      - - JET
+        - 1
+      - - LEPTON
+        - 1
+      - - MET
+        - 1
+      thad:
+      - - JET
+        - 2
+      - - JET
+        - 3
+      - - JET
+        - 4
+dataset:
+  input_h5_path: /mnt/iusers01/fatpou01/phy01/w00238tl/scratch/phenoH5/training_dataset_even.h5
+  max_jets: 8
+  max_leptons: 1
+  include_met: true
+  test_size: 0.2
+  limit_events: null
+  split:
+    indices_path: /mnt/iusers01/fatpou01/phy01/w00238tl/scratch/SB_paper/results/transformer_full_campaign_joint_first_v2/splits/ttbar1L/split_indices.npz
+    require_existing: true
+  padding_value: 0.0
+  train_batch_size: 896
+  val_batch_size: 896
+  test_batch_size: 896
+  train_num_workers: 7
+  val_num_workers: 7
+  test_num_workers: 7
+  pin_memory: true
+  persistent_workers: true
+  prefetch_factor: 2
+  cache:
+    enabled: false
+    mode: disk
+    cache_dir: ${oc.env:RECO_SB_RESULTS_ROOT,results}/transformer_ttbar1L/cache
+    dataset_id: transformer_ttbar1L_reconstruction_jets8
+    source_h5_path: null
+    rebuild: false
+    require_existing: false
+    build_chunk_size: 4096
+    fingerprint: schema_size
+    build_workers: 4
+  observables:
+  - INPUTS: JET
+    variables:
+    - e
+    - eta
+    - phi
+    - pt
+    - btag
+    - id
+    num_particles: 8
+    scalers:
+    - Log
+    - minmax:min=-2.5,max=2.5
+    - SinCos
+    - Log
+    - minmax:min=0,max=6
+    - PID
+  - INPUTS: LEPTON
+    variables:
+    - e
+    - eta
+    - phi
+    - pt
+    - charge
+    - id
+    num_particles: 1
+    scalers:
+    - Log
+    - minmax:min=-2.5,max=2.5
+    - SinCos
+    - Log
+    - minmax:min=-1,max=1
+    - PID
+  - INPUTS: MET
+    variables:
+    - phi
+    - pt
+    - id
+    num_particles: 1
+    scalers:
+    - SinCos
+    - Log
+    - PID
+  - INPUTS: GLOBAL
+    variables:
+    - njet
+    - nBJets_90
+    - nBJets_85
+    - nBJets_77
+    - nBJets_70
+    - nBJets_65
+    scalers:
+    - minmax:min=0,max=8
+    - minmax:min=0,max=8
+    - minmax:min=0,max=8
+    - minmax:min=0,max=8
+    - minmax:min=0,max=8
+    - minmax:min=0,max=8
+train:
+  n_epochs: 200
+  lr_patience: 30
+  checkpoint:
+    monitor: val_loss
+    mode: min
+    save_top_k: 1
+    save_last: false
+    filename: best_loss
+  learning_rate: 0.000361545
+  weight_decay: 6.073529387441413e-05
+  optimizer: adamw
+  loss: bce_logits
+  gradient_clip: 1.0
+  early_stopping:
+    enabled: true
+    monitor: val_loss
+    mode: min
+    patience: 20
+  lr_scheduler:
+    enabled: true
+    method: reduce_on_plateau
+    monitor: val_loss
+    mode: min
+    factor: 0.8
+    patience: 8
+    min_lr: 1.0e-06
+    threshold: 0.0001
+  compile: false
+  compute_val_auc: true
+  initialise_from_reconstruction_checkpoint: null
+  additional_checkpoints:
+    auc:
+      monitor: val_auc
+      mode: max
+      save_top_k: 1
+      save_last: false
+      filename: best_auc
+    reconstruction:
+      monitor: val_reconstruction_loss
+      mode: min
+      save_top_k: 1
+      save_last: false
+      filename: best_reconstruction
+trainer:
+  accelerator: gpu
+  devices: 1
+  precision: 16-mixed
+  log_every_n_steps: 20
+  enable_progress_bar: false
+  limit_train_batches: null
+  limit_val_batches: null
+  limit_test_batches: null
+  check_val_every_n_epoch: 1
+  accumulate_grad_batches: 2
+outputs:
+  run_tag: transformer_ttbar1L_joint
+  timestamp: false
+  config_name: transformer_ttbar1L_joint
+predict:
+  checkpoint_path: training_logs/Transformer/version_0/checkpoints/
+  write_classification: true
+  write_reconstruction: true
+  diagnostics: false
+  overwrite: false
+performance:
+  prediction_manifest: null
+  output_dir: null
+  diagnostics: false
+  kinematics: true
+  overwrite: false
+campaign:
+  root: results/m0_ttbar1L

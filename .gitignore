@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+.venv/
+.env
+.ipynb_checkpoints/
+lightning_logs/
+results*/*
+!results/.gitkeep
+outputs/*
+data/*
+!data/.gitkeep
+refined*/
+training_logs/*
+.vscode/*

@@ -1,0 +1,16 @@
+name: joint-event-reconstruction
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - h5py
+  - matplotlib
+  - numpy
+  - pandas
+  - scikit-learn
+  - pip
+  - pip:
+      - lightning>=2.5,<2.6
+      - omegaconf
+      - torch
+      - tensorboard
