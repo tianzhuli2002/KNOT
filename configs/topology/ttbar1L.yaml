@@ -1,0 +1,12 @@
+topology:
+  Whad:
+    q:
+      - [JET, 3]
+      - [JET, 4]
+  thad:
+    W: Whad
+    b: [JET, 2]
+  tlep:
+    b: [JET, 1]
+    lepton: [LEPTON, 1]
+    nu: [NEUTRINO, 0]
