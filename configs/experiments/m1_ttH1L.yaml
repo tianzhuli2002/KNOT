@@ -1,0 +1,18 @@
+stage: M1
+topology_config: configs/topology/ttH1L.yaml
+visible_config: configs/m0_ttH1L.yaml
+data:
+  tensor_cache: /mnt/iusers01/fatpou01/phy01/w00238tl/scratch/SB_paper/results/transformer_full_campaign_joint_first_v2/cache/transformer_ttH_semantic_reconstruction_full__jets8_lep1_met1__tok12__all__filelabels__c48238e2e04b.pt
+model:
+  d_model: 105
+  n_heads: 3
+  n_layers: 4
+  d_feedforward: 292
+  dropout: 0.04889685146434
+training:
+  learning_rate: 0.000361545
+  weight_decay: 0.00006073529387441413
+  epochs: 200
+  precision: 16-mixed
+  gradient_clip: 1.0
+  output: results/m1_ttH1L
