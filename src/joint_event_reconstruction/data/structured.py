@@ -78,13 +78,13 @@ class StructuredCollator:
             truth_by_node[node_name] = candidate_truth
             pools[node_name] = {
                 "candidate_mask": candidate_mask,
-                "leaf_ownership": ownership.unsqueeze(0).expand(batch_size, -1, -1),
+                "leaf_ownership": ownership.unsqueeze(0).expand(batch_size, -1, -1).contiguous(),
                 "leaf_indices": {
-                    key: value.unsqueeze(0).expand(batch_size, -1, -1)
+                    key: value.unsqueeze(0).expand(batch_size, -1, -1).contiguous()
                     for key, value in template["leaf_indices"].items()
                 },
                 "child_indices": {
-                    key: value.unsqueeze(0).expand(batch_size, -1)
+                    key: value.unsqueeze(0).expand(batch_size, -1).contiguous()
                     for key, value in template["child_indices"].items()
                 },
                 "truth_index": truth_index,
