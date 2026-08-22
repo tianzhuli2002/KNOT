@@ -89,11 +89,15 @@ class InvisibleDenoiser(nn.Module):
         if noise_level.shape != (len(noisy),):
             raise ValueError(f"Noise level must have shape [B], found {tuple(noise_level.shape)}")
         noise = self.noise_projection(noise_embedding(noise_level, self.role_embedding.shape[1]))
-        state = (
-            self.input_projection(noisy) + self.role_embedding.unsqueeze(0) + noise.unsqueeze(1)
-        )
         visible_state = self.visible_projection(visible)
         parent = self.parent_projection(parent_context)
+        # Direct parent addition keeps assignment conditioning effective from
+        # the first optimisation step; the zero-initialised adaptive modulation
+        # then learns a finer role-specific conditioning on top.
+        state = (
+            self.input_projection(noisy) + self.role_embedding.unsqueeze(0)
+            + noise.unsqueeze(1) + parent
+        )
         for block in self.blocks:
             state = block(state, visible_state, parent, visible_padding_mask)
         return self.output_projection(self.output_norm(state))

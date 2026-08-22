@@ -1,0 +1,107 @@
+"""Topology-conditioned generative invisible inference."""
+
+from __future__ import annotations
+
+import torch
+from torch import nn
+
+from joint_event_reconstruction.models.invisible.denoiser import InvisibleDenoiser
+from joint_event_reconstruction.models.invisible.edm import EDMDiffusion
+from joint_event_reconstruction.models.invisible.standard import StandardDiffusion
+from joint_event_reconstruction.topology.spec import TopologySpec
+
+
+class InvisibleGenerator(nn.Module):
+    def __init__(self, spec: TopologySpec, visible_dim: int, config):
+        super().__init__()
+        self.spec = spec
+        self.assignment_mode = str(config.conditioning.assignment)
+        denoiser_config = config.denoiser
+        denoiser = InvisibleDenoiser(
+            len(spec.invisible_roles), visible_dim=visible_dim, parent_dim=visible_dim,
+            d_model=int(denoiser_config.d_model), n_heads=int(denoiser_config.n_heads),
+            layers=int(denoiser_config.layers), d_feedforward=int(denoiser_config.d_feedforward),
+            dropout=float(denoiser_config.dropout), zero_init_output=bool(denoiser_config.zero_init_output),
+        )
+        self.formulation_name = str(config.formulation)
+        if self.formulation_name == "standard":
+            self.formulation = StandardDiffusion(denoiser, int(config.standard.training_steps))
+            self.inference_budget = int(config.standard.inference_steps)
+        elif self.formulation_name == "edm":
+            edm = config.edm
+            self.formulation = EDMDiffusion(
+                denoiser, sigma_data=float(edm.sigma_data), p_mean=float(edm.p_mean),
+                p_std=float(edm.p_std), sigma_min=float(edm.sigma_min),
+                sigma_max=float(edm.sigma_max), rho=float(edm.rho),
+            )
+            self.inference_budget = int(edm.inference_nfe)
+        else:
+            raise ValueError(f"Unknown invisible formulation {self.formulation_name!r}")
+
+    def visible_context(self, visible: dict) -> tuple[torch.Tensor, torch.Tensor]:
+        context = torch.cat((visible["pooled"].unsqueeze(1), visible["tokens"]), dim=1)
+        cls_mask = torch.zeros((len(context), 1), dtype=torch.bool, device=context.device)
+        return context, torch.cat((cls_mask, visible["padding_mask"]), dim=1)
+
+    def parent_context(
+        self, reconstruction: dict, structured: dict, pooled: torch.Tensor,
+        node_context: dict[str, torch.Tensor] | None = None,
+        *, mode: str | None = None,
+    ) -> torch.Tensor:
+        mode = self.assignment_mode if mode is None else mode
+        contexts = []
+        for role in self.spec.invisible_roles:
+            node = role.node
+            base = pooled if node_context is None else node_context[node]
+            if mode == "none":
+                summary = torch.zeros_like(base)
+            else:
+                candidates = reconstruction["candidate_embeddings"][node]
+                probabilities = reconstruction["assignment_probabilities"][node]
+                if mode == "soft":
+                    summary = torch.sum(probabilities[:, 1:].unsqueeze(-1) * candidates, dim=1)
+                elif mode == "hard":
+                    selected = probabilities.argmax(dim=1) - 1
+                    safe = selected.clamp_min(0)
+                    summary = candidates[torch.arange(len(candidates), device=candidates.device), safe]
+                    summary = summary * (selected >= 0).unsqueeze(1)
+                elif mode == "truth":
+                    pool = structured["pools"][node]
+                    selected = pool["truth_index"]
+                    if (selected < 0).any():
+                        events = (selected < 0).nonzero(as_tuple=False).flatten()[:10].tolist()
+                        raise RuntimeError(f"Truth-oracle conditioning requested for unreconstructable node {node}; rows={events}")
+                    summary = candidates[torch.arange(len(candidates), device=candidates.device), selected]
+                else:
+                    raise ValueError(f"Unknown assignment conditioning mode {mode!r}")
+            contexts.append(base + summary)
+        return torch.stack(contexts, dim=1)
+
+    def loss(
+        self, target: torch.Tensor, visible: dict, parent_context: torch.Tensor,
+    ) -> dict:
+        context, mask = self.visible_context(visible)
+        return self.formulation.loss(target, context, mask, parent_context)
+
+    def sample(
+        self, visible: dict, parent_context: torch.Tensor, *, samples: int,
+        budget: int | None = None, generator: torch.Generator | None = None,
+    ) -> tuple[torch.Tensor, int]:
+        if samples <= 0:
+            raise ValueError("Posterior sample count must be positive")
+        context, mask = self.visible_context(visible)
+        batch, roles, width = parent_context.shape
+        context = context.repeat_interleave(samples, dim=0)
+        mask = mask.repeat_interleave(samples, dim=0)
+        parent = parent_context.repeat_interleave(samples, dim=0)
+        shape = (batch * samples, roles, 3)
+        selected_budget = self.inference_budget if budget is None else budget
+        if self.formulation_name == "standard":
+            values, nfe = self.formulation.sample(
+                shape, context, mask, parent, inference_steps=selected_budget, generator=generator,
+            )
+        else:
+            values, nfe = self.formulation.sample(
+                shape, context, mask, parent, nfe=selected_budget, generator=generator,
+            )
+        return values.reshape(batch, samples, roles, 3), nfe

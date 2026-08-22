@@ -6,6 +6,8 @@ import torch
 from torch import nn
 
 from joint_event_reconstruction.models.feedback import SoftReconstructionFeedback
+from joint_event_reconstruction.models.invisible.feedback import InvisiblePosteriorFeedback
+from joint_event_reconstruction.models.invisible.generator import InvisibleGenerator
 from joint_event_reconstruction.models.recurrent import RecurrentReasoner
 from joint_event_reconstruction.models.reconstruction.structured import StructuredReconstruction
 from joint_event_reconstruction.models.visible.encoder import VisibleEventEncoder
@@ -20,6 +22,7 @@ class JointEventModel(nn.Module):
         train_steps: tuple[int, ...] = (1, 2, 3, 4), eval_steps: int = 4,
         fixed_input_reinjection: bool = True, feedback_enabled: bool = False,
         feedback_start_step: int = 1, feedback_gate_initial_bias: float = -2.0,
+        invisible_config=None, coupling_config=None, invisible_loss_weight: float = 1.0,
     ):
         super().__init__()
         if feedback_enabled and not reasoning_enabled:
@@ -37,6 +40,7 @@ class JointEventModel(nn.Module):
         self.train_steps = tuple(train_steps)
         self.eval_steps = eval_steps
         self.feedback_start_step = feedback_start_step
+        self.invisible_loss_weight = invisible_loss_weight
         self.reasoner = None
         self.feedback = None
         if reasoning_enabled:
@@ -46,6 +50,17 @@ class JointEventModel(nn.Module):
             )
         if feedback_enabled:
             self.feedback = SoftReconstructionFeedback(spec, d_model, feedback_gate_initial_bias)
+        self.invisible = None
+        self.posterior_feedback = None
+        self.coupling_config = coupling_config
+        if invisible_config is not None and bool(invisible_config.enabled):
+            self.invisible = InvisibleGenerator(spec, d_model, invisible_config)
+        if coupling_config is not None and bool(coupling_config.invisible_to_reconstruction.enabled):
+            if not reasoning_enabled or self.invisible is None:
+                raise ValueError("Invisible posterior feedback requires reasoning and an invisible generator")
+            self.posterior_feedback = InvisiblePosteriorFeedback(
+                spec, d_model, float(coupling_config.invisible_to_reconstruction.gate_initial_bias),
+            )
 
     def _steps(self, requested: int | None) -> int:
         if requested is not None:
@@ -61,10 +76,11 @@ class JointEventModel(nn.Module):
         visible = self.visible(batch["tokens"], batch["type_ids"], batch["padding_mask"])
         if not self.reasoning_enabled:
             reconstruction = self.reconstruction(visible["tokens"], visible["pooled"], batch["structured"])
-            return {
+            result = {
                 "visible": visible, **reconstruction, "loss": reconstruction["reconstruction_loss"],
                 "recurrent_steps": 0, "recurrent_predictions": (),
             }
+            return self._invisible_result(result, batch, visible, None)
 
         steps = self._steps(recurrent_steps)
         fixed = torch.cat((visible["pooled"].unsqueeze(1), visible["tokens"]), dim=1)
@@ -92,11 +108,54 @@ class JointEventModel(nn.Module):
                 )
                 state = self.reasoner.replace_topology(state, visible["tokens"].shape[1], updated)
                 feedback_diagnostics.append(diagnostics)
-        return {
+        result = {
             "visible": visible, **reconstruction, "loss": reconstruction["reconstruction_loss"],
             "recurrent_steps": steps, "recurrent_predictions": tuple(predictions),
             "feedback_diagnostics": tuple(feedback_diagnostics), "recurrent_state": state,
+            "node_context": node_tokens,
         }
+        if self.posterior_feedback is not None and int(self.coupling_config.rounds) == 2:
+            parent = self.invisible.parent_context(
+                reconstruction, batch["structured"], pooled, node_tokens,
+            )
+            feedback_config = self.coupling_config.invisible_to_reconstruction
+            samples, nfe = self.invisible.sample(
+                visible, parent, samples=int(feedback_config.posterior_samples),
+            )
+            updated, gates = self.posterior_feedback(
+                node_tokens, samples, detach=bool(feedback_config.detach),
+            )
+            state = self.reasoner.replace_topology(state, visible["tokens"].shape[1], updated)
+            state = self.reasoner.step(state, fixed, mask)
+            pooled, encoded_tokens, node_tokens = self.reasoner.split(state, visible["tokens"].shape[1])
+            reconstruction = self.reconstruction(
+                encoded_tokens, pooled, batch["structured"], node_context=node_tokens,
+            )
+            result.update(reconstruction)
+            result["loss"] = reconstruction["reconstruction_loss"]
+            result["recurrent_state"] = state
+            result["node_context"] = node_tokens
+            result["posterior_feedback"] = {
+                "samples": samples, "nfe": nfe, "gates": gates,
+                "detached": bool(feedback_config.detach),
+            }
+        return self._invisible_result(result, batch, visible, result.get("node_context"))
+
+    def _invisible_result(
+        self, result: dict, batch: dict, visible: dict, node_context: dict[str, torch.Tensor] | None,
+    ) -> dict:
+        if self.invisible is None:
+            return result
+        parent = self.invisible.parent_context(
+            result, batch["structured"], result["visible"]["pooled"], node_context,
+        )
+        result["invisible_parent_context"] = parent
+        if "invisible_truth_scaled" in batch:
+            invisible = self.invisible.loss(batch["invisible_truth_scaled"], visible, parent)
+            result["invisible_loss"] = invisible["loss"]
+            result["invisible_training"] = invisible
+            result["loss"] = result["loss"] + self.invisible_loss_weight * invisible["loss"]
+        return result
 
 
 # Kept as a source-level name for the existing M1 Lightning wrapper.  It is the
