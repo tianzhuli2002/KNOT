@@ -89,7 +89,7 @@ def main() -> None:
                 pool = batch["structured"]["pools"][root]
                 values = []
                 for index in pool["candidate_mask"][event].nonzero(as_tuple=False).flatten().tolist():
-                    owned = pool["leaf_ownership"][event, index].nonzero(as_tuple=False).flatten().tolist()
+                    owned = pool["leaf_ownership"][index].nonzero(as_tuple=False).flatten().tolist()
                     record = CandidateRecord(
                         root, index, (), (), frozenset(("TOKEN", int(token)) for token in owned),
                         bool(index == int(pool["truth_index"][event])),

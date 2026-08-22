@@ -78,15 +78,12 @@ class StructuredCollator:
             truth_by_node[node_name] = candidate_truth
             pools[node_name] = {
                 "candidate_mask": candidate_mask,
-                "leaf_ownership": ownership.unsqueeze(0).expand(batch_size, -1, -1).contiguous(),
-                "leaf_indices": {
-                    key: value.unsqueeze(0).expand(batch_size, -1, -1).contiguous()
-                    for key, value in template["leaf_indices"].items()
-                },
-                "child_indices": {
-                    key: value.unsqueeze(0).expand(batch_size, -1).contiguous()
-                    for key, value in template["child_indices"].items()
-                },
+                # These describe the topology/token layout, not an event.  Keeping
+                # one template avoids materialising identical copies per event and
+                # remains safe for DataLoader pinned-memory transfer.
+                "leaf_ownership": ownership,
+                "leaf_indices": template["leaf_indices"],
+                "child_indices": template["child_indices"],
                 "truth_index": truth_index,
                 "reconstructable": reconstructable,
             }

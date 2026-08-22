@@ -10,12 +10,11 @@ from joint_event_reconstruction.topology.spec import LeafRole, TopologySpec
 
 
 def _gather(values: torch.Tensor, indices: torch.Tensor) -> torch.Tensor:
-    batch, candidates, members = indices.shape
-    hidden = values.shape[-1]
+    if indices.ndim != 2:
+        raise ValueError(f"Static candidate indices must have shape [C,M], found {tuple(indices.shape)}")
+    candidates, members = indices.shape
     safe = indices.clamp_min(0)
-    return values.gather(1, safe.reshape(batch, -1).unsqueeze(-1).expand(-1, -1, hidden)).reshape(
-        batch, candidates, members, hidden
-    )
+    return values[:, safe.reshape(-1)].reshape(len(values), candidates, members, values.shape[-1])
 
 
 class SymmetricPairEncoder(nn.Module):
@@ -81,10 +80,11 @@ class StructuredReconstruction(nn.Module):
             for role in node.composite_roles:
                 child = embeddings[role.child]
                 child_index = pool["child_indices"][role.key]
-                hidden = child.shape[-1]
-                parts.append(child.gather(
-                    1, child_index.clamp_min(0).unsqueeze(-1).expand(-1, -1, hidden)
-                ))
+                if child_index.ndim != 1:
+                    raise ValueError(
+                        f"Static child indices must have shape [C], found {tuple(child_index.shape)}"
+                    )
+                parts.append(child[:, child_index.clamp_min(0)])
             candidate = self.node_encoders[node_name](torch.cat(parts, dim=-1))
             candidate = candidate * pool["candidate_mask"].unsqueeze(-1).to(candidate.dtype)
             context = pooled.unsqueeze(1).expand(-1, candidate.shape[1], -1)

@@ -74,7 +74,7 @@ def main() -> None:
             pool = batch["structured"]["pools"][root]
             values = []
             for index in pool["candidate_mask"][event].nonzero(as_tuple=False).flatten().tolist():
-                owned_tokens = pool["leaf_ownership"][event, index].nonzero(as_tuple=False).flatten().tolist()
+                owned_tokens = pool["leaf_ownership"][index].nonzero(as_tuple=False).flatten().tolist()
                 ownership = frozenset(("TOKEN", int(token)) for token in owned_tokens)
                 candidate = CandidateRecord(root, index, (), (), ownership,
                                             bool(index == int(pool["truth_index"][event])))
