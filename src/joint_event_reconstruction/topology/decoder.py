@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from itertools import product
-from math import log
+from math import exp, log
 from typing import Mapping, Sequence
 
 from joint_event_reconstruction.topology.candidates import CandidateRecord
@@ -25,6 +25,13 @@ class CompleteAssignment:
     truth: bool
 
 
+@dataclass(frozen=True)
+class DecodeResult:
+    assignments: tuple[CompleteAssignment, ...]
+    log_normalisation: float
+    valid_assignment_count: int
+
+
 def decode_topk(
     spec: TopologySpec,
     candidates: Mapping[str, Sequence[ScoredCandidate]],
@@ -32,6 +39,17 @@ def decode_topk(
     k: int = 1,
     epsilon: float = 1.0e-12,
 ) -> tuple[CompleteAssignment, ...]:
+    return decode_complete(spec, candidates, k=k, epsilon=epsilon).assignments
+
+
+def decode_complete(
+    spec: TopologySpec,
+    candidates: Mapping[str, Sequence[ScoredCandidate]],
+    *,
+    k: int = 1,
+    epsilon: float = 1.0e-12,
+) -> DecodeResult:
+    """Decode non-null complete root assignments and normalise that same state space."""
     if k <= 0:
         raise ValueError("Decoder k must be positive")
     missing = [root for root in spec.roots if root not in candidates]
@@ -57,4 +75,8 @@ def decode_topk(
                 truth=all(item.candidate.truth for item in selection),
             ))
     complete.sort(key=lambda item: (-item.log_score, item.roots))
-    return tuple(complete[:k])
+    if not complete:
+        return DecodeResult((), float("-inf"), 0)
+    maximum = complete[0].log_score
+    log_normalisation = maximum + log(sum(exp(item.log_score - maximum) for item in complete))
+    return DecodeResult(tuple(complete[:k]), log_normalisation, len(complete))
