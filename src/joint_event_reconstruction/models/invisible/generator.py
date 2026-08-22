@@ -105,3 +105,53 @@ class InvisibleGenerator(nn.Module):
                 shape, context, mask, parent, nfe=selected_budget, generator=generator,
             )
         return values.reshape(batch, samples, roles, 3), nfe
+
+    def assignment_parent_context(
+        self, reconstruction: dict, structured: dict, pooled: torch.Tensor,
+        assignments: list[tuple], node_context: dict[str, torch.Tensor] | None = None,
+    ) -> torch.Tensor:
+        """Build exact hard parent contexts for complete decoded hypotheses."""
+        if not assignments or any(len(items) != len(assignments[0]) for items in assignments):
+            raise ValueError("Every event must provide the same non-zero number of assignments")
+        per_event = []
+        for event, hypotheses in enumerate(assignments):
+            per_hypothesis = []
+            for hypothesis in hypotheses:
+                selected = dict(hypothesis.roots)
+                for node in reversed(self.spec.dag_order):
+                    if node not in selected:
+                        continue
+                    candidate_index = selected[node]
+                    for role in self.spec.nodes[node].composite_roles:
+                        child_index = int(structured["pools"][node]["child_indices"][role.key][candidate_index])
+                        previous = selected.setdefault(role.child, child_index)
+                        if previous != child_index:
+                            raise RuntimeError(f"Decoded hypothesis has inconsistent child {role.child}")
+                contexts = []
+                for role in self.spec.invisible_roles:
+                    if role.node not in selected:
+                        raise RuntimeError(f"Complete hypothesis does not determine invisible parent {role.node}")
+                    base = pooled[event] if node_context is None else node_context[role.node][event]
+                    candidate = reconstruction["candidate_embeddings"][role.node][event, selected[role.node]]
+                    contexts.append(base + candidate)
+                per_hypothesis.append(torch.stack(contexts, dim=0))
+            per_event.append(torch.stack(per_hypothesis, dim=0))
+        return torch.stack(per_event, dim=0)
+
+    def sample_hypotheses(
+        self, visible: dict, parent_context: torch.Tensor, *, samples: int,
+        budget: int | None = None, generator: torch.Generator | None = None,
+    ) -> tuple[torch.Tensor, int]:
+        if parent_context.ndim != 4:
+            raise ValueError("Hypothesis parent context must be [B,K,Rnu,D]")
+        batch, hypotheses, roles, width = parent_context.shape
+        repeated_visible = {
+            "pooled": visible["pooled"].repeat_interleave(hypotheses, dim=0),
+            "tokens": visible["tokens"].repeat_interleave(hypotheses, dim=0),
+            "padding_mask": visible["padding_mask"].repeat_interleave(hypotheses, dim=0),
+        }
+        generated, nfe = self.sample(
+            repeated_visible, parent_context.reshape(batch * hypotheses, roles, width),
+            samples=samples, budget=budget, generator=generator,
+        )
+        return generated.reshape(batch, hypotheses, samples, roles, 3), nfe
