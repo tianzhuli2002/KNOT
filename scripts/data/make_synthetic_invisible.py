@@ -32,11 +32,22 @@ def main() -> None:
     spec = load_topology(topology_path)
     cache_path = Path(config.data.tensor_cache).expanduser().resolve()
     payload = torch.load(cache_path, map_location="cpu", weights_only=False)
-    event_ids = np.asarray(payload["indices"], dtype=np.int64)
-    if args.max_events is not None:
-        if args.max_events <= 0:
-            raise ValueError("--max-events must be positive")
-        event_ids = event_ids[:args.max_events]
+    selected_cache_ids = np.asarray(payload["indices"], dtype=np.int64)
+    split_file = np.load(Path(visible.dataset.split.indices_path).expanduser().resolve())
+    chosen = []
+    for offset, split in enumerate(("train", "validation", "test")):
+        split_ids = np.asarray(split_file[split], dtype=np.int64)
+        configured = config.data.max_events["val" if split == "validation" else split]
+        count = args.max_events if args.max_events is not None else configured
+        if count is not None and int(count) < len(split_ids):
+            rng_split = np.random.default_rng(int(config.experiment.seed) + offset)
+            positions = np.sort(rng_split.choice(len(split_ids), size=int(count), replace=False))
+            split_ids = split_ids[positions]
+        chosen.append(split_ids)
+    event_ids = np.unique(np.concatenate(chosen))
+    positions = np.searchsorted(selected_cache_ids, event_ids)
+    if (positions >= len(selected_cache_ids)).any() or not np.array_equal(selected_cache_ids[positions], event_ids):
+        raise ValueError("Stable split contains EVENT_ID values absent from the configured tensor cache")
     source_h5 = Path(visible.dataset.input_h5_path).expanduser().resolve()
     with h5py.File(source_h5, "r") as source:
         met = source["INPUTS/MET"][event_ids, 0]

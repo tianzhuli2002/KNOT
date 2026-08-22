@@ -9,6 +9,7 @@ from torch.utils.data import DataLoader, Dataset
 from omegaconf import OmegaConf
 
 from joint_event_reconstruction.m0.data.module import TransformerDataModule, _collate_transformer
+from joint_event_reconstruction.data.invisible import InvisibleScaler, InvisibleTruthStore
 from joint_event_reconstruction.topology.candidates import build_event_candidates
 from joint_event_reconstruction.topology.compiler import load_topology
 
@@ -19,6 +20,8 @@ class StructuredCollator:
         self.source_type_ids = dict(source_type_ids)
         self._spec = None
         self._templates = None
+        self.invisible_store = None
+        self.invisible_scaler = None
 
     @property
     def spec(self):
@@ -88,6 +91,10 @@ class StructuredCollator:
                 "reconstructable": reconstructable,
             }
         batch["structured"] = {"pools": pools}
+        if self.invisible_store is not None:
+            invisible = self.invisible_store.lookup(batch["event_index"])
+            batch["invisible_truth"] = invisible
+            batch["invisible_truth_scaled"] = self.invisible_scaler.transform(invisible)
         return batch
 
     def _build_templates(self, source_positions: dict[str, torch.Tensor], token_count: int) -> dict:
@@ -148,15 +155,29 @@ class StructuredCachedDataset(Dataset):
 
 
 class StructuredDataModule(TransformerDataModule):
-    def __init__(self, config, topology_path: str | Path, *, tensor_cache: str | Path | None = None):
+    def __init__(
+        self, config, topology_path: str | Path, *, tensor_cache: str | Path | None = None,
+        invisible_path: str | Path | None = None, allow_synthetic: bool = False,
+        max_events: dict | None = None, subset_seed: int = 42,
+    ):
         self.tensor_cache = None if tensor_cache is None else Path(tensor_cache).expanduser().resolve()
         config.dataset.cache.enabled = False
         super().__init__(config)
         self.structured_collator = StructuredCollator(topology_path, dict(self.schema.source_type_ids))
+        self.invisible_path = invisible_path
+        self.allow_synthetic = allow_synthetic
+        self.max_events = max_events
+        self.subset_seed = subset_seed
+        self.invisible_scaler = None
+        self._joint_setup_done = False
 
     def setup(self, stage=None):
         super().setup(stage)
+        if self._joint_setup_done:
+            return
         if self.tensor_cache is None or self.cache_payload is not None:
+            self._apply_event_limits_and_invisible_truth()
+            self._joint_setup_done = True
             return
         if not self.tensor_cache.is_file():
             raise FileNotFoundError(f"Explicit tensor cache does not exist: {self.tensor_cache}")
@@ -196,6 +217,33 @@ class StructuredDataModule(TransformerDataModule):
         self.train_dataset = StructuredCachedDataset(payload, selected_positions(self.split_indices["train"]))
         self.val_dataset = StructuredCachedDataset(payload, selected_positions(self.split_indices["validation"]))
         self.test_dataset = StructuredCachedDataset(payload, selected_positions(self.split_indices["test"]))
+
+        self._apply_event_limits_and_invisible_truth()
+        self._joint_setup_done = True
+
+    def _apply_event_limits_and_invisible_truth(self):
+        import numpy as np
+        from torch.utils.data import Subset
+        split_names = {"train": "train", "val": "validation", "test": "test"}
+        selected_ids = {}
+        for offset, (loader_name, split_name) in enumerate(split_names.items()):
+            dataset = getattr(self, f"{loader_name}_dataset")
+            count = None if self.max_events is None else self.max_events.get(loader_name)
+            positions = np.arange(len(dataset), dtype=np.int64)
+            if count is not None and int(count) < len(positions):
+                rng = np.random.default_rng(self.subset_seed + offset)
+                positions = np.sort(rng.choice(positions, size=int(count), replace=False))
+                setattr(self, f"{loader_name}_dataset", Subset(dataset, positions.tolist()))
+            selected_ids[loader_name] = np.asarray(self.split_indices[split_name], dtype=np.int64)[positions]
+        if self.invisible_path is not None:
+            store = InvisibleTruthStore(
+                self.invisible_path, len(self.structured_collator.spec.invisible_roles),
+                allow_synthetic=self.allow_synthetic,
+            )
+            train_truth = store.lookup(selected_ids["train"])
+            self.invisible_scaler = InvisibleScaler.fit(train_truth)
+            self.structured_collator.invisible_store = store
+            self.structured_collator.invisible_scaler = self.invisible_scaler
 
     def _loader(self, dataset, split: str, shuffle: bool) -> DataLoader:
         return DataLoader(
