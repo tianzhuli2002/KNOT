@@ -6,7 +6,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from joint_event_reconstruction.topology.spec import LeafRole, TopologySpec
+from joint_event_reconstruction.topology.spec import TopologySpec
 
 
 def _gather(values: torch.Tensor, indices: torch.Tensor) -> torch.Tensor:
@@ -60,11 +60,8 @@ class StructuredReconstruction(nn.Module):
             self.null_embeddings[node_name] = nn.Parameter(torch.empty(d_model))
             nn.init.normal_(self.null_embeddings[node_name], std=0.02)
 
-    def forward(self, encoded_tokens: torch.Tensor, pooled: torch.Tensor, structured: dict) -> dict:
+    def encode_candidates(self, encoded_tokens: torch.Tensor, structured: dict) -> dict[str, torch.Tensor]:
         embeddings = {}
-        logits = {}
-        probabilities = {}
-        losses = []
         for node_name in self.spec.dag_order:
             pool = structured["pools"][node_name]
             parts = []
@@ -87,29 +84,63 @@ class StructuredReconstruction(nn.Module):
                 parts.append(child[:, child_index.clamp_min(0)])
             candidate = self.node_encoders[node_name](torch.cat(parts, dim=-1))
             candidate = candidate * pool["candidate_mask"].unsqueeze(-1).to(candidate.dtype)
-            context = pooled.unsqueeze(1).expand(-1, candidate.shape[1], -1)
+            embeddings[node_name] = candidate
+        return embeddings
+
+    def score_candidates(
+        self,
+        embeddings: dict[str, torch.Tensor],
+        pooled: torch.Tensor,
+        structured: dict,
+        node_context: dict[str, torch.Tensor] | None = None,
+    ) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:
+        logits = {}
+        probabilities = {}
+        for node_name in self.spec.dag_order:
+            candidate = embeddings[node_name]
+            pool = structured["pools"][node_name]
+            scoring_context = pooled if node_context is None else node_context[node_name]
+            context = scoring_context.unsqueeze(1).expand(-1, candidate.shape[1], -1)
             candidate_logits = self.scorers[node_name](torch.cat((candidate, context), dim=-1)).squeeze(-1)
             candidate_logits = candidate_logits.masked_fill(~pool["candidate_mask"], -torch.inf)
             null = self.null_embeddings[node_name].unsqueeze(0).expand(len(pooled), -1)
-            null_logits = self.scorers[node_name](torch.cat((null, pooled), dim=-1)).squeeze(-1)
+            null_logits = self.scorers[node_name](torch.cat((null, scoring_context), dim=-1)).squeeze(-1)
             role_logits = torch.cat((null_logits.unsqueeze(1), candidate_logits), dim=1)
-            target = torch.where(pool["reconstructable"], pool["truth_index"] + 1, torch.zeros_like(pool["truth_index"]))
-            if (pool["reconstructable"] & (pool["truth_index"] < 0)).any():
-                raise RuntimeError(f"Reconstructable node {node_name} has no truth candidate")
-            loss = F.cross_entropy(role_logits, target)
-            embeddings[node_name] = candidate
             logits[node_name] = role_logits
             probabilities[node_name] = role_logits.softmax(dim=1)
-            losses.append(loss)
+        return logits, probabilities
+
+    def assignment_loss(self, logits: dict[str, torch.Tensor], structured: dict) -> dict:
+        node_losses = {}
+        for node_name in self.spec.dag_order:
+            pool = structured["pools"][node_name]
+            if (pool["reconstructable"] & (pool["truth_index"] < 0)).any():
+                raise RuntimeError(f"Reconstructable node {node_name} has no truth candidate")
+            target = torch.where(
+                pool["reconstructable"], pool["truth_index"] + 1, torch.zeros_like(pool["truth_index"]),
+            )
+            node_losses[node_name] = F.cross_entropy(logits[node_name], target)
         return {
+            "reconstruction_loss": torch.stack(tuple(node_losses.values())).mean(),
+            "node_losses": node_losses,
+        }
+
+    def forward(
+        self,
+        encoded_tokens: torch.Tensor,
+        pooled: torch.Tensor,
+        structured: dict,
+        *,
+        node_context: dict[str, torch.Tensor] | None = None,
+        calculate_loss: bool = True,
+    ) -> dict:
+        embeddings = self.encode_candidates(encoded_tokens, structured)
+        logits, probabilities = self.score_candidates(embeddings, pooled, structured, node_context)
+        result = {
             "candidate_embeddings": embeddings,
             "assignment_logits": logits,
             "assignment_probabilities": probabilities,
-            "reconstruction_loss": torch.stack(losses).mean(),
-            "node_losses": {name: F.cross_entropy(
-                logits[name],
-                torch.where(structured["pools"][name]["reconstructable"],
-                            structured["pools"][name]["truth_index"] + 1,
-                            torch.zeros_like(structured["pools"][name]["truth_index"]))
-            ) for name in self.spec.dag_order},
         }
+        if calculate_loss:
+            result.update(self.assignment_loss(logits, structured))
+        return result
