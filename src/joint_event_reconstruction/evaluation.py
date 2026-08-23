@@ -33,6 +33,21 @@ def _wrapped_delta(first: np.ndarray, second: np.ndarray) -> np.ndarray:
     return np.arctan2(np.sin(first - second), np.cos(first - second))
 
 
+def bootstrap_mean_interval(values: np.ndarray, *, replicas: int = 1000, seed: int = 42) -> tuple[float, float]:
+    values = np.asarray(values, dtype=np.float64)
+    if values.ndim != 1 or not len(values):
+        raise ValueError("Bootstrap input must be a non-empty event-level vector")
+    rng = np.random.default_rng(seed)
+    unique = np.unique(values)
+    if np.isin(unique, (0.0, 1.0)).all():
+        means = rng.binomial(len(values), values.mean(), size=replicas) / len(values)
+    else:
+        means = np.asarray([
+            values[rng.integers(0, len(values), size=len(values))].mean() for _ in range(replicas)
+        ])
+    return tuple(float(value) for value in np.quantile(means, (0.025, 0.975)))
+
+
 def evaluate_predictions(path: str | Path) -> dict:
     path = Path(path).expanduser().resolve()
     validate_prediction(path)
@@ -56,6 +71,8 @@ def evaluate_predictions(path: str | Path) -> dict:
                 "mean_truth_probability": float(node["truth_probability"][:][reconstructable].mean()) if reconstructable.any() else None,
                 "mean_entropy": float(node["entropy"][:].mean()), "mean_margin": float(node["margin"][:].mean()),
                 "null_rate": float((selected < 0).mean()),
+                "conditional_efficiency_bootstrap_95": list(bootstrap_mean_interval(correct[reconstructable]))
+                if reconstructable.any() else None,
             }
         truth_topk = source["TRUTH/topk_assignment"][:]
         result["visible"]["complete"] = {
@@ -65,6 +82,14 @@ def evaluate_predictions(path: str | Path) -> dict:
                 1.0 / (np.flatnonzero(row)[0] + 1) if row.any() else 0.0 for row in truth_topk
             ])),
             "mean_exact_logZ": float(source["VISIBLE/exact_logZ"][:].mean()),
+        }
+        njet = source["OBSERVED/njet"][:]
+        result["visible"]["complete"]["top1_vs_njet"] = {
+            str(int(value)): {
+                "events": int((njet == value).sum()),
+                "efficiency": float(truth_topk[njet == value, 0].mean()),
+            }
+            for value in np.unique(njet)
         }
         if "INVISIBLE/samples" in source:
             samples = source["INVISIBLE/samples"][:, 0]

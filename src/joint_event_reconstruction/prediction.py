@@ -104,6 +104,10 @@ def predict_hdf5(
             observed_met = None
             nfe = 0
             compatibility = final_score = final_rank = None
+            jet_type = data.schema.source_type_ids.get("JET")
+            if jet_type is None:
+                raise RuntimeError("Prediction schema has no JET source for Njet diagnostics")
+            njet = ((batch["type_ids"] == jet_type) & ~batch["padding_mask"]).sum(dim=1).cpu().numpy().astype(np.int16)
             if module.event_model.invisible is not None:
                 parent = module.event_model.invisible.assignment_parent_context(
                     output, batch["structured"], output["visible"]["pooled"], assignments,
@@ -213,6 +217,7 @@ def predict_hdf5(
                     "logz": _create(visible_group, "exact_logZ", (), "<f4"),
                     "probabilities": _create(visible_group, "constrained_probabilities", (top_k,), "<f4"),
                     "truth_assignment": _create(truth_group, "topk_assignment", (top_k,), "?"),
+                    "njet": _create(observed_group, "njet", (), "<i2"),
                 }
                 destination.attrs["root_order"] = json.dumps(list(roots))
                 for node in module.spec.dag_order:
@@ -246,6 +251,7 @@ def predict_hdf5(
             _append(datasets["roots"], root_indices); _append(datasets["log_scores"], log_scores)
             _append(datasets["logz"], logz); _append(datasets["probabilities"], constrained)
             _append(datasets["truth_assignment"], truth)
+            _append(datasets["njet"], njet)
             for node in module.spec.dag_order:
                 probabilities = output["assignment_probabilities"][node]
                 selected = probabilities.argmax(dim=1) - 1

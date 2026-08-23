@@ -78,6 +78,7 @@ def main() -> None:
     parser.add_argument("--output")
     parser.add_argument("--predictions")
     parser.add_argument("--device", choices=("cpu", "cuda"), default="cpu")
+    parser.add_argument("--recurrent-steps", type=int)
     args = parser.parse_args()
     config = load_experiment(args.experiment)
     if args.command == "train":
@@ -103,7 +104,8 @@ def main() -> None:
             module, data, data.invisible_scaler, args.output, split=args.split,
             top_k=int(config.inference.top_k_assignments),
             posterior_samples=int(config.inference.posterior_samples),
-            recurrent_steps=int(config.model.reasoning.eval_steps) if config.model.reasoning.enabled else None,
+            recurrent_steps=(args.recurrent_steps if args.recurrent_steps is not None else
+                             int(config.model.reasoning.eval_steps) if config.model.reasoning.enabled else None),
             device=args.device, checkpoint_path=args.checkpoint,
             compatibility_lambda=float(config.model.compatibility.get("lambda", 1.0)),
         )
