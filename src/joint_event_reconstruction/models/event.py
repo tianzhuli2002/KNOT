@@ -5,6 +5,7 @@ from __future__ import annotations
 import torch
 from torch import nn
 
+from joint_event_reconstruction.models.compatibility import CompatibilityHead
 from joint_event_reconstruction.models.feedback import SoftReconstructionFeedback
 from joint_event_reconstruction.models.invisible.feedback import InvisiblePosteriorFeedback
 from joint_event_reconstruction.models.invisible.generator import InvisibleGenerator
@@ -23,6 +24,8 @@ class JointEventModel(nn.Module):
         fixed_input_reinjection: bool = True, feedback_enabled: bool = False,
         feedback_start_step: int = 1, feedback_gate_initial_bias: float = -2.0,
         invisible_config=None, coupling_config=None, invisible_loss_weight: float = 1.0,
+        compatibility_config=None, compatibility_loss_weight: float = 1.0,
+        reconstruction_loss_weight: float = 1.0,
     ):
         super().__init__()
         if feedback_enabled and not reasoning_enabled:
@@ -31,6 +34,7 @@ class JointEventModel(nn.Module):
             raise ValueError(f"Recurrent train_steps must contain positive integers, found {train_steps}")
         if eval_steps <= 0:
             raise ValueError("Recurrent eval_steps must be positive")
+        self.spec = spec
         self.visible = VisibleEventEncoder(
             n_features, d_model, n_heads, n_layers, d_feedforward, dropout, n_object_types,
         )
@@ -41,6 +45,8 @@ class JointEventModel(nn.Module):
         self.eval_steps = eval_steps
         self.feedback_start_step = feedback_start_step
         self.invisible_loss_weight = invisible_loss_weight
+        self.compatibility_loss_weight = compatibility_loss_weight
+        self.reconstruction_loss_weight = reconstruction_loss_weight
         self.reasoner = None
         self.feedback = None
         if reasoning_enabled:
@@ -53,8 +59,16 @@ class JointEventModel(nn.Module):
         self.invisible = None
         self.posterior_feedback = None
         self.coupling_config = coupling_config
+        self.compatibility = None
         if invisible_config is not None and bool(invisible_config.enabled):
             self.invisible = InvisibleGenerator(spec, d_model, invisible_config)
+        if compatibility_config is not None and bool(compatibility_config.enabled):
+            if self.invisible is None:
+                raise ValueError("Compatibility scoring requires invisible generation")
+            self.compatibility = CompatibilityHead(
+                d_model, len(spec.invisible_roles),
+                include_invisible=bool(compatibility_config.get("include_invisible", True)),
+            )
         if coupling_config is not None and bool(coupling_config.invisible_to_reconstruction.enabled):
             if not reasoning_enabled or self.invisible is None:
                 raise ValueError("Invisible posterior feedback requires reasoning and an invisible generator")
@@ -77,7 +91,8 @@ class JointEventModel(nn.Module):
         if not self.reasoning_enabled:
             reconstruction = self.reconstruction(visible["tokens"], visible["pooled"], batch["structured"])
             result = {
-                "visible": visible, **reconstruction, "loss": reconstruction["reconstruction_loss"],
+                "visible": visible, **reconstruction,
+                "loss": self.reconstruction_loss_weight * reconstruction["reconstruction_loss"],
                 "recurrent_steps": 0, "recurrent_predictions": (),
             }
             return self._invisible_result(result, batch, visible, None)
@@ -109,7 +124,8 @@ class JointEventModel(nn.Module):
                 state = self.reasoner.replace_topology(state, visible["tokens"].shape[1], updated)
                 feedback_diagnostics.append(diagnostics)
         result = {
-            "visible": visible, **reconstruction, "loss": reconstruction["reconstruction_loss"],
+            "visible": visible, **reconstruction,
+            "loss": self.reconstruction_loss_weight * reconstruction["reconstruction_loss"],
             "recurrent_steps": steps, "recurrent_predictions": tuple(predictions),
             "feedback_diagnostics": tuple(feedback_diagnostics), "recurrent_state": state,
             "node_context": node_tokens,
@@ -132,7 +148,7 @@ class JointEventModel(nn.Module):
                 encoded_tokens, pooled, batch["structured"], node_context=node_tokens,
             )
             result.update(reconstruction)
-            result["loss"] = reconstruction["reconstruction_loss"]
+            result["loss"] = self.reconstruction_loss_weight * reconstruction["reconstruction_loss"]
             result["recurrent_state"] = state
             result["node_context"] = node_tokens
             result["posterior_feedback"] = {
@@ -155,6 +171,28 @@ class JointEventModel(nn.Module):
             result["invisible_loss"] = invisible["loss"]
             result["invisible_training"] = invisible
             result["loss"] = result["loss"] + self.invisible_loss_weight * invisible["loss"]
+            if self.compatibility is not None:
+                truth_summaries = []
+                wrong_summaries = []
+                for root in self.spec.roots:
+                    candidates = result["candidate_embeddings"][root]
+                    truth = batch["structured"]["pools"][root]["truth_index"]
+                    if (truth < 0).any():
+                        raise RuntimeError(f"Compatibility training requires reconstructable truth root {root}")
+                    rows = torch.arange(len(candidates), device=candidates.device)
+                    truth_summaries.append(candidates[rows, truth])
+                    candidate_probabilities = result["assignment_probabilities"][root][:, 1:].clone()
+                    candidate_probabilities[rows, truth] = -1
+                    wrong = candidate_probabilities.argmax(dim=1)
+                    wrong_summaries.append(candidates[rows, wrong])
+                truth_assignment = torch.stack(truth_summaries, dim=1).mean(dim=1)
+                wrong_assignment = torch.stack(wrong_summaries, dim=1).mean(dim=1)
+                compatibility = self.compatibility.contrastive_loss(
+                    visible["pooled"], truth_assignment, wrong_assignment, batch["invisible_truth_scaled"],
+                )
+                result["compatibility_training"] = compatibility
+                result["compatibility_loss"] = compatibility["loss"]
+                result["loss"] = result["loss"] + self.compatibility_loss_weight * compatibility["loss"]
         return result
 
 

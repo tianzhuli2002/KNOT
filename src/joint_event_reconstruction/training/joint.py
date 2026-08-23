@@ -36,7 +36,17 @@ class JointEventModule(L.LightningModule):
             feedback_gate_initial_bias=float(feedback.gate_initial_bias), invisible_config=invisible_config,
             coupling_config=coupling_config,
             invisible_loss_weight=float(experiment.training.loss_weights.invisible),
+            compatibility_config=model.compatibility,
+            compatibility_loss_weight=float(experiment.training.loss_weights.compatibility),
+            reconstruction_loss_weight=float(experiment.training.loss_weights.reconstruction),
         )
+        freeze = experiment.training.freeze
+        if bool(freeze.visible):
+            self.event_model.visible.requires_grad_(False)
+        if bool(freeze.reconstruction):
+            self.event_model.reconstruction.requires_grad_(False)
+        if bool(freeze.invisible) and self.event_model.invisible is not None:
+            self.event_model.invisible.requires_grad_(False)
         architecture = OmegaConf.to_container(model, resolve=True)
         signature = hashlib.sha256(json.dumps(architecture, sort_keys=True).encode()).hexdigest()
         self.scaler_metadata = None if invisible_scaler is None else invisible_scaler.as_dict()
@@ -47,6 +57,10 @@ class JointEventModule(L.LightningModule):
             "recurrent_representation": "shared_visible_topology_tokens_v1" if reasoning.enabled else None,
             "invisible_formulation": str(model.invisible.formulation) if model.invisible.enabled else None,
             "invisible_target": "cartesian_px_py_pz_v1" if model.invisible.enabled else None,
+            "invisible_roles": [role.key for role in self.spec.invisible_roles],
+            "invisible_role_count": len(self.spec.invisible_roles),
+            "canonical_data_schema": "joint_event_reconstruction_canonical_v1"
+            if model.invisible.enabled and not synthetic_data else None,
             "synthetic_data": bool(synthetic_data),
         })
         self.learning_rate = float(experiment.training.learning_rate)
@@ -64,6 +78,9 @@ class JointEventModule(L.LightningModule):
                  on_epoch=True, batch_size=len(batch["tokens"]))
         if "invisible_loss" in output:
             self.log(f"{stage}_invisible_loss", output["invisible_loss"], on_step=False,
+                     on_epoch=True, batch_size=len(batch["tokens"]))
+        if "compatibility_loss" in output:
+            self.log(f"{stage}_compatibility_loss", output["compatibility_loss"], on_step=False,
                      on_epoch=True, batch_size=len(batch["tokens"]))
         return output["loss"]
 
