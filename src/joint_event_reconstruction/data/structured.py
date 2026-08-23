@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import h5py
 import torch
 from torch.utils.data import DataLoader, Dataset
 from omegaconf import OmegaConf
@@ -234,14 +235,20 @@ class StructuredDataModule(TransformerDataModule):
                 rng = np.random.default_rng(self.subset_seed + offset)
                 positions = np.sort(rng.choice(positions, size=int(count), replace=False))
                 setattr(self, f"{loader_name}_dataset", Subset(dataset, positions.tolist()))
-            selected_ids[loader_name] = np.asarray(self.split_indices[split_name], dtype=np.int64)[positions]
+            selected_rows = np.asarray(self.split_indices[split_name], dtype=np.int64)[positions]
+            with h5py.File(self.h5_path, "r") as source:
+                selected_ids[loader_name] = (
+                    source["EVENT_ID"][selected_rows] if "EVENT_ID" in source else selected_rows
+                )
         if self.invisible_path is not None:
             store = InvisibleTruthStore(
                 self.invisible_path, len(self.structured_collator.spec.invisible_roles),
                 allow_synthetic=self.allow_synthetic,
             )
             train_truth = store.lookup(selected_ids["train"])
-            self.invisible_scaler = InvisibleScaler.fit(train_truth)
+            self.invisible_scaler = InvisibleScaler.fit(
+                train_truth, tuple(role.key for role in self.structured_collator.spec.invisible_roles),
+            )
             self.structured_collator.invisible_store = store
             self.structured_collator.invisible_scaler = self.invisible_scaler
 

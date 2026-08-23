@@ -429,15 +429,10 @@ def _build_observable_schema(cfg):
     observables = _normalise_observables(cfg)
     lookup = _observable_lookup(observables)
     include_met = bool(cfg.get("include_met", True))
-
-    requested_sources = ["JET", "LEPTON"]
-    if include_met:
-        requested_sources.append("MET")
-    if "GLOBAL" in lookup:
-        requested_sources.append("GLOBAL")
-    for source_name in lookup:
-        if source_name not in requested_sources:
-            requested_sources.append(source_name)
+    requested_sources = [
+        source_name for source_name in lookup
+        if source_name != "MET" or include_met
+    ]
 
     raw_sources = OrderedDict()
     schema_names = []
@@ -1275,7 +1270,10 @@ class TransformerH5Dataset(Dataset):
             "type_ids": torch.from_numpy(type_ids),
             "padding_mask": torch.from_numpy(padding_mask),
             "labels": torch.tensor(label, dtype=torch.float32),
-            "event_index": torch.tensor(event_idx, dtype=torch.long),
+            "event_index": torch.tensor(
+                int(self._h5_file()["/EVENT_ID"][event_idx]) if "/EVENT_ID" in self._h5_file() else event_idx,
+                dtype=torch.long,
+            ),
         }
         if self.reconstruction_enabled:
             h5_file = self._h5_file()
@@ -1289,15 +1287,19 @@ class TransformerH5Dataset(Dataset):
 
     def _build_event_arrays(self, event_idx):
         h5_file = self._h5_file()
-        inputs = h5_file["/INPUTS"]
-        jets = inputs["JET"][event_idx, : self.widths.get("JET", 0)]
-        leptons = inputs["LEPTON"][event_idx, : self.widths.get("LEPTON", 0)]
-        met = inputs["MET"][event_idx, : self.widths.get("MET", 0)] if self.include_met else []
+        source_rows = {
+            source_name: self._read_source_rows(h5_file, source_name, event_idx)
+            for source_name in _token_source_names(self.schema)
+            if source_name != "GLOBAL"
+        }
         label = self._read_label(h5_file, event_idx)
-        return self._build_event_arrays_from_loaded(h5_file, event_idx, jets, leptons, met, label)
+        return self._build_event_arrays_from_loaded(
+            h5_file, event_idx, source_rows.get("JET", []), source_rows.get("LEPTON", []),
+            source_rows.get("MET", []), label, source_rows=source_rows,
+        )
 
-    def _build_event_arrays_from_loaded(self, h5_file, event_idx, jets, leptons, met, label):
-        source_rows = {"JET": jets, "LEPTON": leptons, "MET": met}
+    def _build_event_arrays_from_loaded(self, h5_file, event_idx, jets, leptons, met, label, source_rows=None):
+        source_rows = dict(source_rows or {"JET": jets, "LEPTON": leptons, "MET": met})
         for source_name in _token_source_names(self.schema):
             if source_name not in source_rows:
                 source_rows[source_name] = self._read_source_rows(h5_file, source_name, event_idx)
@@ -1317,14 +1319,15 @@ class TransformerH5Dataset(Dataset):
 
         jets = source_rows.get("JET", [])
         leptons = source_rows.get("LEPTON", [])
-        cursor = self._fill_object_tokens("JET", jets, cursor, tokens, type_ids, padding_mask, default_id=1.0)
-        cursor = self._fill_object_tokens("LEPTON", leptons, cursor, tokens, type_ids, padding_mask)
-        cursor = self._fill_object_tokens("MET", source_rows.get("MET", []), cursor, tokens, type_ids, padding_mask, default_id=4.0, accept_all=True)
         for source_name in _token_source_names(self.schema):
-            if source_name in {"JET", "LEPTON", "MET"}:
+            if source_name == "GLOBAL":
                 continue
             rows = source_rows[source_name]
-            cursor = self._fill_object_tokens(source_name, rows, cursor, tokens, type_ids, padding_mask, accept_all=True)
+            cursor = self._fill_object_tokens(
+                source_name, rows, cursor, tokens, type_ids, padding_mask,
+                default_id=1.0 if source_name == "JET" else (4.0 if source_name == "MET" else 0.0),
+                accept_all=source_name == "MET",
+            )
 
         if self.schema.has_global_token:
             self._fill_global_token_from_row(global_row, jets, leptons, tokens[cursor])
@@ -1334,14 +1337,17 @@ class TransformerH5Dataset(Dataset):
         return tokens, type_ids, padding_mask, label
 
     def _build_reco_raw_labels(self, h5_file, event_idx, padding_mask):
-        inputs = h5_file["/INPUTS"]
-        jets = inputs["JET"][event_idx, : self.widths.get("JET", 0)]
-        leptons = inputs["LEPTON"][event_idx, : self.widths.get("LEPTON", 0)]
-        met = inputs["MET"][event_idx, : self.widths.get("MET", 0)] if self.include_met else []
-        return self._build_reco_raw_labels_from_loaded(h5_file, event_idx, jets, leptons, met, padding_mask)
+        source_rows = {
+            source_name: self._read_source_rows(h5_file, source_name, event_idx)
+            for source_name in self.reco_builder.source_ranges
+        }
+        return self._build_reco_raw_labels_from_loaded(
+            h5_file, event_idx, source_rows.get("JET", []), source_rows.get("LEPTON", []),
+            source_rows.get("MET", []), padding_mask, source_rows=source_rows,
+        )
 
-    def _build_reco_raw_labels_from_loaded(self, h5_file, event_idx, jets, leptons, met, padding_mask):
-        source_rows = {"JET": jets, "LEPTON": leptons, "MET": met}
+    def _build_reco_raw_labels_from_loaded(self, h5_file, event_idx, jets, leptons, met, padding_mask, source_rows=None):
+        source_rows = dict(source_rows or {"JET": jets, "LEPTON": leptons, "MET": met})
         for source_name in self.reco_builder.source_ranges:
             if source_name not in source_rows:
                 source_rows[source_name] = self._read_source_rows(h5_file, source_name, event_idx)
@@ -1964,20 +1970,24 @@ class TransformerDataModule(L.LightningDataModule):
                 schema=self.schema,
                 configured_widths=widths,
             )
-            inputs = h5_file["/INPUTS"]
             sorted_indices = np.sort(np.asarray(train_indices, dtype=np.int64))
 
             for i, event_idx in enumerate(sorted_indices):
                 if i > 0 and i % 50000 == 0:
                     logger.info("Transformer scaler fit progress: %d/%d training events.", i, len(sorted_indices))
 
-                jets = inputs["JET"][event_idx, : widths.get("JET", 0)]
-                leptons = inputs["LEPTON"][event_idx, : widths.get("LEPTON", 0)]
-                met = inputs["MET"][event_idx, : widths.get("MET", 0)] if widths.get("MET", 0) else []
-
-                self._append_object_state_values(values_by_group, "JET", jets, default_id=1.0)
-                self._append_object_state_values(values_by_group, "LEPTON", leptons)
-                self._append_object_state_values(values_by_group, "MET", met, default_id=4.0, accept_all=True)
+                source_rows = {
+                    source_name: reader._read_source_rows(h5_file, source_name, event_idx)
+                    for source_name in _token_source_names(self.schema) if source_name != "GLOBAL"
+                }
+                jets = source_rows.get("JET", [])
+                leptons = source_rows.get("LEPTON", [])
+                for source_name, rows in source_rows.items():
+                    self._append_object_state_values(
+                        values_by_group, source_name, rows,
+                        default_id=1.0 if source_name == "JET" else (4.0 if source_name == "MET" else 0.0),
+                        accept_all=source_name == "MET",
+                    )
 
                 if "GLOBAL" in self.schema.sources:
                     for feature in self.schema.sources["GLOBAL"].features:

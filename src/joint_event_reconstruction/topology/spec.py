@@ -7,7 +7,7 @@ from types import MappingProxyType
 from typing import Mapping
 
 
-VISIBLE_SOURCES = frozenset({"JET", "LEPTON"})
+VISIBLE_SOURCES = frozenset({"JET", "LEPTON", "ELECTRON", "MUON"})
 INVISIBLE_SOURCES = frozenset({"NEUTRINO"})
 KNOWN_SOURCES = VISIBLE_SOURCES | INVISIBLE_SOURCES
 

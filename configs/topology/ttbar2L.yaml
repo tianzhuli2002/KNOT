@@ -1,0 +1,9 @@
+topology:
+  top_e:
+    b: [JET, 1]
+    lepton: [ELECTRON, 1]
+    nu: [NEUTRINO, 0]
+  top_mu:
+    b: [JET, 2]
+    lepton: [MUON, 1]
+    nu: [NEUTRINO, 1]

@@ -2,12 +2,12 @@ experiment:
   name: ttbar1L_joint
   seed: 42
 topology_config: configs/topology/ttbar1L.yaml
-visible_config: configs/m0_ttbar1L.yaml
+visible_config: configs/real_ttbar1L.yaml
 data:
-  tensor_cache: /mnt/iusers01/fatpou01/phy01/w00238tl/scratch/SB_paper/results/transformer_full_campaign_joint_first_v2/cache/transformer_ttbar1L_semantic_reconstruction_full__jets8_lep1_met1__tok17__all__filelabels__458b8dcf1959.pt
+  tensor_cache: null
   max_events: {train: 100000, val: 50000, test: 50000}
   invisible:
-    path: null
+    path: /mnt/iusers01/fatpou01/phy01/w00238tl/scratch/JointEventReconstruction/data/real/ttbar1L_canonical.h5
     event_id_key: EVENT_ID
     target_key: LABELS/NEUTRINO
     allow_synthetic: false

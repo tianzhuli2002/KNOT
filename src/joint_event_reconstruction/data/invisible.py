@@ -69,20 +69,24 @@ class InvisibleTruthStore:
 
 @dataclass(frozen=True)
 class InvisibleScaler:
-    mean: tuple[float, float, float]
-    std: tuple[float, float, float]
+    mean: tuple[tuple[float, float, float], ...]
+    std: tuple[tuple[float, float, float], ...]
+    role_names: tuple[str, ...]
     representation: str = "cartesian_px_py_pz_v1"
 
     @classmethod
-    def fit(cls, values: torch.Tensor) -> "InvisibleScaler":
+    def fit(cls, values: torch.Tensor, role_names: tuple[str, ...] | None = None) -> "InvisibleScaler":
         if values.ndim != 3 or values.shape[-1] != 3 or not torch.isfinite(values).all():
             raise ValueError(f"Scaler input must be finite [N,Rnu,3], found {tuple(values.shape)}")
-        flattened = values.reshape(-1, 3).to(torch.float64)
-        mean = flattened.mean(dim=0)
-        std = flattened.std(dim=0, unbiased=False)
+        values = values.to(torch.float64)
+        mean = values.mean(dim=0)
+        std = values.std(dim=0, unbiased=False)
         if not torch.isfinite(std).all() or (std <= 0).any():
             raise ValueError(f"Invisible training standard deviations must be finite and positive: {std}")
-        return cls(tuple(mean.tolist()), tuple(std.tolist()))
+        names = tuple(role_names or (f"invisible[{index}]" for index in range(values.shape[1])))
+        if len(names) != values.shape[1]:
+            raise ValueError(f"Invisible role-name count {len(names)} does not match Rnu={values.shape[1]}")
+        return cls(tuple(tuple(row) for row in mean.tolist()), tuple(tuple(row) for row in std.tolist()), names)
 
     def transform(self, values: torch.Tensor) -> torch.Tensor:
         mean = values.new_tensor(self.mean)
@@ -95,4 +99,7 @@ class InvisibleScaler:
         return values * std + mean
 
     def as_dict(self) -> dict:
-        return {"representation": self.representation, "mean": list(self.mean), "std": list(self.std)}
+        return {
+            "representation": self.representation, "role_names": list(self.role_names),
+            "mean": [list(row) for row in self.mean], "std": [list(row) for row in self.std],
+        }
