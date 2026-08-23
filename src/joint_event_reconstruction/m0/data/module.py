@@ -1275,6 +1275,7 @@ class TransformerH5Dataset(Dataset):
                 dtype=torch.long,
             ),
         }
+        result["physics_vectors"] = torch.from_numpy(self._build_physics_vectors(event_idx))
         if self.reconstruction_enabled:
             h5_file = self._h5_file()
             raw_labels = self._build_reco_raw_labels(h5_file, event_idx, padding_mask)
@@ -1284,6 +1285,29 @@ class TransformerH5Dataset(Dataset):
                 raw_labels, padding_mask, event_index=event_idx
             )
         return result
+
+    def _build_physics_vectors(self, event_idx):
+        """Raw `(E,px,py,pz)` vectors aligned with model token positions."""
+        vectors = np.zeros((self.total_tokens, 4), dtype=np.float32)
+        cursor = 0
+        h5_file = self._h5_file()
+        for source_name in _token_source_names(self.schema):
+            width = self.schema.sources[source_name].num_particles
+            if source_name == "GLOBAL":
+                cursor += 1
+                continue
+            rows = self._read_source_rows(h5_file, source_name, event_idx)
+            for local, row in enumerate(rows[:width]):
+                fields = row.dtype.names or ()
+                if not {"pt", "phi"}.issubset(fields):
+                    continue
+                pt = float(row["pt"]); phi = float(row["phi"])
+                eta = float(row["eta"]) if "eta" in fields else 0.0
+                energy = float(row["e"]) if "e" in fields else pt * np.cosh(eta)
+                if np.isfinite((energy, pt, eta, phi)).all():
+                    vectors[cursor + local] = (energy, pt * np.cos(phi), pt * np.sin(phi), pt * np.sinh(eta))
+            cursor += width
+        return vectors
 
     def _build_event_arrays(self, event_idx):
         h5_file = self._h5_file()
@@ -1624,6 +1648,8 @@ def _collate_transformer(batch):
     if "reco_raw_labels" in batch[0]:
         collated["reco_raw_labels"] = torch.stack([item["reco_raw_labels"] for item in batch])
         collated["reco_source_ids"] = torch.stack([item["reco_source_ids"] for item in batch])
+    if "physics_vectors" in batch[0]:
+        collated["physics_vectors"] = torch.stack([item["physics_vectors"] for item in batch])
     if "reco_targets" in batch[0]:
         pool_names = list(batch[0]["reco_targets"].keys())
         pools = {}

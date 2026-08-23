@@ -3,15 +3,19 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 import lightning as L
+import torch
 from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
 from omegaconf import OmegaConf
 
 from joint_event_reconstruction.configuration import load_experiment
 from joint_event_reconstruction.data.structured import StructuredDataModule
 from joint_event_reconstruction.training.joint import JointEventModule
+from joint_event_reconstruction.prediction import predict_hdf5
+from joint_event_reconstruction.evaluation import evaluate_predictions
 
 
 def build_data(config, visible):
@@ -53,17 +57,56 @@ def train(config) -> None:
     trainer.fit(module, datamodule=data)
 
 
+def load_trained(config, visible, data, checkpoint_path: str) -> JointEventModule:
+    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    module = JointEventModule(
+        config, visible, invisible_scaler=data.invisible_scaler,
+        synthetic_data=bool(data.structured_collator.invisible_store.synthetic)
+        if data.structured_collator.invisible_store is not None else False,
+    )
+    module.validate_checkpoint_metadata(checkpoint)
+    module.load_state_dict(checkpoint["state_dict"], strict=True)
+    return module
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=("train", "smoke"))
+    parser.add_argument("command", choices=("train", "smoke", "validate-data", "predict", "evaluate"))
     parser.add_argument("--experiment", required=True)
+    parser.add_argument("--checkpoint")
+    parser.add_argument("--split", choices=("train", "validation", "test"), default="test")
+    parser.add_argument("--output")
+    parser.add_argument("--predictions")
+    parser.add_argument("--device", choices=("cpu", "cuda"), default="cpu")
     args = parser.parse_args()
     config = load_experiment(args.experiment)
     if args.command == "train":
         train(config)
-    else:
+    elif args.command == "smoke":
         from scripts.smoke_all import run_experiment_smoke
         run_experiment_smoke(Path(args.experiment), device="cpu", events=8)
+    elif args.command == "validate-data":
+        from scripts.data.validate_joint_h5 import validate
+        print(json.dumps(validate(Path(config.data.invisible.path)), indent=2, sort_keys=True))
+    elif args.command == "evaluate":
+        if not args.predictions:
+            raise ValueError("evaluate requires --predictions")
+        print(json.dumps(evaluate_predictions(args.predictions), indent=2, sort_keys=True))
+    else:
+        if not args.checkpoint or not args.output:
+            raise ValueError("predict requires --checkpoint and --output")
+        visible = OmegaConf.load(config.visible_config)
+        data = build_data(config, visible)
+        data.setup("predict")
+        module = load_trained(config, visible, data, args.checkpoint)
+        predict_hdf5(
+            module, data, data.invisible_scaler, args.output, split=args.split,
+            top_k=int(config.inference.top_k_assignments),
+            posterior_samples=int(config.inference.posterior_samples),
+            recurrent_steps=int(config.model.reasoning.eval_steps) if config.model.reasoning.enabled else None,
+            device=args.device, checkpoint_path=args.checkpoint,
+            compatibility_lambda=float(config.model.compatibility.get("lambda", 1.0)),
+        )
 
 
 if __name__ == "__main__":

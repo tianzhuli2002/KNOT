@@ -27,3 +27,23 @@ change is disabling persistent data-loader workers when `num_workers == 0`. The 
 `nan_to_num` loss/feature substitutions, reduced hyperedge depth and disabled validation
 diagnostics conceal invalid physics state or change the model and are not carried over.
 The current-main prediction-label fix is already represented by the recorded main SHA.
+
+## Canonical real ttbar data
+
+The canonical real joint records are streamed from the following read-only VyPER Run-3
+products under `VyPER_ONNX/VyPER_run3/raw`:
+
+- `ttbar_SL_FM_8M_even.h5` and `ttbar_SL_FM_8M_odd.h5`;
+- `ttbar_dilep_30_4_run3_even.h5` and `ttbar_dilep_30_4_run3_odd.h5`.
+
+Their `save_even` and `split_mode` attributes identify disjoint source-row parity
+partitions. Historical VyPER logs used an internal random train/validation split within
+individual parity files, but did not define one consistent parity as test across all
+campaigns. JointEventReconstruction therefore records the explicit maintained policy:
+even is deterministically divided 95/5 into train/validation and odd is test.
+
+The dilepton sources contain ee, mu-mu and e-mu events. The canonical ttbar2L product
+selects exactly one labelled electron and one labelled muon with opposite source branch
+roles. Source JET label matching the electron role becomes canonical JET label 1 and the
+muon partner becomes label 2. Invisible storage remains unchanged and ordered
+`(nu_e, nu_mu)`.

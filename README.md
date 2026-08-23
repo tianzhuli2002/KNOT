@@ -20,7 +20,9 @@ The maintained joint model composes:
 - soft, hard-diagnostic or truth-oracle assignment conditioning;
 - detached posterior-mean/variance feedback for a second visible reasoning round; and
 - exact top-K complete assignments with `logZ` over the same non-null state space,
-  followed by batched `B × K × M` invisible generation.
+  followed by batched `B × K × M` invisible generation; and
+- an optional compact compatibility head for visible/invisible reranking. Its logit is
+  kept separate from the visible score and is not presented as a likelihood.
 
 There is deliberately no neutrino-regression mode.
 
@@ -32,8 +34,32 @@ conda activate joint-event-reconstruction
 python -m pip install -e .
 ```
 
-The physics datasets and stable split files are explicit in `configs/m0_*.yaml`.
+The physics datasets and stable split files are explicit in `configs/real_*.yaml`.
 Missing files are fatal.
+
+## Authoritative real data
+
+The maintained joint products are streamed directly from the event-aligned VyPER
+Run-3 HDF5 files; unrelated SB and VyPER rows are never joined. Semileptonic data have
+one role, `tlep.nu`, and dilepton data have two ordered roles,
+`(top_e.nu, top_mu.nu) = (nu_e, nu_mu)`. The electron and muon branches remain
+distinguishable.
+
+```bash
+python scripts/data/convert_vyper_joint.py --topology ttbar1L \
+  --output data/real/ttbar1L_canonical.h5
+python scripts/data/convert_vyper_joint.py --topology ttbar2L \
+  --output data/real/ttbar2L_canonical.h5
+
+python -m joint_event_reconstruction.cli.run validate-data \
+  --experiment configs/experiments/ttbar2L.yaml
+```
+
+`EVENT_ID = source_partition * 2^32 + source_row`, where partition zero is the
+source even file and partition one is the source odd file. The even partition is split
+deterministically into 95% training and 5% validation; the independent odd partition
+is test. Invisible scaling is fitted independently per role and Cartesian component
+on the selected training events only.
 
 ## Topology and configuration
 
@@ -43,8 +69,8 @@ name, and an invisible `[NEUTRINO, index]` leaf. References compile into a DAG; 
 declaration order is irrelevant. MET remains observed context and is not a decay
 daughter.
 
-The two primary configurations are `configs/experiments/ttbar1L.yaml` and
-`configs/experiments/ttH1L.yaml`. Behaviour is controlled by the component switches
+The primary configurations are `configs/experiments/ttbar1L.yaml`,
+`configs/experiments/ttbar2L.yaml`, and `configs/experiments/ttH1L.yaml`. Behaviour is controlled by the component switches
 under `model.reasoning`, `model.reconstruction.feedback`, `model.invisible`,
 `model.coupling`, and `inference`; stage names do not select code paths. Invalid
 combinations fail during configuration validation.
@@ -54,23 +80,37 @@ python -m joint_event_reconstruction.cli.run train \
   --experiment configs/experiments/ttbar1L.yaml
 
 python scripts/smoke_all.py --topology ttbar1L --device cpu --events 8
+python scripts/smoke_all.py --topology ttbar2L --real --device cuda --events 8
 python scripts/smoke_all.py --topology ttH1L --device cuda --events 16
 ```
 
-## Invisible truth
+Prediction and evaluation use one CLI and a validated, atomically replaced HDF5
+product:
+
+```bash
+python -m joint_event_reconstruction.cli.run predict \
+  --experiment configs/experiments/ttbar2L.yaml --checkpoint results/run/checkpoints/best-loss.ckpt \
+  --split test --output results/run/test_predictions.h5 --device cuda
+python -m joint_event_reconstruction.cli.run evaluate \
+  --experiment configs/experiments/ttbar2L.yaml --predictions results/run/test_predictions.h5
+```
+
+## Invisible truth and software smoke data
 
 The canonical sidecar contains integer `EVENT_ID [N]` and structured float32
 `LABELS/NEUTRINO [N,Rnu]` fields `px`, `py`, `pz`. It is joined strictly by event ID;
 row-wise fallback, missing IDs, duplicate IDs and malformed fields are fatal. Scaling
 statistics are fit on the selected training split only and stored with checkpoints.
 
-Real event-aligned neutrino truth is not currently available for these maintained
-visible samples. The following command creates deliberately shuffled synthetic truth
-for integration tests:
+Real event-aligned neutrino truth is available for the canonical ttbar1L and selected
+e-mu ttbar2L products. The following command remains available solely for fast,
+deliberately shuffled integration tests of the frozen visible cache:
 
 ```bash
 PYTHONPATH=src python scripts/data/make_synthetic_invisible.py \
   --experiment configs/experiments/ttbar1L.yaml \
+  --visible-config configs/m0_ttbar1L.yaml \
+  --tensor-cache /path/to/frozen/cache.pt \
   --output data/synthetic/ttbar1L.h5 --max-events 32
 ```
 

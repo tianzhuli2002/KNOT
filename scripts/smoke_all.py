@@ -24,6 +24,7 @@ MODES = (
     "visible_m1", "visible_recurrent_m2", "visible_feedback_m3",
     "standard_no_assignment", "edm_no_assignment", "standard_soft_c1", "edm_soft_c1",
     "edm_hard_diagnostic", "edm_truth_oracle", "edm_c2_detached", "topk_edm",
+    "joint_compatibility",
 )
 
 
@@ -68,15 +69,15 @@ def configure(base, mode):
     config.model.invisible.standard.inference_steps = 3
     config.model.invisible.edm.sigma_max = 10.0
     config.model.invisible.edm.inference_nfe = 5
-    recurrent = mode in {"visible_recurrent_m2", "visible_feedback_m3", "standard_soft_c1", "edm_soft_c1", "edm_c2_detached"}
-    feedback = mode in {"visible_feedback_m3", "standard_soft_c1", "edm_soft_c1", "edm_c2_detached"}
+    recurrent = mode in {"visible_recurrent_m2", "visible_feedback_m3", "standard_soft_c1", "edm_soft_c1", "edm_c2_detached", "joint_compatibility"}
+    feedback = mode in {"visible_feedback_m3", "standard_soft_c1", "edm_soft_c1", "edm_c2_detached", "joint_compatibility"}
     invisible = mode not in {"visible_m1", "visible_recurrent_m2", "visible_feedback_m3"}
     config.model.reasoning.enabled = recurrent
     config.model.reconstruction.feedback.enabled = feedback
     config.model.invisible.enabled = invisible
     config.model.invisible.formulation = "standard" if mode.startswith("standard") else "edm"
     assignment = "none"
-    if mode in {"standard_soft_c1", "edm_soft_c1", "edm_c2_detached", "topk_edm"}: assignment = "soft"
+    if mode in {"standard_soft_c1", "edm_soft_c1", "edm_c2_detached", "topk_edm", "joint_compatibility"}: assignment = "soft"
     if mode == "edm_hard_diagnostic": assignment = "hard"
     if mode == "edm_truth_oracle": assignment = "truth"
     config.model.invisible.conditioning.assignment = assignment
@@ -84,6 +85,7 @@ def configure(base, mode):
     config.model.coupling.rounds = 2 if mode == "edm_c2_detached" else 1
     config.model.coupling.invisible_to_reconstruction.enabled = mode == "edm_c2_detached"
     config.model.coupling.invisible_to_reconstruction.posterior_samples = 2
+    config.model.compatibility.enabled = mode == "joint_compatibility"
     config.inference.top_k_assignments = 2 if mode == "topk_edm" else 1
     config.inference.posterior_samples = 2 if mode == "topk_edm" else 1
     validate_experiment(config)
@@ -140,10 +142,10 @@ def run_mode(base, visible, batch, scaler, mode, device):
         differences = []
         generator = torch.Generator(device=device).manual_seed(4)
         for encoder in module.event_model.reconstruction.pair_encoders.values():
-            members = torch.randn((2, 3, 2, 105), generator=generator, device=device)
-            differences.append(float((encoder(members) - encoder(members.flip(2))).abs().max()))
+            members = torch.randn((2, 3, 2, int(config.model.visible.d_model)), generator=generator, device=device)
+            differences.append(float((encoder(members) - encoder(members.flip(2))).abs().max().detach()))
         if any(value != 0 for value in differences): raise RuntimeError("pair exchange symmetry is not exact")
-        summary["pair_symmetry_max_abs"] = max(differences)
+        summary["pair_symmetry_max_abs"] = max(differences, default=0.0)
     if mode == "visible_recurrent_m2":
         module.eval()
         with torch.inference_mode():
@@ -154,7 +156,7 @@ def run_mode(base, visible, batch, scaler, mode, device):
         summary["tested_steps"] = [1, 2, 4, 8]
     if mode == "visible_feedback_m3":
         feedback_gradient = sum(
-            float(parameter.grad.abs().sum()) for parameter in module.event_model.feedback.parameters()
+            float(parameter.grad.abs().sum().detach()) for parameter in module.event_model.feedback.parameters()
             if parameter.grad is not None
         )
         if feedback_gradient <= 0: raise RuntimeError("soft feedback has no gradient")
@@ -169,14 +171,17 @@ def run_mode(base, visible, batch, scaler, mode, device):
                 generator=torch.Generator(device=device).manual_seed(8),
             )
         if nfe != 3 or not torch.isfinite(generated).all(): raise RuntimeError("DDIM sampling failed")
-        summary.update({"nfe": nfe, "noise_mean": float(noise.mean()), "noise_std": float(noise.std())})
+        summary.update({
+            "nfe": nfe, "noise_mean": float(noise.mean().detach()),
+            "noise_std": float(noise.std().detach()),
+        })
     if mode.startswith("edm") or mode == "topk_edm":
         if "sigma" in output["invisible_training"] and not torch.isfinite(output["invisible_training"]["sigma"]).all():
             raise RuntimeError("EDM sigma is non-finite")
         summary["formulation"] = "edm"
     if mode in {"standard_soft_c1", "edm_soft_c1"}:
         gradient = sum(
-            float(parameter.grad.abs().sum()) for parameter in module.event_model.reconstruction.parameters()
+            float(parameter.grad.abs().sum().detach()) for parameter in module.event_model.reconstruction.parameters()
             if parameter.grad is not None
         )
         if gradient <= 0: raise RuntimeError("soft C1 has no reconstruction gradient")
@@ -195,6 +200,13 @@ def run_mode(base, visible, batch, scaler, mode, device):
                 output, batch["structured"], output["visible"]["pooled"], decoded,
                 output.get("node_context"),
             )
+            if base.experiment.name == "ttbar2L_joint":
+                role_order = [role.key for role in module.spec.invisible_roles]
+                if role_order != ["top_e.nu", "top_mu.nu"] or contexts.shape[2] != 2:
+                    raise RuntimeError(f"Dilepton invisible role association is wrong: {role_order}")
+                embedding = module.event_model.invisible.formulation.denoiser.role_embedding
+                if torch.equal(embedding[0], embedding[1]):
+                    raise RuntimeError("Electron and muon neutrinos do not have distinct role embeddings")
             generated, nfe = module.event_model.invisible.sample_hypotheses(
                 output["visible"], contexts, samples=2, budget=5,
                 generator=torch.Generator(device=device).manual_seed(9),
@@ -202,20 +214,42 @@ def run_mode(base, visible, batch, scaler, mode, device):
         if generated.shape[:3] != (len(batch["tokens"]), 2, 2) or nfe != 5:
             raise RuntimeError("K x M generation has incorrect shape or NFE")
         summary.update({"joint_shape": list(generated.shape), "nfe": nfe})
+    if mode == "joint_compatibility":
+        gradient = sum(
+            float(parameter.grad.abs().sum().detach())
+            for parameter in module.event_model.compatibility.parameters() if parameter.grad is not None
+        )
+        if gradient <= 0 or not torch.isfinite(output["compatibility_loss"]):
+            raise RuntimeError("Compatibility scoring has no finite training gradient")
+        summary.update({"compatibility_loss": float(output["compatibility_loss"].detach()), "compatibility_gradient_l1": gradient})
     return summary
 
 
-def run_experiment_smoke(experiment_path: Path, *, device: str, events: int, modes=None, continue_on_failure=False):
+def run_experiment_smoke(
+    experiment_path: Path, *, device: str, events: int, modes=None,
+    continue_on_failure=False, real_data: bool = False,
+):
     torch.set_num_threads(1)
     base = OmegaConf.load(experiment_path)
+    # The synthetic software smoke deliberately remains on the compact frozen
+    # visible cache. Physics-facing runs use canonical real data.
+    if base.experiment.name == "ttbar1L_joint" and not real_data:
+        base.visible_config = "configs/m0_ttbar1L.yaml"
+        base.data.tensor_cache = (
+            "/mnt/iusers01/fatpou01/phy01/w00238tl/scratch/SB_paper/results/"
+            "transformer_full_campaign_joint_first_v2/cache/"
+            "transformer_ttbar1L_semantic_reconstruction_full__jets8_lep1_met1__tok17__all__filelabels__458b8dcf1959.pt"
+        )
     for split in ("train", "val", "test"): base.data.max_events[split] = events
-    sidecar = Path("data/synthetic") / f"{base.experiment.name}_{events}.h5"
-    subprocess.run([
-        sys.executable, "scripts/data/make_synthetic_invisible.py", "--experiment", str(experiment_path),
-        "--output", str(sidecar), "--max-events", str(events), "--seed", str(base.experiment.seed),
-    ], check=True)
-    base.data.invisible.path = str(sidecar.resolve())
-    base.data.invisible.allow_synthetic = True
+    if not real_data:
+        sidecar = Path("data/synthetic") / f"{base.experiment.name}_{events}.h5"
+        subprocess.run([
+            sys.executable, "scripts/data/make_synthetic_invisible.py", "--experiment", str(experiment_path),
+            "--output", str(sidecar), "--max-events", str(events), "--seed", str(base.experiment.seed),
+            "--visible-config", str(base.visible_config), "--tensor-cache", str(base.data.tensor_cache),
+        ], check=True)
+        base.data.invisible.path = str(sidecar.resolve())
+        base.data.invisible.allow_synthetic = True
     visible = OmegaConf.load(base.visible_config)
     for split in ("train", "val", "test"):
         visible.dataset[f"{split}_batch_size"] = events
@@ -225,7 +259,8 @@ def run_experiment_smoke(experiment_path: Path, *, device: str, events: int, mod
     data_config = configure(base, "edm_no_assignment")
     data = StructuredDataModule(
         visible, data_config.topology_config, tensor_cache=data_config.data.tensor_cache,
-        invisible_path=data_config.data.invisible.path, allow_synthetic=True,
+        invisible_path=data_config.data.invisible.path,
+        allow_synthetic=bool(data_config.data.invisible.allow_synthetic),
         max_events={"train": events, "val": events, "test": events}, subset_seed=int(base.experiment.seed),
     )
     data.setup("fit")
@@ -248,15 +283,16 @@ def run_experiment_smoke(experiment_path: Path, *, device: str, events: int, mod
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--topology", required=True, choices=("ttbar1L", "ttH1L"))
+    parser.add_argument("--topology", required=True, choices=("ttbar1L", "ttbar2L", "ttH1L"))
     parser.add_argument("--device", default="cpu", choices=("cpu", "cuda"))
     parser.add_argument("--events", type=int, default=8)
     parser.add_argument("--mode", action="append", choices=MODES)
     parser.add_argument("--continue-on-failure", action="store_true")
+    parser.add_argument("--real", action="store_true")
     args = parser.parse_args()
     run_experiment_smoke(
         Path(f"configs/experiments/{args.topology}.yaml"), device=args.device, events=args.events,
-        modes=args.mode, continue_on_failure=args.continue_on_failure,
+        modes=args.mode, continue_on_failure=args.continue_on_failure, real_data=args.real,
     )
 
 

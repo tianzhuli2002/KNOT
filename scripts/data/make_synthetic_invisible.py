@@ -23,14 +23,20 @@ def main() -> None:
     parser.add_argument("--output", required=True)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--max-events", type=int)
+    parser.add_argument("--visible-config")
+    parser.add_argument("--tensor-cache")
     args = parser.parse_args()
     experiment_path = Path(args.experiment).resolve()
     config = OmegaConf.load(experiment_path)
-    visible_path = (experiment_path.parent.parent.parent / config.visible_config).resolve()
+    visible_name = args.visible_config or config.visible_config
+    visible_path = (experiment_path.parent.parent.parent / visible_name).resolve()
     visible = OmegaConf.load(visible_path)
     topology_path = (experiment_path.parent.parent.parent / config.topology_config).resolve()
     spec = load_topology(topology_path)
-    cache_path = Path(config.data.tensor_cache).expanduser().resolve()
+    cache_name = args.tensor_cache or config.data.tensor_cache
+    if cache_name is None:
+        raise ValueError("Synthetic sidecar generation requires an explicit tensor cache")
+    cache_path = Path(cache_name).expanduser().resolve()
     payload = torch.load(cache_path, map_location="cpu", weights_only=False)
     selected_cache_ids = np.asarray(payload["indices"], dtype=np.int64)
     split_file = np.load(Path(visible.dataset.split.indices_path).expanduser().resolve())
