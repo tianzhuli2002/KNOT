@@ -11,7 +11,9 @@ from torch.nn import functional as F
 from joint_event_reconstruction.flows.continuous import linear_path
 from joint_event_reconstruction.flows.discrete import MaskedDiscreteFlow
 from joint_event_reconstruction.models.joint_reasoner import TopologyFlowReasoner
-from joint_event_reconstruction.models.reconstruction.discrete_flow import AssignmentStateEncoder
+from joint_event_reconstruction.models.reconstruction.discrete_flow import (
+    AssignmentStateEncoder,
+)
 from joint_event_reconstruction.topology.assignments import AssignmentSpace
 from joint_event_reconstruction.topology.spec import TopologySpec
 
@@ -34,8 +36,41 @@ class JointStepOutput:
     local_assignment_probabilities: dict[str, torch.Tensor]
 
 
+def _repeat_visible(visible: dict, repeats: int) -> dict:
+    return {
+        "pooled": visible["pooled"].repeat_interleave(repeats, dim=0),
+        "tokens": visible["tokens"].repeat_interleave(repeats, dim=0),
+        "padding_mask": visible["padding_mask"].repeat_interleave(
+            repeats, dim=0
+        ),
+    }
+
+
+def _repeat_structured(structured: dict, repeats: int) -> dict:
+    """Repeat event-dependent pool/assignment tensors; keep static templates shared."""
+    pools = {}
+    for name, pool in structured["pools"].items():
+        pools[name] = dict(pool)
+        for field in ("candidate_mask", "truth_index", "reconstructable"):
+            if field in pool:
+                pools[name][field] = pool[field].repeat_interleave(
+                    repeats, dim=0
+                )
+    result = {"pools": pools}
+    if "assignments" in structured:
+        assignments = dict(structured["assignments"])
+        assignments["valid_mask"] = structured["assignments"][
+            "valid_mask"
+        ].repeat_interleave(repeats, dim=0)
+        assignments["truth_state"] = structured["assignments"][
+            "truth_state"
+        ].repeat_interleave(repeats, dim=0)
+        result["assignments"] = assignments
+    return result
+
+
 class JointFlow(nn.Module):
-    """Flow-specific shared dynamics; reconstruction and invisible models stay externally owned."""
+    """Flow-specific shared dynamics; reconstruction and invisible models stay external."""
 
     def __init__(
         self,
@@ -57,7 +92,12 @@ class JointFlow(nn.Module):
         self.spec = spec
         self.state_encoder = AssignmentStateEncoder(spec, d_model)
         self.reasoner = TopologyFlowReasoner(
-            spec, d_model, n_heads, block_layers, d_feedforward, dropout
+            spec,
+            d_model,
+            n_heads,
+            block_layers,
+            d_feedforward,
+            dropout,
         )
         self.discrete_flow = MaskedDiscreteFlow()
         self.recurrent_state = recurrent_state
@@ -70,10 +110,13 @@ class JointFlow(nn.Module):
         node_context: dict[str, torch.Tensor],
         assignment_expectation: dict[str, torch.Tensor],
     ) -> torch.Tensor:
-        return torch.stack([
-            node_context[role.node] + assignment_expectation[role.node]
-            for role in self.spec.invisible_roles
-        ], dim=1)
+        return torch.stack(
+            [
+                node_context[role.node] + assignment_expectation[role.node]
+                for role in self.spec.invisible_roles
+            ],
+            dim=1,
+        )
 
     def step(
         self,
@@ -112,7 +155,9 @@ class JointFlow(nn.Module):
         expected_assignment = self.state_encoder.expectation(
             complete_probabilities, space, candidate_embeddings
         )
-        parent_context = self._parent_context(node_context, expected_assignment)
+        parent_context = self._parent_context(
+            node_context, expected_assignment
+        )
         velocity = invisible.velocity(
             state.invisible, time, visible, parent_context
         )
@@ -197,7 +242,9 @@ class JointFlow(nn.Module):
             "assignment_logits": output.local_assignment_logits,
             "assignment_probabilities": output.local_assignment_probabilities,
             "complete_assignment_logits": output.complete_assignment_logits,
-            "complete_assignment_probabilities": output.complete_assignment_probabilities,
+            "complete_assignment_probabilities": (
+                output.complete_assignment_probabilities
+            ),
             "node_context": output.node_context,
             "topology_state": output.topology,
             "flow_time": time,
@@ -266,7 +313,9 @@ class JointFlow(nn.Module):
             "assignment_logits": output.local_assignment_logits,
             "assignment_probabilities": output.local_assignment_probabilities,
             "complete_assignment_logits": output.complete_assignment_logits,
-            "complete_assignment_probabilities": output.complete_assignment_probabilities,
+            "complete_assignment_probabilities": (
+                output.complete_assignment_probabilities
+            ),
             "node_context": output.node_context,
             "topology_state": output.topology,
             "flow_time": final_time,
@@ -284,10 +333,11 @@ class JointFlow(nn.Module):
         invisible: nn.Module,
     ) -> dict:
         if target.ndim != 3 or target.shape[1:] != (
-            len(self.spec.invisible_roles), 3
+            len(self.spec.invisible_roles),
+            3,
         ):
             raise ValueError(
-                f"Joint invisible target must be "
+                "Joint invisible target must be "
                 f"[B,{len(self.spec.invisible_roles)},3]"
             )
         space = AssignmentSpace.from_structured(structured)
@@ -324,23 +374,22 @@ class JointFlow(nn.Module):
         *,
         samples: int,
         steps: int,
+        sample_chunk_size: int = 1,
         generator: torch.Generator | None = None,
     ) -> dict:
-        if samples <= 0 or steps <= 0:
+        if samples <= 0 or steps <= 0 or sample_chunk_size <= 0:
             raise ValueError(
-                "Joint posterior samples and flow steps must be positive"
+                "Joint posterior samples, flow steps and sample_chunk_size "
+                "must be positive"
             )
         if invisible.formulation_name != "flow_matching":
             raise ValueError(
                 "JointFlow requires a continuous Flow Matching invisible model"
             )
-        space = AssignmentSpace.from_structured(structured)
-        candidates = reconstruction.encode_candidates(
+        base_space = AssignmentSpace.from_structured(structured)
+        base_candidates = reconstruction.encode_candidates(
             visible["tokens"], structured
         )
-        assignments = []
-        invisibles = []
-        final_outputs = []
         batch = len(visible["tokens"])
         schedule = torch.linspace(
             0,
@@ -349,16 +398,36 @@ class JointFlow(nn.Module):
             device=visible["tokens"].device,
             dtype=visible["tokens"].dtype,
         )
-        for _ in range(samples):
+        assignment_chunks = []
+        invisible_chunks = []
+        last_output = None
+        chunk_size = min(samples, sample_chunk_size)
+
+        for start in range(0, samples, chunk_size):
+            width = min(chunk_size, samples - start)
+            repeated_visible = _repeat_visible(visible, width)
+            repeated_structured = _repeat_structured(structured, width)
+            repeated_space = AssignmentSpace.from_structured(
+                repeated_structured
+            )
+            repeated_candidates = {
+                name: values.repeat_interleave(width, dim=0)
+                for name, values in base_candidates.items()
+            }
+            expanded_batch = batch * width
             state = JointFlowState(
                 assignment=torch.full(
-                    (batch,),
-                    space.mask_state,
+                    (expanded_batch,),
+                    base_space.mask_state,
                     dtype=torch.long,
                     device=visible["tokens"].device,
                 ),
                 invisible=torch.randn(
-                    (batch, len(self.spec.invisible_roles), 3),
+                    (
+                        expanded_batch,
+                        len(self.spec.invisible_roles),
+                        3,
+                    ),
                     device=visible["tokens"].device,
                     dtype=visible["tokens"].dtype,
                     generator=generator,
@@ -367,14 +436,14 @@ class JointFlow(nn.Module):
             )
             output = None
             for current, following in zip(schedule[:-1], schedule[1:]):
-                time = current.expand(batch)
+                time = current.expand(expanded_batch)
                 output = self.step(
-                    visible,
-                    structured,
+                    repeated_visible,
+                    repeated_structured,
                     reconstruction,
                     invisible,
-                    space,
-                    candidates,
+                    repeated_space,
+                    repeated_candidates,
                     state,
                     time,
                 )
@@ -386,25 +455,34 @@ class JointFlow(nn.Module):
                     state.assignment,
                     output.complete_assignment_logits,
                     time,
-                    following.expand(batch),
-                    mask_state=space.mask_state,
+                    following.expand(expanded_batch),
+                    mask_state=repeated_space.mask_state,
                     generator=generator,
                 )
                 state.topology = (
                     output.topology if self.recurrent_state else None
                 )
-            if (state.assignment == space.mask_state).any():
+            if (state.assignment == repeated_space.mask_state).any():
                 raise RuntimeError(
                     "Joint Flow ended with unresolved assignment MASK"
                 )
-            assignments.append(state.assignment)
-            invisibles.append(state.invisible)
-            final_outputs.append(output)
+            assignment_chunks.append(
+                state.assignment.reshape(batch, width)
+            )
+            invisible_chunks.append(
+                state.invisible.reshape(
+                    batch, width, len(self.spec.invisible_roles), 3
+                )
+            )
+            last_output = output
+
         return {
-            "assignment_state": torch.stack(assignments, dim=1),
-            "invisible": torch.stack(invisibles, dim=1),
-            "candidate_embeddings": candidates,
+            "assignment_state": torch.cat(assignment_chunks, dim=1),
+            "invisible": torch.cat(invisible_chunks, dim=1),
+            "candidate_embeddings": base_candidates,
             "nfe": steps,
+            "posterior_samples": samples,
+            "sample_chunk_size": chunk_size,
             "recurrent_state": self.recurrent_state,
-            "last_step": final_outputs[-1],
+            "last_step": last_output,
         }
