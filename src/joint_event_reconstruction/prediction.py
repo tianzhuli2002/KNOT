@@ -10,6 +10,11 @@ import h5py
 import numpy as np
 import torch
 
+from joint_event_reconstruction.assignment_semantics import (
+    NON_NULL_SUPPORT,
+    hdf5_support_attributes,
+    read_hdf5_support,
+)
 from joint_event_reconstruction.physics import compose_assignment_state
 from joint_event_reconstruction.topology.candidates import CandidateRecord
 from joint_event_reconstruction.topology.decoder import ScoredCandidate, decode_complete
@@ -37,6 +42,7 @@ def _create(
 
 
 def decode_batch(spec, batch: dict, output: dict, k: int):
+    """Decode exact top-k complete non-NULL assignment hypotheses."""
     decoded = []
     for event in range(len(batch["tokens"])):
         scored = {}
@@ -65,9 +71,7 @@ def decode_batch(spec, batch: dict, output: dict, k: int):
                     bool(index == int(pool["truth_index"][event])),
                 )
                 probability = float(
-                    output["assignment_probabilities"][root][
-                        event, index + 1
-                    ]
+                    output["assignment_probabilities"][root][event, index + 1]
                     .detach()
                     .cpu()
                 )
@@ -77,7 +81,7 @@ def decode_batch(spec, batch: dict, output: dict, k: int):
         if len(result.assignments) < k:
             raise RuntimeError(
                 f"EVENT_ID={int(batch['event_index'][event])} has only "
-                f"{len(result.assignments)} complete hypotheses"
+                f"{len(result.assignments)} complete non-null hypotheses"
             )
         decoded.append(result)
     return decoded
@@ -115,16 +119,10 @@ def _truth_node_indices(spec, batch: dict, event: int) -> torch.Tensor:
     ).to(torch.long)
 
 
-def _compose_physics(
-    module,
-    batch: dict,
-    assignments,
-    samples: torch.Tensor,
-):
-    """Compose [B,K,M] topology hypotheses from already generated neutrinos."""
+def _compose_physics(module, batch: dict, assignments, samples: torch.Tensor):
     if "physics_vectors" not in batch:
         return None, None, None
-    batch_size, top_k, posterior_samples = samples.shape[:3]
+    batch_size, _, posterior_samples = samples.shape[:3]
     composite_values = {node: [] for node in module.spec.dag_order}
     truth_values = {node: [] for node in module.spec.dag_order}
 
@@ -150,9 +148,7 @@ def _compose_physics(
                 for node in module.spec.dag_order:
                     hypothesis_values[node].append(composed[node])
             for node in module.spec.dag_order:
-                event_values[node].append(
-                    torch.stack(hypothesis_values[node])
-                )
+                event_values[node].append(torch.stack(hypothesis_values[node]))
         for node in module.spec.dag_order:
             composite_values[node].append(torch.stack(event_values[node]))
 
@@ -185,9 +181,7 @@ def _compose_physics(
     if met_type is not None:
         met_mask = batch["type_ids"] == int(met_type)
         if not (met_mask.sum(dim=1) == 1).all():
-            raise RuntimeError(
-                "Prediction physics output requires exactly one MET token"
-            )
+            raise RuntimeError("Prediction physics output requires exactly one MET token")
         observed_met = (
             batch["physics_vectors"][met_mask]
             .reshape(batch_size, 4)
@@ -202,7 +196,7 @@ def _generate_invisible(
     module,
     batch: dict,
     output: dict,
-    assignments,
+    decoded,
     *,
     top_k: int,
     posterior_samples: int,
@@ -216,7 +210,7 @@ def _generate_invisible(
             output,
             batch["structured"],
             output["visible"]["pooled"],
-            [item.assignments for item in assignments],
+            [item.assignments for item in decoded],
             output.get("node_context"),
         )
         scaled, nfe = generator.sample_hypotheses(
@@ -234,12 +228,9 @@ def _generate_invisible(
     generated, nfe = generator.sample(
         output["visible"], parent, samples=posterior_samples
     )
-    # Preserve a common [B,K,M,Rnu,3] storage shape. These are views of one
-    # unique event posterior; metadata records that only one generative branch
-    # exists so evaluation never treats the repeated K axis as new samples.
-    scaled = generated.unsqueeze(1).expand(
-        -1, top_k, -1, -1, -1
-    )
+    # Common storage is [B,K,M,Rnu,3]. Non-hypothesis modes have one unique
+    # posterior branch; K contains repeated views and is not counted as new samples.
+    scaled = generated.unsqueeze(1).expand(-1, top_k, -1, -1, -1)
     return scaled, nfe, 1
 
 
@@ -271,6 +262,7 @@ def predict_hdf5(
         temporary.unlink()
     module = module.to(device).eval()
     datasets = None
+
     with h5py.File(temporary, "w") as destination, torch.inference_mode():
         source_path = Path(data.h5_path).expanduser().resolve()
         source_stat = source_path.stat()
@@ -284,6 +276,7 @@ def predict_hdf5(
                 "schema_version": PREDICTION_SCHEMA,
                 "model_mode": "factorized",
                 "assignment_formulation": "discriminative",
+                **hdf5_support_attributes(NON_NULL_SUPPORT),
                 "topology_signature": module.spec.signature,
                 "architecture_signature_version": int(
                     module.hparams.architecture_signature_version
@@ -295,12 +288,8 @@ def predict_hdf5(
                     else "untrained"
                 ),
                 "split": split,
-                "recurrent_steps": (
-                    -1 if recurrent_steps is None else recurrent_steps
-                ),
-                "invisible_formulation": (
-                    module.hparams.invisible_formulation or "disabled"
-                ),
+                "recurrent_steps": -1 if recurrent_steps is None else recurrent_steps,
+                "invisible_formulation": module.hparams.invisible_formulation or "disabled",
                 "invisible_assignment_conditioning": assignment_mode,
                 "invisible_hypotheses_conditioned_on_complete_assignment": (
                     assignment_mode == "hypothesis"
@@ -311,9 +300,7 @@ def predict_hdf5(
                     [role.key for role in module.spec.invisible_roles]
                 ),
                 "scaler": (
-                    json.dumps(scaler.as_dict())
-                    if scaler is not None
-                    else "null"
+                    json.dumps(scaler.as_dict()) if scaler is not None else "null"
                 ),
                 "compatibility_is_normalised_likelihood": False,
                 "source_data": str(source_path),
@@ -343,12 +330,9 @@ def predict_hdf5(
                 dtype=np.float32,
             )
             logz = np.asarray(
-                [item.log_normalisation for item in decoded],
-                dtype=np.float32,
+                [item.log_normalisation for item in decoded], dtype=np.float32
             )
-            constrained = np.exp(
-                log_scores - logz[:, None]
-            ).astype(np.float32)
+            constrained = np.exp(log_scores - logz[:, None]).astype(np.float32)
             truth = np.asarray(
                 [[hyp.truth for hyp in event] for event in assignments],
                 dtype=np.bool_,
@@ -356,9 +340,7 @@ def predict_hdf5(
 
             jet_type = data.schema.source_type_ids.get("JET")
             if jet_type is None:
-                raise RuntimeError(
-                    "Prediction schema has no JET source for Njet diagnostics"
-                )
+                raise RuntimeError("Prediction schema has no JET source for Njet diagnostics")
             njet = (
                 (batch["type_ids"] == jet_type) & ~batch["padding_mask"]
             ).sum(dim=1).cpu().numpy().astype(np.int16)
@@ -382,10 +364,7 @@ def predict_hdf5(
                 mean = samples.mean(axis=2)
                 std = samples.std(axis=2)
                 composites, truth_composites, observed_met = _compose_physics(
-                    module,
-                    batch,
-                    assignments,
-                    samples_tensor,
+                    module, batch, assignments, samples_tensor
                 )
 
                 if module.event_model.compatibility is not None:
@@ -406,9 +385,9 @@ def predict_hdf5(
                             )
                         assignment_summary.append(torch.stack(event_summary))
                     assignment_summary = torch.stack(assignment_summary)
-                    event_context = output["visible"]["pooled"][
-                        :, None, None
-                    ].expand(-1, top_k, posterior_samples, -1)
+                    event_context = output["visible"]["pooled"][:, None, None].expand(
+                        -1, top_k, posterior_samples, -1
+                    )
                     assignment_context = assignment_summary[:, :, None].expand(
                         -1, -1, posterior_samples, -1
                     )
@@ -421,9 +400,7 @@ def predict_hdf5(
                         .numpy()
                         .astype(np.float32)
                     )
-                    final_score = (
-                        log_scores + compatibility_lambda * compatibility
-                    )
+                    final_score = log_scores + compatibility_lambda * compatibility
                     final_rank = np.argsort(
                         -final_score, axis=1, kind="stable"
                     ).astype(np.int32)
@@ -443,19 +420,11 @@ def predict_hdf5(
                         "<i4",
                     ),
                     "log_scores": _create(
-                        visible_group,
-                        "assignment_log_scores",
-                        (top_k,),
-                        "<f4",
+                        visible_group, "assignment_log_scores", (top_k,), "<f4"
                     ),
-                    "logz": _create(
-                        visible_group, "exact_logZ", (), "<f4"
-                    ),
+                    "logz": _create(visible_group, "exact_logZ", (), "<f4"),
                     "probabilities": _create(
-                        visible_group,
-                        "constrained_probabilities",
-                        (top_k,),
-                        "<f4",
+                        visible_group, "constrained_probabilities", (top_k,), "<f4"
                     ),
                     "truth_assignment": _create(
                         truth_group, "topk_assignment", (top_k,), "?"
@@ -485,10 +454,7 @@ def predict_hdf5(
                     )
                 if samples is not None:
                     datasets["samples"] = _create(
-                        invisible_group,
-                        "samples",
-                        samples.shape[1:],
-                        "<f4",
+                        invisible_group, "samples", samples.shape[1:], "<f4"
                     )
                     datasets["mean"] = _create(
                         invisible_group, "mean", mean.shape[1:], "<f4"
@@ -511,21 +477,13 @@ def predict_hdf5(
                     ] = nfe * unique_branches * posterior_samples
                     if composites is not None:
                         composite_group = destination.create_group("COMPOSITES")
-                        truth_composite_group = truth_group.create_group(
-                            "COMPOSITES"
-                        )
+                        truth_composite_group = truth_group.create_group("COMPOSITES")
                         for node, values in composites.items():
                             datasets[f"composite/{node}"] = _create(
-                                composite_group,
-                                node,
-                                values.shape[1:],
-                                "<f4",
+                                composite_group, node, values.shape[1:], "<f4"
                             )
                             datasets[f"truth_composite/{node}"] = _create(
-                                truth_composite_group,
-                                node,
-                                (4,),
-                                "<f4",
+                                truth_composite_group, node, (4,), "<f4"
                             )
                     if observed_met is not None:
                         datasets["observed_met"] = _create(
@@ -533,10 +491,7 @@ def predict_hdf5(
                         )
                 if compatibility is not None:
                     datasets["compatibility"] = _create(
-                        joint_group,
-                        "compatibility_logit",
-                        (top_k,),
-                        "<f4",
+                        joint_group, "compatibility_logit", (top_k,), "<f4"
                     )
                     datasets["final_score"] = _create(
                         joint_group, "final_score", (top_k,), "<f4"
@@ -544,9 +499,7 @@ def predict_hdf5(
                     datasets["final_rank"] = _create(
                         joint_group, "rank_indices", (top_k,), "<i4"
                     )
-                    joint_group.attrs[
-                        "compatibility_lambda"
-                    ] = compatibility_lambda
+                    joint_group.attrs["compatibility_weight"] = compatibility_lambda
 
             _append(
                 datasets["event"],
@@ -561,19 +514,12 @@ def predict_hdf5(
             for node in module.spec.dag_order:
                 probabilities = output["assignment_probabilities"][node]
                 selected = probabilities.argmax(dim=1) - 1
-                local_truth = batch["structured"]["pools"][node][
-                    "truth_index"
-                ]
+                local_truth = batch["structured"]["pools"][node]["truth_index"]
                 safe = local_truth.clamp_min(0)
-                rows = torch.arange(
-                    len(probabilities), device=probabilities.device
-                )
-                truth_probability = probabilities[rows, safe + 1] * (
-                    local_truth >= 0
-                )
+                rows = torch.arange(len(probabilities), device=probabilities.device)
+                truth_probability = probabilities[rows, safe + 1] * (local_truth >= 0)
                 entropy = -(
-                    probabilities
-                    * probabilities.clamp_min(1e-12).log()
+                    probabilities * probabilities.clamp_min(1e-12).log()
                 ).sum(dim=1)
                 top2 = probabilities.topk(
                     min(2, probabilities.shape[1]), dim=1
@@ -593,9 +539,7 @@ def predict_hdf5(
                 )
                 _append(
                     datasets[f"{node}/reconstructable"],
-                    batch["structured"]["pools"][node][
-                        "reconstructable"
-                    ]
+                    batch["structured"]["pools"][node]["reconstructable"]
                     .cpu()
                     .numpy(),
                 )
@@ -623,8 +567,7 @@ def predict_hdf5(
                     for node, values in composites.items():
                         _append(datasets[f"composite/{node}"], values)
                         _append(
-                            datasets[f"truth_composite/{node}"],
-                            truth_composites[node],
+                            datasets[f"truth_composite/{node}"], truth_composites[node]
                         )
                 if observed_met is not None:
                     _append(datasets["observed_met"], observed_met)
@@ -641,11 +584,14 @@ def validate_prediction(path: str | Path) -> None:
     with h5py.File(path, "r") as source:
         if source.attrs.get("schema_version") != PREDICTION_SCHEMA:
             raise ValueError(f"Invalid prediction schema in {path}")
+        support = read_hdf5_support(source)
+        if support["name"] != NON_NULL_SUPPORT:
+            raise ValueError(
+                "Discriminative complete prediction must use non-null support"
+            )
         count = len(source["EVENT_ID"])
         if count == 0 or len(np.unique(source["EVENT_ID"][:])) != count:
-            raise ValueError(
-                f"Prediction output {path} is empty or has duplicate EVENT_ID"
-            )
+            raise ValueError(f"Prediction output {path} is empty or has duplicate EVENT_ID")
         for name in (
             "VISIBLE/assignment_log_scores",
             "VISIBLE/exact_logZ",
@@ -663,9 +609,7 @@ def validate_prediction(path: str | Path) -> None:
                 ]
             )
             if branches not in {1, int(source.attrs["K"])}:
-                raise ValueError(
-                    "Factorized invisible branch count must be 1 or K"
-                )
+                raise ValueError("Factorized invisible branch count must be 1 or K")
 
 
 def _to_device(value, device):
