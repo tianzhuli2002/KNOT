@@ -122,15 +122,12 @@ class StructuredCollator:
         templates = {}
         for node_name in self.spec.dag_order:
             candidates = records[node_name]
-            ownership = torch.zeros(
-                (len(candidates), token_count), dtype=torch.bool
-            )
+            ownership = torch.zeros((len(candidates), token_count), dtype=torch.bool)
             leaf_indices = {
                 role.key: torch.full(
                     (len(candidates), role.multiplicity), -1, dtype=torch.long
                 )
-                for role in self.spec.nodes[node_name].leaf_roles
-                if not role.invisible
+                for role in self.spec.nodes[node_name].leaf_roles if not role.invisible
             }
             child_indices = {
                 role.key: torch.full((len(candidates),), -1, dtype=torch.long)
@@ -145,9 +142,7 @@ class StructuredCollator:
                 for role_key, child_index in candidate.children:
                     child_indices[role_key][candidate.index] = child_index
                 for source, local_index in candidate.leaf_ownership:
-                    ownership[
-                        candidate.index, source_positions[source][local_index]
-                    ] = True
+                    ownership[candidate.index, source_positions[source][local_index]] = True
             templates[node_name] = {
                 "leaf_ownership": ownership,
                 "leaf_indices": leaf_indices,
@@ -161,7 +156,6 @@ class StructuredCachedDataset(Dataset):
 
     def __init__(self, payload: dict, positions):
         import numpy as np
-
         self.payload = payload
         self.positions = np.asarray(positions, dtype=np.int64)
 
@@ -183,24 +177,14 @@ class StructuredCachedDataset(Dataset):
 
 class StructuredDataModule(TransformerDataModule):
     def __init__(
-        self,
-        config,
-        topology_path: str | Path,
-        *,
-        tensor_cache: str | Path | None = None,
-        invisible_path: str | Path | None = None,
-        allow_synthetic: bool = False,
-        max_events: dict | None = None,
-        subset_seed: int = 42,
+        self, config, topology_path: str | Path, *, tensor_cache: str | Path | None = None,
+        invisible_path: str | Path | None = None, allow_synthetic: bool = False,
+        max_events: dict | None = None, subset_seed: int = 42,
     ):
-        self.tensor_cache = (
-            None if tensor_cache is None else Path(tensor_cache).expanduser().resolve()
-        )
+        self.tensor_cache = None if tensor_cache is None else Path(tensor_cache).expanduser().resolve()
         config.dataset.cache.enabled = False
         super().__init__(config)
-        self.structured_collator = StructuredCollator(
-            topology_path, dict(self.schema.source_type_ids)
-        )
+        self.structured_collator = StructuredCollator(topology_path, dict(self.schema.source_type_ids))
         self.invisible_path = invisible_path
         self.allow_synthetic = allow_synthetic
         self.max_events = max_events
@@ -217,127 +201,93 @@ class StructuredDataModule(TransformerDataModule):
             self._joint_setup_done = True
             return
         if not self.tensor_cache.is_file():
-            raise FileNotFoundError(
-                f"Explicit tensor cache does not exist: {self.tensor_cache}"
-            )
+            raise FileNotFoundError(f"Explicit tensor cache does not exist: {self.tensor_cache}")
         manifest_path = self.tensor_cache.with_suffix(".json")
         if not manifest_path.is_file():
-            raise FileNotFoundError(
-                f"Explicit tensor cache has no manifest: {manifest_path}"
-            )
+            raise FileNotFoundError(f"Explicit tensor cache has no manifest: {manifest_path}")
         import json
         import numpy as np
-
         manifest = json.loads(manifest_path.read_text())
         expected = {
             "runtime_input_h5_path": str(Path(self.h5_path).expanduser().resolve()),
             "token_feature_dim": int(self.schema.dim),
             "token_features": list(self.schema.names),
             "source_type_ids": dict(self.schema.source_type_ids),
-            "widths": {
-                key: int(value) for key, value in self.configured_widths.items()
-            },
-            "reconstruction": OmegaConf.to_container(
-                self.reconstruction_cfg, resolve=True
-            ),
+            "widths": {key: int(value) for key, value in self.configured_widths.items()},
+            "reconstruction": OmegaConf.to_container(self.reconstruction_cfg, resolve=True),
         }
         observed = {key: manifest.get(key) for key in expected}
-        observed["runtime_input_h5_path"] = str(
-            Path(observed["runtime_input_h5_path"]).resolve()
-        )
+        observed["runtime_input_h5_path"] = str(Path(observed["runtime_input_h5_path"]).resolve())
         if observed != expected:
-            raise ValueError(
-                f"Explicit tensor cache manifest mismatch: "
-                f"expected={expected}, observed={observed}"
-            )
-        payload = torch.load(
-            self.tensor_cache, map_location="cpu", weights_only=False
-        )
-        payload_indices = torch.as_tensor(
-            payload.get("indices"), dtype=torch.long
-        ).numpy()
+            raise ValueError(f"Explicit tensor cache manifest mismatch: expected={expected}, observed={observed}")
+        payload = torch.load(self.tensor_cache, map_location="cpu", weights_only=False)
+        payload_indices = torch.as_tensor(payload.get("indices"), dtype=torch.long).numpy()
         selected = np.asarray(self.split_indices["selected"], dtype=np.int64)
         if not np.array_equal(payload_indices, selected):
             raise ValueError(
-                "Explicit tensor cache event indices do not equal the stable "
-                f"selected split: cache={len(payload_indices)}, selected={len(selected)}"
+                "Explicit tensor cache event indices do not equal the stable selected split: "
+                f"cache={len(payload_indices)}, selected={len(selected)}"
             )
 
         def selected_positions(indices):
             indices = np.asarray(indices, dtype=np.int64)
             positions = np.searchsorted(selected, indices)
-            if (positions >= len(selected)).any() or not np.array_equal(
-                selected[positions], indices
-            ):
-                raise ValueError(
-                    "Stable split contains an event absent from the explicit tensor cache"
-                )
+            if (positions >= len(selected)).any() or not np.array_equal(selected[positions], indices):
+                raise ValueError("Stable split contains an event absent from the explicit tensor cache")
             return positions
 
         self.cache_payload = payload
-        self.train_dataset = StructuredCachedDataset(
-            payload, selected_positions(self.split_indices["train"])
-        )
-        self.val_dataset = StructuredCachedDataset(
-            payload, selected_positions(self.split_indices["validation"])
-        )
-        self.test_dataset = StructuredCachedDataset(
-            payload, selected_positions(self.split_indices["test"])
-        )
+        self.train_dataset = StructuredCachedDataset(payload, selected_positions(self.split_indices["train"]))
+        self.val_dataset = StructuredCachedDataset(payload, selected_positions(self.split_indices["validation"]))
+        self.test_dataset = StructuredCachedDataset(payload, selected_positions(self.split_indices["test"]))
         self._apply_event_limits_and_invisible_truth()
         self._joint_setup_done = True
+
+    def _selected_ids(self, split_name: str, positions):
+        import numpy as np
+        rows = np.asarray(self.split_indices[split_name], dtype=np.int64)[positions]
+        with h5py.File(self.h5_path, "r") as source:
+            return source["EVENT_ID"][rows] if "EVENT_ID" in source else rows
 
     def _apply_event_limits_and_invisible_truth(self):
         import numpy as np
         from torch.utils.data import Subset
 
-        if self.invisible_path is not None:
-            store = InvisibleTruthStore(
-                self.invisible_path,
-                len(self.structured_collator.spec.invisible_roles),
-                allow_synthetic=self.allow_synthetic,
-            )
-            train_rows = np.asarray(self.split_indices["train"], dtype=np.int64)
-            with h5py.File(self.h5_path, "r") as source:
-                train_ids = (
-                    source["EVENT_ID"][train_rows]
-                    if "EVENT_ID" in source
-                    else train_rows
-                )
-            full_train_truth = store.lookup(train_ids)
-            self.invisible_scaler = InvisibleScaler.fit(
-                full_train_truth,
-                tuple(
-                    role.key for role in self.structured_collator.spec.invisible_roles
-                ),
-            )
-            self.structured_collator.invisible_store = store
-            self.structured_collator.invisible_scaler = self.invisible_scaler
-
         split_names = {"train": "train", "val": "validation", "test": "test"}
+        selected_positions = {}
         for offset, (loader_name, split_name) in enumerate(split_names.items()):
             dataset = getattr(self, f"{loader_name}_dataset")
-            count = (
-                None if self.max_events is None else self.max_events.get(loader_name)
-            )
+            count = None if self.max_events is None else self.max_events.get(loader_name)
             positions = np.arange(len(dataset), dtype=np.int64)
             if count is not None and int(count) < len(positions):
                 rng = np.random.default_rng(self.subset_seed + offset)
-                positions = np.sort(
-                    rng.choice(positions, size=int(count), replace=False)
-                )
-                setattr(
-                    self,
-                    f"{loader_name}_dataset",
-                    Subset(dataset, positions.tolist()),
-                )
+                positions = np.sort(rng.choice(positions, size=int(count), replace=False))
+                setattr(self, f"{loader_name}_dataset", Subset(dataset, positions.tolist()))
+            selected_positions[loader_name] = positions
+
+        if self.invisible_path is None:
+            return
+
+        store = InvisibleTruthStore(
+            self.invisible_path, len(self.structured_collator.spec.invisible_roles),
+            allow_synthetic=self.allow_synthetic,
+        )
+        if store.synthetic:
+            scaler_ids = self._selected_ids("train", selected_positions["train"])
+        else:
+            full_train = np.arange(len(self.split_indices["train"]), dtype=np.int64)
+            scaler_ids = self._selected_ids("train", full_train)
+        train_truth = store.lookup(scaler_ids)
+        self.invisible_scaler = InvisibleScaler.fit(
+            train_truth, tuple(role.key for role in self.structured_collator.spec.invisible_roles),
+        )
+        self.structured_collator.invisible_store = store
+        self.structured_collator.invisible_scaler = self.invisible_scaler
 
     def _loader(self, dataset, split: str, shuffle: bool) -> DataLoader:
         return DataLoader(
-            dataset,
-            batch_size=int(self.config[f"{split}_batch_size"]),
-            shuffle=shuffle,
-            collate_fn=self.structured_collator,
+            dataset, batch_size=int(self.config[f"{split}_batch_size"]),
+            shuffle=shuffle, collate_fn=self.structured_collator,
             **self._dataloader_kwargs(split),
         )
 
