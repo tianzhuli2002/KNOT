@@ -23,12 +23,29 @@ def _energy_score(samples: np.ndarray, truth: np.ndarray) -> float:
     return float(np.mean(data_term - 0.5 * sample_term))
 
 
+def _single_event_energy(samples: np.ndarray, truth: np.ndarray) -> float:
+    flat = samples.reshape(len(samples), -1)
+    target = truth.reshape(-1)
+    data_term = np.linalg.norm(flat - target[None], axis=-1).mean()
+    pair = np.linalg.norm(flat[:, None] - flat[None, :], axis=-1).mean()
+    return float(data_term - 0.5 * pair)
+
+
 def _empirical_mode(states: np.ndarray) -> np.ndarray:
     modes = np.empty(len(states), dtype=states.dtype)
     for event, values in enumerate(states):
         unique, counts = np.unique(values, return_counts=True)
         modes[event] = unique[np.argmax(counts)]
     return modes
+
+
+def _empirical_entropy(states: np.ndarray) -> np.ndarray:
+    result = np.empty(len(states), dtype=np.float64)
+    for event, values in enumerate(states):
+        _, counts = np.unique(values, return_counts=True)
+        probabilities = counts / counts.sum()
+        result[event] = -np.sum(probabilities * np.log(probabilities))
+    return result
 
 
 def _kinematics(vectors: np.ndarray) -> dict[str, np.ndarray]:
@@ -92,6 +109,52 @@ def _composite_metrics(predicted: np.ndarray, truth: np.ndarray) -> dict:
     return result
 
 
+def _truth_assignment_continuous_diagnostic(
+    samples: np.ndarray,
+    truth: np.ndarray,
+    truth_hit: np.ndarray,
+    roles: list[str],
+) -> dict | None:
+    eligible = truth_hit.any(axis=1)
+    if not eligible.any():
+        return None
+    energy = []
+    role_energy = {role: [] for role in roles}
+    event_means = []
+    targets = []
+    sample_counts = []
+    for event in np.flatnonzero(eligible):
+        selected = samples[event, truth_hit[event]]
+        sample_counts.append(len(selected))
+        energy.append(_single_event_energy(selected, truth[event]))
+        event_means.append(selected.mean(axis=0))
+        targets.append(truth[event])
+        for role_index, role in enumerate(roles):
+            role_energy[role].append(
+                _single_event_energy(
+                    selected[:, role_index], truth[event, role_index]
+                )
+            )
+    means = np.stack(event_means)
+    targets = np.stack(targets)
+    result = {
+        "diagnostic_not_end_to_end": True,
+        "events_with_at_least_one_truth_assignment_sample": int(eligible.sum()),
+        "mean_truth_assignment_samples_for_these_events": float(np.mean(sample_counts)),
+        "energy_score_joint": float(np.mean(energy)),
+        "roles": {},
+    }
+    for role_index, role in enumerate(roles):
+        residual = means[:, role_index] - targets[:, role_index]
+        result["roles"][role] = {
+            "energy_score": float(np.mean(role_energy[role])),
+            "px_rmse": float(np.sqrt(np.mean(residual[:, 0] ** 2))),
+            "py_rmse": float(np.sqrt(np.mean(residual[:, 1] ** 2))),
+            "pz_rmse": float(np.sqrt(np.mean(residual[:, 2] ** 2))),
+        }
+    return result
+
+
 def evaluate_joint_predictions(path: str | Path) -> dict:
     path = Path(path).expanduser().resolve()
     validate_joint_prediction(path)
@@ -102,6 +165,7 @@ def evaluate_joint_predictions(path: str | Path) -> dict:
         truth_state = source["TRUTH/assignment_state"][:]
         truth_hit = states == truth_state[:, None]
         mode = _empirical_mode(states)
+        entropy = _empirical_entropy(states)
         njet = source["OBSERVED/njet"][:]
         samples = source["HYPOTHESES/invisible"][:]
         truth = source["TRUTH/NEUTRINO"][:]
@@ -119,9 +183,23 @@ def evaluate_joint_predictions(path: str | Path) -> dict:
             "assignment_formulation": "flow_matching",
             "invisible_formulation": "flow_matching",
             "flow_steps": int(source.attrs["flow_steps"]),
-            "actual_nfe": int(source.attrs["actual_nfe"]),
             "nfe_per_sample": int(source.attrs["nfe_per_sample"]),
-            "network_calls_per_event": int(source.attrs["network_calls_per_event"]),
+            "sample_chunk_size": int(source.attrs.get("sample_chunk_size", 1)),
+            "posterior_chunk_count": int(
+                source.attrs.get("posterior_chunk_count", len(states[0]))
+            ),
+            "batched_network_evaluations_per_event": int(
+                source.attrs.get(
+                    "batched_network_evaluations_per_event",
+                    int(source.attrs["flow_steps"]) * len(states[0]),
+                )
+            ),
+            "sample_equivalent_nfe_per_event": int(
+                source.attrs.get(
+                    "sample_equivalent_nfe_per_event",
+                    int(source.attrs["flow_steps"]) * len(states[0]),
+                )
+            ),
             "posterior_samples": int(source.attrs["posterior_samples"]),
             "recurrent_state": bool(source.attrs["recurrent_state"]),
             "assignment_state_count": int(source.attrs["assignment_state_count"]),
@@ -132,6 +210,8 @@ def evaluate_joint_predictions(path: str | Path) -> dict:
                 "unique_states_mean": float(
                     np.mean([len(np.unique(event)) for event in states])
                 ),
+                "empirical_entropy_mean": float(entropy.mean()),
+                "effective_state_count_mean": float(np.exp(entropy).mean()),
                 "probabilities_are_monte_carlo_estimates": True,
                 "mode_accuracy_vs_njet": {
                     str(int(value)): {
@@ -144,6 +224,7 @@ def evaluate_joint_predictions(path: str | Path) -> dict:
                 },
             },
             "invisible": {
+                "interpretation": "native joint posterior samples p(A,nu|X)",
                 "energy_score_joint": _energy_score(samples, truth),
                 "roles": {},
             },
@@ -180,6 +261,14 @@ def evaluate_joint_predictions(path: str | Path) -> dict:
                 samples[:, :, role_index], truth[:, role_index]
             )
             result["invisible"]["roles"][role_name] = role_result
+
+        diagnostic = _truth_assignment_continuous_diagnostic(
+            samples, truth, truth_hit, roles
+        )
+        if diagnostic is not None:
+            result["invisible"][
+                "conditional_on_sampled_truth_assignment"
+            ] = diagnostic
 
         if "COMPOSITES" in source and "TRUTH/COMPOSITES" in source:
             result["physics"] = {
