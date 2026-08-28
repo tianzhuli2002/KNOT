@@ -235,8 +235,7 @@ class StructuredCollator:
                     f"states={assignment_template.state_count}, "
                     f"max_states={self.max_assignment_states}, roots={root_sizes}, "
                     f"topology={self.topology_path}. Increase "
-                    "model.reconstruction.flow_matching.max_states only after "
-                    "checking memory scaling."
+                    "data.max_assignment_states only after checking memory scaling."
                 )
         return templates, assignment_template
 
