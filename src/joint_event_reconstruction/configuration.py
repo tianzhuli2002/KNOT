@@ -16,7 +16,7 @@ from joint_event_reconstruction.public_config import (
 TOP_LEVEL_KEYS = {
     "experiment",
     "topology_config",
-    "visible_config",
+    "data_config",
     "data",
     "model",
     "inference",
@@ -98,7 +98,7 @@ def load_experiment(
 
 
 def load_visible_config(experiment: DictConfig) -> DictConfig:
-    """Return the explicit visible-loader config derived from JER data+topology YAMLs."""
+    """Build the explicit fixed-token loader config from JER data+topology config."""
     return build_visible_loader_config(experiment)
 
 
@@ -109,8 +109,8 @@ def validate_experiment(config: DictConfig) -> None:
     if not str(config.experiment.name).strip():
         raise ValueError("experiment.name must be non-empty")
     int(config.experiment.seed)
-    if not str(config.topology_config).strip() or not str(config.visible_config).strip():
-        raise ValueError("resolved topology_config and visible_config must be non-empty")
+    if not str(config.topology_config).strip() or not str(config.data_config).strip():
+        raise ValueError("resolved topology_config and data_config must be non-empty")
 
     data = config.data
     _exact_keys(data, {"tensor_cache", "max_events", "max_assignment_states", "invisible"}, "data")
@@ -195,9 +195,16 @@ def validate_experiment(config: DictConfig) -> None:
     if mode == "factorized" and formulation == "flow_matching":
         if reasoning.enabled or feedback.enabled or invisible.enabled or c2.enabled or model.compatibility.enabled:
             raise ValueError("factorized DFM is assignment-only")
-    if c2.enabled and (mode != "factorized" or formulation != "discriminative" or not reasoning.enabled or not invisible.enabled):
+    if c2.enabled and (
+        mode != "factorized"
+        or formulation != "discriminative"
+        or not reasoning.enabled
+        or not invisible.enabled
+    ):
         raise ValueError("C2 requires recurrent factorized discriminative assignment plus invisible inference")
-    if model.compatibility.enabled and (mode != "factorized" or formulation != "discriminative" or not invisible.enabled):
+    if model.compatibility.enabled and (
+        mode != "factorized" or formulation != "discriminative" or not invisible.enabled
+    ):
         raise ValueError("compatibility requires factorized discriminative assignment plus invisible inference")
     if mode == "joint_flow":
         if formulation != "flow_matching" or not invisible.enabled or invisible.formulation != "flow_matching":
