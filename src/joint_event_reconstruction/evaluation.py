@@ -8,6 +8,7 @@ from pathlib import Path
 import h5py
 import numpy as np
 
+from joint_event_reconstruction.assignment_semantics import read_hdf5_support
 from joint_event_reconstruction.prediction import validate_prediction
 
 
@@ -16,9 +17,7 @@ COVERAGE_LEVELS = (0.50, 0.68, 0.90, 0.95)
 
 def _normalised_weights(samples: np.ndarray, weights: np.ndarray | None) -> np.ndarray:
     if weights is None:
-        return np.full(
-            samples.shape[:2], 1.0 / samples.shape[1], dtype=np.float64
-        )
+        return np.full(samples.shape[:2], 1.0 / samples.shape[1], dtype=np.float64)
     weights = np.asarray(weights, dtype=np.float64)
     if weights.shape != samples.shape[:2]:
         raise ValueError(
@@ -36,11 +35,11 @@ def _weighted_quantile_rows(
     result = np.empty(len(values), dtype=np.float64)
     for event in range(len(values)):
         order = np.argsort(values[event], kind="stable")
-        sorted_values = values[event, order]
-        sorted_weights = weights[event, order]
-        cumulative = np.cumsum(sorted_weights)
-        index = min(int(np.searchsorted(cumulative, quantile, side="left")), len(order) - 1)
-        result[event] = sorted_values[index]
+        cumulative = np.cumsum(weights[event, order])
+        index = min(
+            int(np.searchsorted(cumulative, quantile, side="left")), len(order) - 1
+        )
+        result[event] = values[event, order[index]]
     return result
 
 
@@ -54,13 +53,9 @@ def _weighted_energy_score(
     for event in range(len(flat)):
         distances = np.linalg.norm(flat[event] - target[event], axis=-1)
         data_term = np.sum(normalised[event] * distances)
-        pair = np.linalg.norm(
-            flat[event, :, None] - flat[event, None, :], axis=-1
-        )
+        pair = np.linalg.norm(flat[event, :, None] - flat[event, None, :], axis=-1)
         sample_term = np.sum(
-            normalised[event, :, None]
-            * normalised[event, None, :]
-            * pair
+            normalised[event, :, None] * normalised[event, None, :] * pair
         )
         scores.append(data_term - 0.5 * sample_term)
     return float(np.mean(scores))
@@ -87,9 +82,7 @@ def _posterior_metrics(
     for role_index, role_name in enumerate(role_names):
         role_result = {
             "energy_score": _weighted_energy_score(
-                samples[:, :, role_index],
-                truth[:, role_index],
-                normalised,
+                samples[:, :, role_index], truth[:, role_index], normalised
             )
         }
         for component, component_index in zip(("px", "py", "pz"), range(3)):
@@ -101,17 +94,14 @@ def _posterior_metrics(
             target = truth[:, role_index, component_index]
             component_result = {
                 "bias": float(mean_residual.mean()),
-                "rmse": float(np.sqrt(np.mean(mean_residual ** 2))),
+                "rmse": float(np.sqrt(np.mean(mean_residual**2))),
                 "median_residual": float(np.median(mean_residual)),
                 "central_68_width": float(
-                    np.quantile(mean_residual, 0.84)
-                    - np.quantile(mean_residual, 0.16)
+                    np.quantile(mean_residual, 0.84) - np.quantile(mean_residual, 0.16)
                 ),
             }
             for level in COVERAGE_LEVELS:
-                low = _weighted_quantile_rows(
-                    values, normalised, (1 - level) / 2
-                )
+                low = _weighted_quantile_rows(values, normalised, (1 - level) / 2)
                 high = _weighted_quantile_rows(
                     values, normalised, 1 - (1 - level) / 2
                 )
@@ -127,11 +117,9 @@ def _kinematics(vectors: np.ndarray) -> dict[str, np.ndarray]:
     momentum = vectors[..., 1:]
     pt = np.linalg.norm(momentum[..., :2], axis=-1)
     mass = np.sqrt(
-        np.maximum(vectors[..., 0] ** 2 - np.sum(momentum ** 2, axis=-1), 0)
+        np.maximum(vectors[..., 0] ** 2 - np.sum(momentum**2, axis=-1), 0)
     )
-    eta = np.arcsinh(
-        np.divide(momentum[..., 2], np.maximum(pt, 1.0e-12))
-    )
+    eta = np.arcsinh(np.divide(momentum[..., 2], np.maximum(pt, 1.0e-12)))
     phi = np.arctan2(momentum[..., 1], momentum[..., 0])
     return {"mass": mass, "pt": pt, "eta": eta, "phi": phi}
 
@@ -157,7 +145,7 @@ def _point_kinematic_metrics(predicted: np.ndarray, truth: np.ndarray) -> dict:
         )
         result[observable] = {
             "bias": float(residual.mean()),
-            "rmse": float(np.sqrt(np.mean(residual ** 2))),
+            "rmse": float(np.sqrt(np.mean(residual**2))),
             "central_68_width": float(
                 np.quantile(residual, 0.84) - np.quantile(residual, 0.16)
             ),
@@ -185,6 +173,10 @@ def bootstrap_mean_interval(
     return tuple(float(value) for value in np.quantile(means, (0.025, 0.975)))
 
 
+def _binomial_error(value: float, count: int) -> float:
+    return float(np.sqrt(value * (1.0 - value) / count)) if count else float("nan")
+
+
 def evaluate_predictions(path: str | Path) -> dict:
     path = Path(path).expanduser().resolve()
     validate_prediction(path)
@@ -193,16 +185,16 @@ def evaluate_predictions(path: str | Path) -> dict:
         conditioning = str(
             source.attrs.get("invisible_assignment_conditioning", "unknown")
         )
+        support = read_hdf5_support(source)
         result = {
             "prediction_file": str(path),
             "events": len(source["EVENT_ID"]),
             "topology_signature": str(source.attrs["topology_signature"]),
-            "architecture_signature_version": (
-                None if version is None else int(version)
-            ),
+            "architecture_signature_version": None if version is None else int(version),
             "architecture_signature": str(source.attrs["architecture_signature"]),
             "model_mode": "factorized",
             "assignment_formulation": "discriminative",
+            "assignment_support": support,
             "invisible_formulation": str(
                 source.attrs.get("invisible_formulation", "disabled")
             ),
@@ -217,14 +209,10 @@ def evaluate_predictions(path: str | Path) -> dict:
                 source["INVISIBLE"].attrs["actual_nfe"]
             )
             result["unique_assignment_conditioning_branches"] = int(
-                source["INVISIBLE"].attrs[
-                    "unique_assignment_conditioning_branches"
-                ]
+                source["INVISIBLE"].attrs["unique_assignment_conditioning_branches"]
             )
             result["sample_equivalent_nfe_per_event"] = int(
-                source["INVISIBLE"].attrs[
-                    "sample_equivalent_nfe_per_event"
-                ]
+                source["INVISIBLE"].attrs["sample_equivalent_nfe_per_event"]
             )
 
         nodes = source["VISIBLE/nodes"]
@@ -234,13 +222,19 @@ def evaluate_predictions(path: str | Path) -> dict:
             selected = node["selected_candidate"][:]
             truth = node["truth_candidate"][:]
             correct = selected == truth
+            raw = float(correct.mean())
+            conditional = (
+                float(correct[reconstructable].mean()) if reconstructable.any() else None
+            )
             result["visible"][name] = {
                 "events": int(len(correct)),
                 "reconstructable": int(reconstructable.sum()),
-                "raw_efficiency": float(correct.mean()),
-                "conditional_efficiency": (
-                    float(correct[reconstructable].mean())
-                    if reconstructable.any()
+                "raw_efficiency": raw,
+                "raw_efficiency_standard_error": _binomial_error(raw, len(correct)),
+                "conditional_efficiency": conditional,
+                "conditional_efficiency_standard_error": (
+                    _binomial_error(conditional, int(reconstructable.sum()))
+                    if conditional is not None
                     else None
                 ),
                 "mean_truth_probability": (
@@ -261,21 +255,24 @@ def evaluate_predictions(path: str | Path) -> dict:
         truth_topk = source["TRUTH/topk_assignment"][:]
         assignment_probabilities = source["VISIBLE/constrained_probabilities"][:]
         retained_mass = assignment_probabilities.sum(axis=1)
+        top1 = float(truth_topk[:, 0].mean())
+        topk = float(truth_topk.any(axis=1).mean())
         result["visible"]["complete"] = {
-            "top1_efficiency": float(truth_topk[:, 0].mean()),
-            "topk_coverage": float(truth_topk.any(axis=1).mean()),
+            "support": support["name"],
+            "top1_efficiency": top1,
+            "top1_efficiency_standard_error": _binomial_error(top1, len(truth_topk)),
+            "topk_coverage": topk,
+            "topk_coverage_standard_error": _binomial_error(topk, len(truth_topk)),
             "truth_rank_mean_reciprocal": float(
                 np.mean(
                     [
-                        1.0 / (np.flatnonzero(row)[0] + 1)
-                        if row.any()
-                        else 0.0
+                        1.0 / (np.flatnonzero(row)[0] + 1) if row.any() else 0.0
                         for row in truth_topk
                     ]
                 )
             ),
             "mean_exact_logZ": float(source["VISIBLE/exact_logZ"][:].mean()),
-            "probabilities_are_exact_constrained": True,
+            "probabilities_are_exact_constrained_within_support": True,
             "retained_topk_probability_mass": {
                 "mean": float(retained_mass.mean()),
                 "median": float(np.median(retained_mass)),
@@ -283,13 +280,17 @@ def evaluate_predictions(path: str | Path) -> dict:
             },
         }
         njet = source["OBSERVED/njet"][:]
-        result["visible"]["complete"]["top1_vs_njet"] = {
-            str(int(value)): {
-                "events": int((njet == value).sum()),
-                "efficiency": float(truth_topk[njet == value, 0].mean()),
+        by_njet = {}
+        for value in np.unique(njet):
+            mask = njet == value
+            count = int(mask.sum())
+            efficiency = float(truth_topk[mask, 0].mean())
+            by_njet[str(int(value))] = {
+                "events": count,
+                "efficiency": efficiency,
+                "standard_error": _binomial_error(efficiency, count),
             }
-            for value in np.unique(njet)
-        }
+        result["visible"]["complete"]["top1_vs_njet"] = by_njet
 
         if "INVISIBLE/samples" in source:
             samples = source["INVISIBLE/samples"][:]
@@ -299,7 +300,10 @@ def evaluate_predictions(path: str | Path) -> dict:
                 "interpretation": (
                     "assignment-weighted truncated mixture p(A|X)p(nu|X,A)"
                     if conditioning == "hypothesis"
-                    else f"single p(nu|X, conditioning={conditioning}) posterior; K does not add generative branches"
+                    else (
+                        f"single p(nu|X, conditioning={conditioning}) posterior; "
+                        "K does not add generative branches"
+                    )
                 ),
                 "top1_assignment_conditioned": _posterior_metrics(
                     samples[:, 0], truth, roles
@@ -309,9 +313,7 @@ def evaluate_predictions(path: str | Path) -> dict:
             if conditioning == "hypothesis":
                 batch_size, top_k, posterior_samples = samples.shape[:3]
                 flat = samples.reshape(
-                    batch_size,
-                    top_k * posterior_samples,
-                    *samples.shape[3:],
+                    batch_size, top_k * posterior_samples, *samples.shape[3:]
                 )
                 branch_weights = assignment_probabilities / retained_mass[:, None]
                 weights = np.repeat(
@@ -319,8 +321,8 @@ def evaluate_predictions(path: str | Path) -> dict:
                     posterior_samples,
                     axis=2,
                 ).reshape(batch_size, top_k * posterior_samples)
-                invisible["truncated_assignment_weighted_mixture"] = (
-                    _posterior_metrics(flat, truth, roles, weights=weights)
+                invisible["truncated_assignment_weighted_mixture"] = _posterior_metrics(
+                    flat, truth, roles, weights=weights
                 )
                 invisible["truncated_assignment_weighted_mixture"][
                     "mean_retained_assignment_probability_mass"
@@ -332,9 +334,7 @@ def evaluate_predictions(path: str | Path) -> dict:
                         "selection_biased_diagnostic": True,
                         "events": int(correct_top1.sum()),
                         **_posterior_metrics(
-                            samples[correct_top1, 0],
-                            truth[correct_top1],
-                            roles,
+                            samples[correct_top1, 0], truth[correct_top1], roles
                         ),
                     }
                 truth_in_topk = truth_topk.any(axis=1)
@@ -346,9 +346,7 @@ def evaluate_predictions(path: str | Path) -> dict:
                         "diagnostic_not_end_to_end": True,
                         "events": int(truth_in_topk.sum()),
                         **_posterior_metrics(
-                            truth_branch_samples,
-                            truth[truth_in_topk],
-                            roles,
+                            truth_branch_samples, truth[truth_in_topk], roles
                         ),
                     }
             else:
@@ -378,18 +376,16 @@ def evaluate_predictions(path: str | Path) -> dict:
                         branch_means * probabilities[..., None],
                         0.0,
                     ).sum(axis=1)
-                    support_weight = np.where(finite, probabilities, 0.0).sum(
-                        axis=1
-                    )
+                    support_weight = np.where(finite, probabilities, 0.0).sum(axis=1)
                     weighted = np.divide(
                         weighted,
                         support_weight[:, None],
                         out=np.full_like(weighted, np.nan),
                         where=support_weight[:, None] > 0,
                     )
-                    node_result[
-                        "assignment_weighted_posterior_mean"
-                    ] = _point_kinematic_metrics(weighted, truth_vector)
+                    node_result["assignment_weighted_posterior_mean"] = (
+                        _point_kinematic_metrics(weighted, truth_vector)
+                    )
                 physics[node] = node_result
 
             if "OBSERVED/MET" in source and "INVISIBLE/samples" in source:
@@ -397,42 +393,42 @@ def evaluate_predictions(path: str | Path) -> dict:
                 if conditioning == "hypothesis":
                     branch = assignment_probabilities / retained_mass[:, None]
                     predicted_px = np.sum(
-                        branch
-                        * invisible_samples[..., 0].sum(axis=3).mean(axis=2),
+                        branch * invisible_samples[..., 0].sum(axis=3).mean(axis=2),
                         axis=1,
                     )
                     predicted_py = np.sum(
-                        branch
-                        * invisible_samples[..., 1].sum(axis=3).mean(axis=2),
+                        branch * invisible_samples[..., 1].sum(axis=3).mean(axis=2),
                         axis=1,
                     )
                 else:
-                    predicted_px = invisible_samples[:, 0, ..., 0].sum(
-                        axis=2
-                    ).mean(axis=1)
-                    predicted_py = invisible_samples[:, 0, ..., 1].sum(
-                        axis=2
-                    ).mean(axis=1)
+                    predicted_px = invisible_samples[:, 0, ..., 0].sum(axis=2).mean(axis=1)
+                    predicted_py = invisible_samples[:, 0, ..., 1].sum(axis=2).mean(axis=1)
                 met = source["OBSERVED/MET"][:]
                 dx = predicted_px - met[:, 1]
                 dy = predicted_py - met[:, 2]
                 physics["met_closure"] = {
                     "px_bias": float(dx.mean()),
                     "py_bias": float(dy.mean()),
-                    "transverse_rmse": float(
-                        np.sqrt(np.mean(dx ** 2 + dy ** 2))
-                    ),
+                    "transverse_rmse": float(np.sqrt(np.mean(dx**2 + dy**2))),
                 }
             result["physics"] = physics
 
         if "JOINT/final_score" in source:
             ranking = source["JOINT/rank_indices"][:]
             reranked_truth = np.take_along_axis(truth_topk, ranking, axis=1)
+            assignment_only = float(truth_topk[:, 0].mean())
+            combined = float(reranked_truth[:, 0].mean())
             result["compatibility"] = {
-                "assignment_only_top1": float(truth_topk[:, 0].mean()),
-                "combined_top1": float(reranked_truth[:, 0].mean()),
-                "mean_logit": float(
-                    source["JOINT/compatibility_logit"][:].mean()
+                "weight": float(source["JOINT"].attrs["compatibility_weight"]),
+                "assignment_only_top1": assignment_only,
+                "assignment_only_top1_standard_error": _binomial_error(
+                    assignment_only, len(truth_topk)
                 ),
+                "combined_top1": combined,
+                "combined_top1_standard_error": _binomial_error(
+                    combined, len(truth_topk)
+                ),
+                "mean_logit": float(source["JOINT/compatibility_logit"][:].mean()),
+                "normalised_likelihood": False,
             }
         return result
