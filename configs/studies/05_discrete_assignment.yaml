@@ -1,68 +1,45 @@
 study:
   name: discrete_assignment
-  description: >-
-    Compare the M3 discriminative assignment baseline with complete-state Discrete Flow
-    Matching. DFM is initialised from the same visible encoder and trains only its
-    assignment dynamics. Native accuracies retain their different support definitions and
-    must not be interpreted as one common metric without a support-aligned subset study.
+  description: Compare discriminative structured assignment and complete-state DFM on the same ttbar2L data and visible encoder scale.
   experiment_pattern: configs/experiments/{topology}.yaml
-  topologies: [ttbar1L, ttbar2L, ttH1L]
+  topologies: [ttbar2L]
   seeds: [42]
   split: test
 
 variants:
-  discriminative:
-    label: M3 discriminative
-    reporting: primary
-    train_overrides:
-      - model.mode=factorized
-      - model.assignment.formulation=discriminative
-      - model.assignment.reasoning.enabled=true
-      - model.assignment.feedback.enabled=true
-      - model.invisible.enabled=false
-      - model.coupling.invisible_to_assignment.enabled=false
-      - model.compatibility.enabled=false
-      - training.freeze.visible=false
-      - training.freeze.assignment=false
-      - training.loss_weights.assignment=1.0
-      - training.loss_weights.invisible=0.0
-      - training.loss_weights.compatibility=0.0
+  m1:
+    label: discriminative M1
+    reporting: diagnostic
+    patch:
+      training: {trainable: [visible, assignment]}
     initialise_from: null
     initialise_components: []
     predictions:
-      r4:
-        label: M3 R=4
-        overrides: []
-        recurrent_steps: 4
+      top1: {label: M1, patch: {prediction: {top_k: 1}}, recurrent_steps: null}
+
+  m3:
+    label: discriminative M3
+    reporting: primary
+    patch:
+      model:
+        assignment:
+          method: discriminative
+          recurrence: {train_steps: [1, 2, 3, 4], eval_steps: 4, feedback: soft}
+      training: {trainable: [visible, assignment]}
+    initialise_from: null
+    initialise_components: []
+    predictions:
+      top1: {label: M3, patch: {prediction: {top_k: 1}}, recurrent_steps: 4}
 
   dfm:
-    label: assignment DFM
+    label: complete-state DFM
     reporting: primary
-    train_overrides:
-      - model.mode=factorized
-      - model.assignment.formulation=flow_matching
-      - model.assignment.reasoning.enabled=false
-      - model.assignment.feedback.enabled=false
-      - model.invisible.enabled=false
-      - model.coupling.invisible_to_assignment.enabled=false
-      - model.compatibility.enabled=false
-      - training.freeze.visible=true
-      - training.freeze.assignment=false
-      - training.loss_weights.assignment=1.0
-      - training.loss_weights.invisible=0.0
-      - training.loss_weights.compatibility=0.0
-    initialise_from: discriminative
-    initialise_components: [visible]
+    patch:
+      model:
+        assignment: {method: dfm}
+      training: {trainable: [visible, assignment]}
+    initialise_from: null
+    initialise_components: []
     predictions:
-      s64_t8:
-        label: DFM S=64 T=8
-        overrides:
-          - inference.posterior_samples=64
-          - inference.assignment_flow.steps=8
-        recurrent_steps: null
-      s64_t16:
-        label: DFM S=64 T=16
-        overrides:
-          - inference.posterior_samples=64
-          - inference.assignment_flow.steps=16
-        recurrent_steps: null
+      s64_t8: {label: DFM S=64 T=8, patch: {prediction: {samples: 64, steps: 8}}, recurrent_steps: null}
+      s64_t16: {label: DFM S=64 T=16, patch: {prediction: {samples: 64, steps: 16}}, recurrent_steps: null}
