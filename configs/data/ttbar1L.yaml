@@ -1,0 +1,34 @@
+source: /mnt/iusers01/fatpou01/phy01/w00238tl/scratch/JointEventReconstruction/data/real/ttbar1L_canonical.h5
+invisible_truth: /mnt/iusers01/fatpou01/phy01/w00238tl/scratch/JointEventReconstruction/data/real/ttbar1L_canonical.h5
+split: /mnt/iusers01/fatpou01/phy01/w00238tl/scratch/JointEventReconstruction/data/real/splits/ttbar1L/split_indices.npz
+tensor_cache: null
+
+loader:
+  batch_size: 512
+  workers: 8
+  pin_memory: true
+  persistent_workers: true
+  prefetch_factor: 2
+
+objects:
+  JET:
+    count: 8
+    variables: [e, eta, phi, pt, btag, id]
+    scalers: [Log, "minmax:min=-2.5,max=2.5", SinCos, Log, "minmax:min=0,max=6", PID]
+  LEPTON:
+    count: 1
+    variables: [e, eta, phi, pt, charge, id]
+    scalers: [Log, "minmax:min=-2.5,max=2.5", SinCos, Log, "minmax:min=-1,max=1", PID]
+  MET:
+    count: 1
+    variables: [phi, pt, id]
+    scalers: [SinCos, Log, PID]
+  GLOBAL:
+    variables: [njet, nBJets_90, nBJets_85, nBJets_77, nBJets_70, nBJets_65]
+    scalers:
+      - "minmax:min=0,max=8"
+      - "minmax:min=0,max=8"
+      - "minmax:min=0,max=8"
+      - "minmax:min=0,max=8"
+      - "minmax:min=0,max=8"
+      - "minmax:min=0,max=8"
