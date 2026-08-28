@@ -7,11 +7,13 @@ from pathlib import Path
 from omegaconf import DictConfig, OmegaConf
 
 
-def load_experiment(path: str | Path) -> DictConfig:
+def load_experiment(path: str | Path, overrides: list[str] | tuple[str, ...] | None = None) -> DictConfig:
     path = Path(path).expanduser().resolve()
     if not path.is_file():
         raise FileNotFoundError(f"Experiment configuration does not exist: {path}")
     config = OmegaConf.load(path)
+    if overrides:
+        config = OmegaConf.merge(config, OmegaConf.from_dotlist(list(overrides)))
     validate_experiment(config)
     return config
 
@@ -42,13 +44,17 @@ def validate_experiment(config: DictConfig) -> None:
         raise ValueError(
             "model.reconstruction.formulation must be discriminative or flow_matching"
         )
+    flow = reconstruction.get("flow_matching")
+    if flow is None:
+        raise ValueError("model.reconstruction.flow_matching configuration is required")
+    if int(flow.get("max_states", 0)) <= 0:
+        raise ValueError("model.reconstruction.flow_matching.max_states must be positive")
     if reconstruction.feedback.enabled and not reasoning.enabled:
         raise ValueError(
             "model.reconstruction.feedback.enabled=true requires model.reasoning.enabled=true"
         )
     if reconstruction_formulation == "flow_matching":
-        flow = reconstruction.get("flow_matching")
-        if flow is None or str(flow.source) != "mask":
+        if str(flow.source) != "mask":
             raise ValueError(
                 "Discrete assignment Flow Matching currently requires source=mask"
             )
