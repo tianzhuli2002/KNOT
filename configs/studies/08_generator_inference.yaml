@@ -1,11 +1,8 @@
 study:
   name: generator_inference
-  description: >-
-    Reuse one trained checkpoint per invisible formulation and scan inference cost only.
-    CFM Euler and Heun are paired at approximately equal NFE; EDM and DDIM are evaluated
-    across low-to-moderate NFE. All predictions use 32 posterior samples.
+  description: Scan generator sampling cost without retraining, using one frozen M3 ttbar2L assignment reference.
   experiment_pattern: configs/experiments/{topology}.yaml
-  topologies: [ttbar1L, ttbar2L, ttH1L]
+  topologies: [ttbar2L]
   seeds: [42]
   split: test
 
@@ -13,102 +10,51 @@ variants:
   assignment_reference:
     label: M3 assignment reference
     reporting: setup
-    train_overrides:
-      - model.mode=factorized
-      - model.assignment.formulation=discriminative
-      - model.assignment.reasoning.enabled=true
-      - model.assignment.feedback.enabled=true
-      - model.invisible.enabled=false
-      - model.coupling.invisible_to_assignment.enabled=false
-      - model.compatibility.enabled=false
-      - training.loss_weights.assignment=1.0
-      - training.loss_weights.invisible=0.0
-      - training.loss_weights.compatibility=0.0
+    patch:
+      model:
+        assignment:
+          method: discriminative
+          recurrence: {train_steps: [1, 2, 3, 4], eval_steps: 4, feedback: soft}
+      training: {trainable: [visible, assignment]}
     initialise_from: null
     initialise_components: []
     predictions: {}
 
-  standard:
-    label: DDIM
-    reporting: primary
-    train_overrides:
-      - model.mode=factorized
-      - model.assignment.formulation=discriminative
-      - model.assignment.reasoning.enabled=true
-      - model.assignment.feedback.enabled=true
-      - model.invisible.enabled=true
-      - model.invisible.formulation=standard
-      - model.invisible.conditioning.assignment=none
-      - model.invisible.conditioning.allow_truth_oracle=false
-      - model.coupling.invisible_to_assignment.enabled=false
-      - model.compatibility.enabled=false
-      - training.freeze.visible=true
-      - training.freeze.assignment=true
-      - training.loss_weights.assignment=0.0
-      - training.loss_weights.invisible=1.0
-      - training.loss_weights.compatibility=0.0
-    initialise_from: assignment_reference
-    initialise_components: [visible, assignment]
-    predictions:
-      nfe8: {label: DDIM NFE=8, overrides: [inference.posterior_samples=32, inference.invisible.standard.steps=8], recurrent_steps: null}
-      nfe16: {label: DDIM NFE=16, overrides: [inference.posterior_samples=32, inference.invisible.standard.steps=16], recurrent_steps: null}
-      nfe32: {label: DDIM NFE=32, overrides: [inference.posterior_samples=32, inference.invisible.standard.steps=32], recurrent_steps: null}
-      nfe50: {label: DDIM NFE=50, overrides: [inference.posterior_samples=32, inference.invisible.standard.steps=50], recurrent_steps: null}
-
   edm:
     label: EDM
     reporting: primary
-    train_overrides:
-      - model.mode=factorized
-      - model.assignment.formulation=discriminative
-      - model.assignment.reasoning.enabled=true
-      - model.assignment.feedback.enabled=true
-      - model.invisible.enabled=true
-      - model.invisible.formulation=edm
-      - model.invisible.conditioning.assignment=none
-      - model.invisible.conditioning.allow_truth_oracle=false
-      - model.coupling.invisible_to_assignment.enabled=false
-      - model.compatibility.enabled=false
-      - training.freeze.visible=true
-      - training.freeze.assignment=true
-      - training.loss_weights.assignment=0.0
-      - training.loss_weights.invisible=1.0
-      - training.loss_weights.compatibility=0.0
+    patch:
+      model:
+        assignment:
+          method: discriminative
+          recurrence: {train_steps: [1, 2, 3, 4], eval_steps: 4, feedback: soft}
+        invisible: {method: edm, conditioning: none}
+      training: {trainable: [invisible]}
     initialise_from: assignment_reference
     initialise_components: [visible, assignment]
     predictions:
-      nfe5: {label: EDM NFE=5, overrides: [inference.posterior_samples=32, inference.invisible.edm.nfe=5], recurrent_steps: null}
-      nfe9: {label: EDM NFE=9, overrides: [inference.posterior_samples=32, inference.invisible.edm.nfe=9], recurrent_steps: null}
-      nfe17: {label: EDM NFE=17, overrides: [inference.posterior_samples=32, inference.invisible.edm.nfe=17], recurrent_steps: null}
-      nfe33: {label: EDM NFE=33, overrides: [inference.posterior_samples=32, inference.invisible.edm.nfe=33], recurrent_steps: null}
-      nfe49: {label: EDM NFE=49, overrides: [inference.posterior_samples=32, inference.invisible.edm.nfe=49], recurrent_steps: null}
+      nfe5: {label: EDM NFE=5, patch: {prediction: {samples: 32, nfe: 5}}, recurrent_steps: 4}
+      nfe9: {label: EDM NFE=9, patch: {prediction: {samples: 32, nfe: 9}}, recurrent_steps: 4}
+      nfe17: {label: EDM NFE=17, patch: {prediction: {samples: 32, nfe: 17}}, recurrent_steps: 4}
+      nfe33: {label: EDM NFE=33, patch: {prediction: {samples: 32, nfe: 33}}, recurrent_steps: 4}
+      nfe49: {label: EDM NFE=49, patch: {prediction: {samples: 32, nfe: 49}}, recurrent_steps: 4}
 
   cfm:
     label: CFM
     reporting: primary
-    train_overrides:
-      - model.mode=factorized
-      - model.assignment.formulation=discriminative
-      - model.assignment.reasoning.enabled=true
-      - model.assignment.feedback.enabled=true
-      - model.invisible.enabled=true
-      - model.invisible.formulation=flow_matching
-      - model.invisible.flow_matching.coupling=independent
-      - model.invisible.conditioning.assignment=none
-      - model.invisible.conditioning.allow_truth_oracle=false
-      - model.coupling.invisible_to_assignment.enabled=false
-      - model.compatibility.enabled=false
-      - training.freeze.visible=true
-      - training.freeze.assignment=true
-      - training.loss_weights.assignment=0.0
-      - training.loss_weights.invisible=1.0
-      - training.loss_weights.compatibility=0.0
+    patch:
+      model:
+        assignment:
+          method: discriminative
+          recurrence: {train_steps: [1, 2, 3, 4], eval_steps: 4, feedback: soft}
+        invisible: {method: cfm, conditioning: none}
+      training: {trainable: [invisible]}
     initialise_from: assignment_reference
     initialise_components: [visible, assignment]
     predictions:
-      euler8: {label: CFM Euler NFE=8, overrides: [inference.posterior_samples=32, inference.invisible.flow_matching.steps=8, inference.invisible.flow_matching.solver=euler], recurrent_steps: null}
-      heun4: {label: CFM Heun NFE=8, overrides: [inference.posterior_samples=32, inference.invisible.flow_matching.steps=4, inference.invisible.flow_matching.solver=heun], recurrent_steps: null}
-      euler16: {label: CFM Euler NFE=16, overrides: [inference.posterior_samples=32, inference.invisible.flow_matching.steps=16, inference.invisible.flow_matching.solver=euler], recurrent_steps: null}
-      heun8: {label: CFM Heun NFE=16, overrides: [inference.posterior_samples=32, inference.invisible.flow_matching.steps=8, inference.invisible.flow_matching.solver=heun], recurrent_steps: null}
-      euler32: {label: CFM Euler NFE=32, overrides: [inference.posterior_samples=32, inference.invisible.flow_matching.steps=32, inference.invisible.flow_matching.solver=euler], recurrent_steps: null}
-      heun16: {label: CFM Heun NFE=32, overrides: [inference.posterior_samples=32, inference.invisible.flow_matching.steps=16, inference.invisible.flow_matching.solver=heun], recurrent_steps: null}
+      euler8: {label: Euler NFE=8, patch: {prediction: {samples: 32, steps: 8, solver: euler}}, recurrent_steps: 4}
+      heun4: {label: Heun NFE≈8, patch: {prediction: {samples: 32, steps: 4, solver: heun}}, recurrent_steps: 4}
+      euler16: {label: Euler NFE=16, patch: {prediction: {samples: 32, steps: 16, solver: euler}}, recurrent_steps: 4}
+      heun8: {label: Heun NFE≈16, patch: {prediction: {samples: 32, steps: 8, solver: heun}}, recurrent_steps: 4}
+      euler32: {label: Euler NFE=32, patch: {prediction: {samples: 32, steps: 32, solver: euler}}, recurrent_steps: 4}
+      heun16: {label: Heun NFE≈32, patch: {prediction: {samples: 32, steps: 16, solver: heun}}, recurrent_steps: 4}
