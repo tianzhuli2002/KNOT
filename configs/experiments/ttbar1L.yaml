@@ -24,7 +24,7 @@ model:
 
   reconstruction:
     formulation: discriminative
-    flow_matching: {source: mask}
+    flow_matching: {source: mask, max_states: 100000}
     feedback: {enabled: false, start_step: 1, gate_initial_bias: -2.0}
 
   invisible:
