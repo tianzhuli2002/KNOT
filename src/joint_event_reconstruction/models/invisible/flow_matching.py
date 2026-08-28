@@ -22,12 +22,16 @@ def _minibatch_ot_source(source: torch.Tensor, target: torch.Tensor) -> torch.Te
     target_flat = target.detach().flatten(1)
     cost = torch.cdist(source_flat, target_flat).square().cpu().numpy()
     source_rows, target_columns = linear_sum_assignment(cost)
-    if len(source_rows) != len(source) or sorted(target_columns.tolist()) != list(range(len(target))):
-        raise RuntimeError("Minibatch OT did not produce a complete source-target permutation")
+    if len(source_rows) != len(source) or sorted(target_columns.tolist()) != list(
+        range(len(target))
+    ):
+        raise RuntimeError(
+            "Minibatch OT did not produce a complete source-target permutation"
+        )
     source_for_target = torch.empty(len(target), dtype=torch.long)
-    source_for_target[torch.as_tensor(target_columns, dtype=torch.long)] = torch.as_tensor(
-        source_rows, dtype=torch.long
-    )
+    source_for_target[
+        torch.as_tensor(target_columns, dtype=torch.long)
+    ] = torch.as_tensor(source_rows, dtype=torch.long)
     return source[source_for_target.to(source.device)]
 
 
@@ -40,6 +44,22 @@ class ContinuousFlowMatching(nn.Module):
             )
         self.denoiser = denoiser
         self.coupling = coupling
+
+    def source(
+        self,
+        target: torch.Tensor,
+        *,
+        generator: torch.Generator | None = None,
+    ) -> torch.Tensor:
+        source = torch.randn(
+            target.shape,
+            device=target.device,
+            dtype=target.dtype,
+            generator=generator,
+        )
+        if self.coupling == "minibatch_ot" and len(target) > 1:
+            source = _minibatch_ot_source(source, target)
+        return source
 
     def velocity(
         self,
@@ -60,14 +80,7 @@ class ContinuousFlowMatching(nn.Module):
         *,
         generator: torch.Generator | None = None,
     ) -> dict:
-        source = torch.randn(
-            target.shape,
-            device=target.device,
-            dtype=target.dtype,
-            generator=generator,
-        )
-        if self.coupling == "minibatch_ot" and len(target) > 1:
-            source = _minibatch_ot_source(source, target)
+        source = self.source(target, generator=generator)
         time = torch.rand(
             len(target), device=target.device, dtype=target.dtype, generator=generator
         )
