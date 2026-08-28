@@ -11,7 +11,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 import torch
 from omegaconf import OmegaConf
@@ -24,7 +29,9 @@ from scripts.smoke_all import MODES, run_mode as run_legacy_mode
 from scripts.smoke_flows import FLOW_MODES, run_mode as run_flow_mode
 
 
-def _synthetic_items(experiment, visible, *, events: int, seed: int) -> tuple[list[dict], object]:
+def _synthetic_items(
+    experiment, visible, *, events: int, seed: int
+) -> tuple[list[dict], object]:
     if events < 2:
         raise ValueError("Synthetic smoke needs at least two events for finite scaling")
     schema = build_token_schema(visible.dataset)
@@ -49,10 +56,14 @@ def _synthetic_items(experiment, visible, *, events: int, seed: int) -> tuple[li
     label_slots: dict[tuple[str, int], int] = {}
     by_source: dict[str, set[int]] = {}
     for role in spec.visible_leaf_roles:
-        by_source.setdefault(role.source, set()).update(int(x) for x in role.truth_indices)
+        by_source.setdefault(role.source, set()).update(
+            int(x) for x in role.truth_indices
+        )
     for source, labels in by_source.items():
         if source not in source_positions:
-            raise RuntimeError(f"Topology source {source} is absent from visible token schema")
+            raise RuntimeError(
+                f"Topology source {source} is absent from visible token schema"
+            )
         positions = source_positions[source]
         if len(labels) > len(positions):
             raise RuntimeError(
@@ -70,7 +81,7 @@ def _synthetic_items(experiment, visible, *, events: int, seed: int) -> tuple[li
         tokens += event / max(events, 1) * 0.05
         padding = torch.zeros(cursor, dtype=torch.bool)
         raw_labels = torch.full((cursor,), -100.0, dtype=torch.float32)
-        for (source, label), position in label_slots.items():
+        for (_, label), position in label_slots.items():
             raw_labels[position] = float(label)
         items.append({
             "tokens": tokens,
@@ -84,13 +95,17 @@ def _synthetic_items(experiment, visible, *, events: int, seed: int) -> tuple[li
     return items, schema
 
 
-def build_synthetic_batch(experiment_path: Path, *, events: int, device: str):
+def build_synthetic_batch(
+    experiment_path: Path, *, events: int, device: str
+):
     base = OmegaConf.load(experiment_path)
     visible = OmegaConf.load(base.visible_config)
     items, schema = _synthetic_items(
         base, visible, events=events, seed=int(base.experiment.seed)
     )
-    collator = StructuredCollator(base.topology_config, dict(schema.source_type_ids))
+    collator = StructuredCollator(
+        base.topology_config, dict(schema.source_type_ids)
+    )
     batch = collator(items)
     spec = collator.spec
 
@@ -136,13 +151,17 @@ def run_synthetic_smoke(
         for mode in MODES:
             results["legacy"][mode] = {
                 "status": "PASS",
-                **run_legacy_mode(base, visible, batch, scaler, mode, device),
+                **run_legacy_mode(
+                    base, visible, batch, scaler, mode, device
+                ),
             }
     if flows:
         for mode in FLOW_MODES:
             results["flows"][mode] = {
                 "status": "PASS",
-                **run_flow_mode(base, visible, batch, scaler, mode, device),
+                **run_flow_mode(
+                    base, visible, batch, scaler, mode, device
+                ),
             }
 
     print(json.dumps(results, indent=2, sort_keys=True))
