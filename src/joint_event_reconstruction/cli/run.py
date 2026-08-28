@@ -12,6 +12,7 @@ from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
 from omegaconf import OmegaConf
 
 from joint_event_reconstruction.configuration import load_experiment
+from joint_event_reconstruction.data.invisible import InvisibleScaler
 from joint_event_reconstruction.data.structured import StructuredDataModule
 from joint_event_reconstruction.evaluation_joint import evaluate_any_predictions
 from joint_event_reconstruction.prediction import predict_hdf5
@@ -69,10 +70,18 @@ def train(config) -> None:
 
 def load_trained(config, visible, data, checkpoint_path: str) -> JointEventModule:
     checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    checkpoint_scaler = checkpoint.get("invisible_scaler")
+    if checkpoint_scaler is not None:
+        scaler = InvisibleScaler.from_dict(checkpoint_scaler)
+        data.invisible_scaler = scaler
+        data.structured_collator.invisible_scaler = scaler
+    else:
+        scaler = data.invisible_scaler
+
     module = JointEventModule(
         config,
         visible,
-        invisible_scaler=data.invisible_scaler,
+        invisible_scaler=scaler,
         synthetic_data=(
             bool(data.structured_collator.invisible_store.synthetic)
             if data.structured_collator.invisible_store is not None else False
