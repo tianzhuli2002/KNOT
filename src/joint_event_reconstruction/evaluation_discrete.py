@@ -8,6 +8,7 @@ from pathlib import Path
 import h5py
 import numpy as np
 
+from joint_event_reconstruction.assignment_semantics import read_hdf5_support
 from joint_event_reconstruction.prediction_discrete import (
     DISCRETE_PREDICTION_SCHEMA,
     validate_discrete_prediction,
@@ -22,11 +23,20 @@ def _empirical_mode(values: np.ndarray) -> np.ndarray:
     return modes
 
 
+def _binomial_error(value: float, count: int) -> float:
+    return float(np.sqrt(value * (1.0 - value) / count)) if count else float("nan")
+
+
 def _categorical_metrics(samples: np.ndarray, truth: np.ndarray) -> dict:
     mode = _empirical_mode(samples)
     hit = samples == truth[:, None]
+    accuracy = float((mode == truth).mean())
     return {
-        "empirical_mode_accuracy": float((mode == truth).mean()),
+        "events": int(len(samples)),
+        "empirical_mode_accuracy": accuracy,
+        "empirical_mode_accuracy_standard_error": _binomial_error(
+            accuracy, len(samples)
+        ),
         "truth_sample_frequency": float(hit.mean()),
         "truth_sample_coverage": float(hit.any(axis=1).mean()),
         "unique_values_mean": float(
@@ -42,6 +52,7 @@ def evaluate_discrete_predictions(path: str | Path) -> dict:
     with h5py.File(path, "r") as source:
         if source.attrs.get("schema_version") != DISCRETE_PREDICTION_SCHEMA:
             raise ValueError(f"Not a discrete-flow prediction file: {path}")
+        support = read_hdf5_support(source)
         states = source["HYPOTHESES/assignment_state"][:]
         truth_state = source["TRUTH/assignment_state"][:]
         node_samples = source["HYPOTHESES/node_candidate_indices"][:]
@@ -51,15 +62,17 @@ def evaluate_discrete_predictions(path: str | Path) -> dict:
 
         assignment = _categorical_metrics(states, truth_state)
         state_mode = _empirical_mode(states)
-        assignment["mode_accuracy_vs_njet"] = {
-            str(int(value)): {
-                "events": int((njet == value).sum()),
-                "accuracy": float(
-                    (state_mode[njet == value] == truth_state[njet == value]).mean()
-                ),
+        by_njet = {}
+        for value in np.unique(njet):
+            mask = njet == value
+            count = int(mask.sum())
+            accuracy = float((state_mode[mask] == truth_state[mask]).mean())
+            by_njet[str(int(value))] = {
+                "events": count,
+                "accuracy": accuracy,
+                "standard_error": _binomial_error(accuracy, count),
             }
-            for value in np.unique(njet)
-        }
+        assignment["mode_accuracy_vs_njet"] = by_njet
         assignment["nodes"] = {
             node: _categorical_metrics(
                 node_samples[:, :, index], truth_nodes[:, index]
@@ -77,6 +90,7 @@ def evaluate_discrete_predictions(path: str | Path) -> dict:
             "architecture_signature": str(source.attrs["architecture_signature"]),
             "model_mode": "factorized",
             "assignment_formulation": "flow_matching",
+            "assignment_support": support,
             "posterior_samples": int(source.attrs["posterior_samples"]),
             "flow_steps": int(source.attrs["flow_steps"]),
             "nfe_per_sample": int(source.attrs["nfe_per_sample"]),
