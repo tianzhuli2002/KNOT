@@ -1,0 +1,81 @@
+study:
+  name: visible_recurrence
+  description: >-
+    M1 versus shared recurrent M2 versus feedback M3, with the same visible architecture
+    and explicit inference-depth scans. This establishes whether recurrence helps before
+    introducing invisible generation.
+  experiment_pattern: configs/experiments/{topology}.yaml
+  topologies: [ttbar1L, ttbar2L, ttH1L]
+  seeds: [42]
+  split: test
+
+variants:
+  m1:
+    label: M1
+    reporting: primary
+    train_overrides:
+      - model.mode=factorized
+      - model.assignment.formulation=discriminative
+      - model.assignment.reasoning.enabled=false
+      - model.assignment.feedback.enabled=false
+      - model.invisible.enabled=false
+      - model.coupling.invisible_to_assignment.enabled=false
+      - model.compatibility.enabled=false
+      - training.loss_weights.assignment=1.0
+      - training.loss_weights.invisible=0.0
+      - training.loss_weights.compatibility=0.0
+    initialise_from: null
+    initialise_components: []
+    predictions:
+      default:
+        label: M1
+        overrides: []
+        recurrent_steps: null
+
+  m2:
+    label: M2 recurrent
+    reporting: primary
+    train_overrides:
+      - model.mode=factorized
+      - model.assignment.formulation=discriminative
+      - model.assignment.reasoning.enabled=true
+      - model.assignment.feedback.enabled=false
+      - model.invisible.enabled=false
+      - model.coupling.invisible_to_assignment.enabled=false
+      - model.compatibility.enabled=false
+      - training.loss_weights.assignment=1.0
+      - training.loss_weights.invisible=0.0
+      - training.loss_weights.compatibility=0.0
+    initialise_from: null
+    initialise_components: []
+    predictions:
+      r1: {label: R=1, overrides: [], recurrent_steps: 1}
+      r2: {label: R=2, overrides: [], recurrent_steps: 2}
+      r3: {label: R=3, overrides: [], recurrent_steps: 3}
+      r4: {label: R=4, overrides: [], recurrent_steps: 4}
+      r6: {label: R=6, overrides: [], recurrent_steps: 6}
+      r8: {label: R=8, overrides: [], recurrent_steps: 8}
+
+  m3:
+    label: M3 feedback
+    reporting: primary
+    train_overrides:
+      - model.mode=factorized
+      - model.assignment.formulation=discriminative
+      - model.assignment.reasoning.enabled=true
+      - model.assignment.feedback.enabled=true
+      - model.invisible.enabled=false
+      - model.coupling.invisible_to_assignment.enabled=false
+      - model.compatibility.enabled=false
+      - training.loss_weights.assignment=1.0
+      - training.loss_weights.invisible=0.0
+      - training.loss_weights.compatibility=0.0
+    initialise_from: null
+    initialise_components: []
+    predictions:
+      r1: {label: R=1, overrides: [], recurrent_steps: 1}
+      r2: {label: R=2, overrides: [], recurrent_steps: 2}
+      r3: {label: R=3, overrides: [], recurrent_steps: 3}
+      r4: {label: R=4, overrides: [], recurrent_steps: 4}
+      r6: {label: R=6, overrides: [], recurrent_steps: 6}
+      r8: {label: R=8, overrides: [], recurrent_steps: 8}
