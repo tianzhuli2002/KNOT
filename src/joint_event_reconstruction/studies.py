@@ -11,6 +11,7 @@ from omegaconf import OmegaConf
 
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 _REPORTING = {"primary", "diagnostic", "oracle", "setup"}
+_COMPONENTS = {"visible", "assignment", "invisible", "c2", "compatibility"}
 _STUDY_KEYS = {
     "name",
     "description",
@@ -22,20 +23,19 @@ _STUDY_KEYS = {
 _VARIANT_KEYS = {
     "label",
     "reporting",
-    "train_overrides",
+    "patch",
     "initialise_from",
     "initialise_components",
     "predictions",
 }
-_PREDICTION_KEYS = {"label", "overrides", "recurrent_steps"}
-_COMPONENTS = {"visible", "assignment", "invisible", "coupling", "compatibility"}
+_PREDICTION_KEYS = {"label", "patch", "recurrent_steps"}
 
 
 @dataclass(frozen=True)
 class PredictionSpec:
     name: str
     label: str
-    overrides: tuple[str, ...]
+    patch: dict
     recurrent_steps: int | None
 
 
@@ -44,7 +44,7 @@ class VariantSpec:
     name: str
     label: str
     reporting: str
-    train_overrides: tuple[str, ...]
+    patch: dict
     initialise_from: str | None
     initialise_components: tuple[str, ...]
     predictions: tuple[PredictionSpec, ...]
@@ -66,10 +66,10 @@ class StudySpec:
         return {variant.name: variant for variant in self.variants}
 
     def dependency_order(self) -> tuple[VariantSpec, ...]:
-        """Topologically order variants by checkpoint initialisation dependencies."""
+        """Return variants in checkpoint-initialisation order."""
         remaining = dict(self.variant_map)
-        ordered: list[VariantSpec] = []
         complete: set[str] = set()
+        ordered: list[VariantSpec] = []
         while remaining:
             ready = [
                 variant
@@ -88,6 +88,23 @@ class StudySpec:
                 complete.add(variant.name)
                 del remaining[variant.name]
         return tuple(ordered)
+
+    def dependency_closure(self, selected: tuple[str, ...]) -> tuple[VariantSpec, ...]:
+        """Include every checkpoint prerequisite of the explicitly selected variants."""
+        unknown = sorted(set(selected) - set(self.variant_map))
+        if unknown:
+            raise ValueError(f"Unknown study variants: {unknown}")
+        required = set(selected)
+        frontier = list(selected)
+        while frontier:
+            name = frontier.pop()
+            parent = self.variant_map[name].initialise_from
+            if parent is not None and parent not in required:
+                required.add(parent)
+                frontier.append(parent)
+        return tuple(
+            variant for variant in self.dependency_order() if variant.name in required
+        )
 
     def experiment_path(self, repo_root: Path, topology: str) -> Path:
         if topology not in self.topologies:
@@ -116,22 +133,16 @@ def _exact_keys(mapping: dict, expected: set[str], name: str) -> None:
 def _identifier(value: object, name: str) -> str:
     text = str(value)
     if not _IDENTIFIER.fullmatch(text):
-        raise ValueError(
-            f"{name} must match {_IDENTIFIER.pattern!r}; found {text!r}"
-        )
+        raise ValueError(f"{name} must match {_IDENTIFIER.pattern!r}; found {text!r}")
     return text
 
 
-def _override_list(values: object, name: str) -> tuple[str, ...]:
-    if values is None:
-        return ()
-    if not isinstance(values, list):
-        raise ValueError(f"{name} must be a YAML list of KEY=VALUE strings")
-    result = tuple(str(value) for value in values)
-    for value in result:
-        if "=" not in value or value.startswith("="):
-            raise ValueError(f"Invalid override in {name}: {value!r}")
-    return result
+def _patch(value: object, name: str) -> dict:
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError(f"{name} must be a YAML mapping")
+    return value
 
 
 def load_study(path: str | Path) -> StudySpec:
@@ -202,7 +213,7 @@ def load_study(path: str | Path) -> StudySpec:
         raw_predictions = values["predictions"]
         if not isinstance(raw_predictions, dict):
             raise ValueError(f"variants.{variant_name}.predictions must be a mapping")
-        predictions: list[PredictionSpec] = []
+        predictions = []
         for raw_prediction_name, prediction in raw_predictions.items():
             prediction_name = _identifier(raw_prediction_name, "prediction name")
             if not isinstance(prediction, dict):
@@ -223,9 +234,9 @@ def load_study(path: str | Path) -> StudySpec:
                 PredictionSpec(
                     name=prediction_name,
                     label=str(prediction["label"]),
-                    overrides=_override_list(
-                        prediction["overrides"],
-                        f"variants.{variant_name}.predictions.{prediction_name}.overrides",
+                    patch=_patch(
+                        prediction["patch"],
+                        f"variants.{variant_name}.predictions.{prediction_name}.patch",
                     ),
                     recurrent_steps=recurrent_steps,
                 )
@@ -239,10 +250,7 @@ def load_study(path: str | Path) -> StudySpec:
                 name=variant_name,
                 label=str(values["label"]),
                 reporting=reporting,
-                train_overrides=_override_list(
-                    values["train_overrides"],
-                    f"variants.{variant_name}.train_overrides",
-                ),
+                patch=_patch(values["patch"], f"variants.{variant_name}.patch"),
                 initialise_from=initialise_from,
                 initialise_components=components,
                 predictions=tuple(predictions),
