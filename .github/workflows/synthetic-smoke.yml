@@ -18,7 +18,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        topology: [ttbar1L, ttbar2L, synthetic_contract]
+        topology: [ttbar1L, ttbar2L, synthetic_contract, synthetic_multinu]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
