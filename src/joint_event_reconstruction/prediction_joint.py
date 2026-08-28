@@ -96,6 +96,8 @@ def predict_joint_flow_hdf5(
             generated = module.event_model.joint_flow.sample(
                 visible,
                 batch["structured"],
+                module.event_model.reconstruction,
+                module.event_model.invisible,
                 samples=posterior_samples,
                 steps=steps,
             )
