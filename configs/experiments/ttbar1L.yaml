@@ -52,7 +52,7 @@ inference:
   top_k_assignments: 1
   posterior_samples: 1
   assignment_flow: {steps: 8}
-  joint_flow: {steps: 8, solver: euler}
+  joint_flow: {steps: 8, solver: euler, sample_chunk_size: 8}
 
 training:
   learning_rate: 0.000361545
