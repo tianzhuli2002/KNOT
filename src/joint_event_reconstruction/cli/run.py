@@ -1,4 +1,4 @@
-"""One maintained command line for reconstruction training, prediction and validation."""
+"""One maintained CLI for training, prediction, evaluation and plotting."""
 
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ from joint_event_reconstruction.configuration import load_experiment
 from joint_event_reconstruction.data.invisible import InvisibleScaler
 from joint_event_reconstruction.data.structured import StructuredDataModule
 from joint_event_reconstruction.evaluation_joint import evaluate_any_predictions
+from joint_event_reconstruction.plotting import plot_comparison, plot_prediction
 from joint_event_reconstruction.prediction import predict_hdf5
 from joint_event_reconstruction.prediction_discrete import predict_discrete_flow_hdf5
 from joint_event_reconstruction.prediction_joint import predict_joint_flow_hdf5
@@ -40,8 +41,7 @@ def build_data(config, visible):
         build_assignments=build_assignments,
         max_assignment_states=(
             int(config.model.reconstruction.flow_matching.max_states)
-            if build_assignments
-            else None
+            if build_assignments else None
         ),
     )
 
@@ -56,8 +56,7 @@ def train(config) -> None:
         invisible_scaler=data.invisible_scaler,
         synthetic_data=(
             bool(data.structured_collator.invisible_store.synthetic)
-            if data.structured_collator.invisible_store is not None
-            else False
+            if data.structured_collator.invisible_store is not None else False
         ),
     )
     callbacks = [
@@ -104,8 +103,7 @@ def load_trained(config, visible, data, checkpoint_path: str) -> JointEventModul
         invisible_scaler=scaler,
         synthetic_data=(
             bool(data.structured_collator.invisible_store.synthetic)
-            if data.structured_collator.invisible_store is not None
-            else False
+            if data.structured_collator.invisible_store is not None else False
         ),
     )
     module.validate_checkpoint_metadata(checkpoint)
@@ -113,17 +111,34 @@ def load_trained(config, visible, data, checkpoint_path: str) -> JointEventModul
     return module
 
 
+def _plot_predictions(paths: list[str], output: str, labels: list[str] | None) -> None:
+    output_dir = Path(output).expanduser().resolve()
+    if len(paths) == 1:
+        written = plot_prediction(paths[0], output_dir)
+    else:
+        written = []
+        for path in paths:
+            stem = Path(path).stem
+            written.extend(plot_prediction(path, output_dir / stem))
+        written.extend(
+            plot_comparison(paths, output_dir / "comparison", labels=labels)
+        )
+    print(f"Wrote {len(written)} evaluation/plot products to {output_dir}")
+
+
 def main() -> None:
-    # Mixed precision already handles the main tensor-core path. This also permits
-    # TF32-style high-throughput float32 GEMMs for operations that remain in fp32.
+    # Mixed precision handles the main tensor-core path; this additionally permits
+    # high-throughput float32 GEMMs for operations that remain in fp32.
     torch.set_float32_matmul_precision("high")
 
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "command",
-        choices=("train", "smoke", "validate-data", "predict", "evaluate"),
+        choices=(
+            "train", "smoke", "validate-data", "predict", "evaluate", "plot"
+        ),
     )
-    parser.add_argument("--experiment", required=True)
+    parser.add_argument("--experiment")
     parser.add_argument(
         "--set",
         dest="overrides",
@@ -132,22 +147,39 @@ def main() -> None:
         metavar="KEY=VALUE",
         help=(
             "Override one experiment value using OmegaConf dot notation. "
-            "Repeat for multiple scientific choices, e.g. "
-            "--set model.invisible.formulation=flow_matching"
+            "Repeat for multiple scientific choices."
         ),
     )
     parser.add_argument("--checkpoint")
     parser.add_argument(
-        "--split",
-        choices=("train", "validation", "test"),
-        default="test",
+        "--split", choices=("train", "validation", "test"), default="test"
     )
     parser.add_argument("--output")
-    parser.add_argument("--predictions")
+    parser.add_argument("--predictions", nargs="+")
+    parser.add_argument("--labels", nargs="+")
     parser.add_argument("--device", choices=("cpu", "cuda"), default="cpu")
     parser.add_argument("--recurrent-steps", type=int)
     args = parser.parse_args()
 
+    if args.command == "evaluate":
+        if not args.predictions or len(args.predictions) != 1:
+            raise ValueError("evaluate requires exactly one --predictions HDF5 file")
+        print(
+            json.dumps(
+                evaluate_any_predictions(args.predictions[0]), indent=2, sort_keys=True
+            )
+        )
+        return
+    if args.command == "plot":
+        if not args.predictions or not args.output:
+            raise ValueError("plot requires --predictions and --output")
+        if args.labels is not None and len(args.labels) != len(args.predictions):
+            raise ValueError("--labels must match the number of prediction files")
+        _plot_predictions(args.predictions, args.output, args.labels)
+        return
+
+    if not args.experiment:
+        raise ValueError(f"{args.command} requires --experiment")
     config = load_experiment(args.experiment, args.overrides)
     if args.command == "train":
         train(config)
@@ -162,18 +194,11 @@ def main() -> None:
     if args.command == "validate-data":
         from scripts.data.validate_joint_h5 import validate
 
+        if config.data.invisible.path is None:
+            raise ValueError("validate-data requires data.invisible.path")
         print(
             json.dumps(
                 validate(Path(config.data.invisible.path)), indent=2, sort_keys=True
-            )
-        )
-        return
-    if args.command == "evaluate":
-        if not args.predictions:
-            raise ValueError("evaluate requires --predictions")
-        print(
-            json.dumps(
-                evaluate_any_predictions(args.predictions), indent=2, sort_keys=True
             )
         )
         return
@@ -196,9 +221,7 @@ def main() -> None:
             split=args.split,
             posterior_samples=int(config.inference.posterior_samples),
             steps=int(config.inference.joint_flow.steps),
-            sample_chunk_size=int(
-                config.inference.joint_flow.get("sample_chunk_size", 1)
-            ),
+            sample_chunk_size=int(config.inference.joint_flow.sample_chunk_size),
             device=args.device,
             checkpoint_path=args.checkpoint,
         )
@@ -231,9 +254,7 @@ def main() -> None:
             ),
             device=args.device,
             checkpoint_path=args.checkpoint,
-            compatibility_lambda=float(
-                config.model.compatibility.get("lambda", 1.0)
-            ),
+            compatibility_lambda=float(config.model.compatibility.get("lambda", 1.0)),
         )
 
 
