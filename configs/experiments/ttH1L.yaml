@@ -62,7 +62,7 @@ training:
   gradient_clip: 1.0
   accumulate_grad_batches: 1
   loss_weights: {reconstruction: 1.0, invisible: 1.0, compatibility: 1.0}
-  freeze: {visible: false, reconstruction: false, invisible: false}
+  freeze: {visible: false, assignment: false, invisible: false, compatibility: false}
   scheduler: {enabled: true, factor: 0.8, patience: 8, min_lr: 1.0e-6}
   early_stopping: {enabled: true, patience: 20}
   output: results/ttH1L_joint
