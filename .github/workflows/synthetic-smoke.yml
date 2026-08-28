@@ -42,6 +42,31 @@ jobs:
               load_experiment(path)
               print(f"validated {path}")
           PY
+      - name: Validate maintained study manifests
+        if: matrix.topology == 'ttbar1L'
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from joint_event_reconstruction.configuration import load_experiment
+          from joint_event_reconstruction.studies import load_study
+
+          root = Path.cwd()
+          for path in sorted(Path("configs/studies").glob("*.yaml")):
+              study = load_study(path)
+              for topology in study.topologies:
+                  experiment = study.experiment_path(root, topology)
+                  for seed in study.seeds:
+                      for variant in study.variants:
+                          base = [
+                              *variant.train_overrides,
+                              f"experiment.seed={seed}",
+                              "training.output=/tmp/jer-study-ci",
+                          ]
+                          load_experiment(experiment, base)
+                          for prediction in variant.predictions:
+                              load_experiment(experiment, [*base, *prediction.overrides])
+              print(f"validated {path}")
+          PY
       - name: Synthetic smoke
         run: python scripts/smoke_synthetic.py --topology ${{ matrix.topology }} --device cpu --events 4
       - name: Synthetic benchmark smoke
