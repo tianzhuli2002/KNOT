@@ -16,6 +16,7 @@ from joint_event_reconstruction.data.invisible import InvisibleScaler
 from joint_event_reconstruction.data.structured import StructuredDataModule
 from joint_event_reconstruction.evaluation_joint import evaluate_any_predictions
 from joint_event_reconstruction.prediction import predict_hdf5
+from joint_event_reconstruction.prediction_discrete import predict_discrete_flow_hdf5
 from joint_event_reconstruction.prediction_joint import predict_joint_flow_hdf5
 from joint_event_reconstruction.training.joint import JointEventModule
 
@@ -152,7 +153,9 @@ def main() -> None:
     data.setup("predict")
     module = load_trained(config, visible, data, args.checkpoint)
 
-    if str(config.model.get("mode", "factorized")) == "joint_flow":
+    mode = str(config.model.get("mode", "factorized"))
+    assignment_formulation = str(config.model.reconstruction.formulation)
+    if mode == "joint_flow":
         predict_joint_flow_hdf5(
             module,
             data,
@@ -161,6 +164,17 @@ def main() -> None:
             split=args.split,
             posterior_samples=int(config.inference.posterior_samples),
             steps=int(config.inference.joint_flow.steps),
+            device=args.device,
+            checkpoint_path=args.checkpoint,
+        )
+    elif assignment_formulation == "flow_matching":
+        predict_discrete_flow_hdf5(
+            module,
+            data,
+            args.output,
+            split=args.split,
+            posterior_samples=int(config.inference.posterior_samples),
+            steps=int(config.inference.assignment_flow.steps),
             device=args.device,
             checkpoint_path=args.checkpoint,
         )
