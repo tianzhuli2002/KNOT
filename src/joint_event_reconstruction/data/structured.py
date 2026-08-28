@@ -17,9 +17,22 @@ from joint_event_reconstruction.topology.compiler import load_topology
 
 
 class StructuredCollator:
-    def __init__(self, topology_path: str | Path, source_type_ids: dict[str, int]):
+    def __init__(
+        self,
+        topology_path: str | Path,
+        source_type_ids: dict[str, int],
+        *,
+        build_assignments: bool = False,
+        max_assignment_states: int | None = None,
+    ):
         self.topology_path = str(Path(topology_path).expanduser().resolve())
         self.source_type_ids = dict(source_type_ids)
+        self.build_assignments = bool(build_assignments)
+        self.max_assignment_states = (
+            None if max_assignment_states is None else int(max_assignment_states)
+        )
+        if self.max_assignment_states is not None and self.max_assignment_states <= 0:
+            raise ValueError("max_assignment_states must be positive or null")
         self._spec = None
         self._templates = None
         self._assignment_template = None
@@ -101,10 +114,10 @@ class StructuredCollator:
                 "truth_index": truth_index,
                 "reconstructable": reconstructable,
             }
-        batch["structured"] = {
-            "pools": pools,
-            "assignments": self._assignment_template.batch(pools),
-        }
+        structured = {"pools": pools}
+        if self._assignment_template is not None:
+            structured["assignments"] = self._assignment_template.batch(pools)
+        batch["structured"] = structured
         if self.invisible_store is not None:
             invisible = self.invisible_store.lookup(batch["event_index"])
             batch["invisible_truth"] = invisible
@@ -113,7 +126,7 @@ class StructuredCollator:
 
     def _build_templates(
         self, source_positions: dict[str, torch.Tensor], token_count: int
-    ) -> tuple[dict, object]:
+    ) -> tuple[dict, object | None]:
         available = {
             source: tuple(range(len(positions)))
             for source, positions in source_positions.items()
@@ -148,7 +161,25 @@ class StructuredCollator:
                 "leaf_indices": leaf_indices,
                 "child_indices": child_indices,
             }
-        return templates, build_assignment_template(self.spec, records)
+
+        assignment_template = None
+        if self.build_assignments:
+            assignment_template = build_assignment_template(self.spec, records)
+            if (
+                self.max_assignment_states is not None
+                and assignment_template.state_count > self.max_assignment_states
+            ):
+                root_sizes = {
+                    root: len(records[root]) for root in self.spec.roots
+                }
+                raise RuntimeError(
+                    "Complete assignment state space is too large for configured DFM/joint flow: "
+                    f"states={assignment_template.state_count}, "
+                    f"max_states={self.max_assignment_states}, roots={root_sizes}, "
+                    f"topology={self.topology_path}. Increase "
+                    "model.reconstruction.flow_matching.max_states only after checking memory scaling."
+                )
+        return templates, assignment_template
 
 
 class StructuredCachedDataset(Dataset):
@@ -177,14 +208,27 @@ class StructuredCachedDataset(Dataset):
 
 class StructuredDataModule(TransformerDataModule):
     def __init__(
-        self, config, topology_path: str | Path, *, tensor_cache: str | Path | None = None,
-        invisible_path: str | Path | None = None, allow_synthetic: bool = False,
-        max_events: dict | None = None, subset_seed: int = 42,
+        self,
+        config,
+        topology_path: str | Path,
+        *,
+        tensor_cache: str | Path | None = None,
+        invisible_path: str | Path | None = None,
+        allow_synthetic: bool = False,
+        max_events: dict | None = None,
+        subset_seed: int = 42,
+        build_assignments: bool = False,
+        max_assignment_states: int | None = None,
     ):
         self.tensor_cache = None if tensor_cache is None else Path(tensor_cache).expanduser().resolve()
         config.dataset.cache.enabled = False
         super().__init__(config)
-        self.structured_collator = StructuredCollator(topology_path, dict(self.schema.source_type_ids))
+        self.structured_collator = StructuredCollator(
+            topology_path,
+            dict(self.schema.source_type_ids),
+            build_assignments=build_assignments,
+            max_assignment_states=max_assignment_states,
+        )
         self.invisible_path = invisible_path
         self.allow_synthetic = allow_synthetic
         self.max_events = max_events
