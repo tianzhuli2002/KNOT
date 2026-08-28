@@ -92,6 +92,11 @@ def active_architecture(model) -> dict:
     return payload
 
 
+def _freeze(module) -> None:
+    if module is not None:
+        module.requires_grad_(False)
+
+
 class JointEventModule(L.LightningModule):
     def __init__(
         self,
@@ -148,15 +153,23 @@ class JointEventModule(L.LightningModule):
             ),
             joint_flow_config=model.get("joint_flow"),
         )
+
         freeze = experiment.training.freeze
         if bool(freeze.visible):
-            self.event_model.visible.requires_grad_(False)
-        if bool(freeze.reconstruction):
-            self.event_model.reconstruction.requires_grad_(False)
-            if self.event_model.assignment_flow is not None:
-                self.event_model.assignment_flow.requires_grad_(False)
-        if bool(freeze.invisible) and self.event_model.invisible is not None:
-            self.event_model.invisible.requires_grad_(False)
+            _freeze(self.event_model.visible)
+        if bool(freeze.assignment):
+            for component in (
+                self.event_model.reconstruction,
+                self.event_model.reasoner,
+                self.event_model.feedback,
+                self.event_model.assignment_flow,
+                self.event_model.posterior_feedback,
+            ):
+                _freeze(component)
+        if bool(freeze.invisible):
+            _freeze(self.event_model.invisible)
+        if bool(freeze.compatibility):
+            _freeze(self.event_model.compatibility)
 
         architecture = active_architecture(model)
         signature = hashlib.sha256(
@@ -256,8 +269,14 @@ class JointEventModule(L.LightningModule):
         return self._step(batch, "test")
 
     def configure_optimizers(self):
+        trainable = [parameter for parameter in self.parameters() if parameter.requires_grad]
+        if not trainable:
+            raise RuntimeError("Experiment freezes every trainable parameter")
         optimiser = torch.optim.AdamW(
-            self.parameters(), lr=self.learning_rate, weight_decay=self.weight_decay
+            trainable,
+            lr=self.learning_rate,
+            weight_decay=self.weight_decay,
+            fused=bool(trainable[0].is_cuda),
         )
         if not self.scheduler_config.enabled:
             return optimiser
