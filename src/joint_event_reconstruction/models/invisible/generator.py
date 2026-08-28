@@ -1,4 +1,4 @@
-"""Topology-conditioned generative invisible inference."""
+"""Topology-conditioned generative inference for invisible momenta."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from joint_event_reconstruction.topology.spec import TopologySpec
 
 
 class InvisibleGenerator(nn.Module):
-    def __init__(self, spec: TopologySpec, visible_dim: int, config):
+    def __init__(self, spec: TopologySpec, visible_dim: int, config, inference_config):
         super().__init__()
         self.spec = spec
         self.assignment_mode = str(config.conditioning.assignment)
@@ -29,37 +29,34 @@ class InvisibleGenerator(nn.Module):
             dropout=float(denoiser_config.dropout),
             zero_init_output=bool(denoiser_config.zero_init_output),
         )
+
         self.formulation_name = str(config.formulation)
         if self.formulation_name == "standard":
             self.formulation = StandardDiffusion(
                 denoiser, int(config.standard.training_steps)
             )
-            self.inference_budget = int(config.standard.inference_steps)
+            self.inference_budget = int(inference_config.standard.steps)
             self.sampler = "ddim"
         elif self.formulation_name == "edm":
-            edm = config.edm
+            training = config.edm
+            sampling = inference_config.edm
             self.formulation = EDMDiffusion(
                 denoiser,
-                sigma_data=float(edm.sigma_data),
-                p_mean=float(edm.p_mean),
-                p_std=float(edm.p_std),
-                sigma_min=float(edm.sigma_min),
-                sigma_max=float(edm.sigma_max),
-                rho=float(edm.rho),
+                sigma_data=float(training.sigma_data),
+                p_mean=float(training.p_mean),
+                p_std=float(training.p_std),
+                sigma_min=float(sampling.sigma_min),
+                sigma_max=float(sampling.sigma_max),
+                rho=float(sampling.rho),
             )
-            self.inference_budget = int(edm.inference_nfe)
+            self.inference_budget = int(sampling.nfe)
             self.sampler = "heun"
         elif self.formulation_name == "flow_matching":
-            flow = config.flow_matching
-            if str(flow.path) != "linear":
-                raise ValueError(
-                    f"Only linear Flow Matching is implemented, found path={flow.path!r}"
-                )
             self.formulation = ContinuousFlowMatching(
-                denoiser, coupling=str(flow.coupling)
+                denoiser, coupling=str(config.flow_matching.coupling)
             )
-            self.inference_budget = int(flow.inference_steps)
-            self.sampler = str(flow.sampler)
+            self.inference_budget = int(inference_config.flow_matching.steps)
+            self.sampler = str(inference_config.flow_matching.solver)
         else:
             raise ValueError(
                 f"Unknown invisible formulation {self.formulation_name!r}"
@@ -78,9 +75,7 @@ class InvisibleGenerator(nn.Module):
         cls_mask = torch.zeros(
             (len(context), 1), dtype=torch.bool, device=context.device
         )
-        return context, torch.cat(
-            (cls_mask, visible["padding_mask"]), dim=1
-        )
+        return context, torch.cat((cls_mask, visible["padding_mask"]), dim=1)
 
     def parent_context(
         self,
@@ -91,12 +86,11 @@ class InvisibleGenerator(nn.Module):
         *,
         mode: str | None = None,
     ) -> torch.Tensor:
-        """Build the training/inference context for non-hypothesis posterior modes.
+        """Build parent contexts for non-hypothesis sampling and training.
 
-        ``hypothesis`` learns p(nu|X,A) using truth assignments only where those
-        assignments are reconstructable. The caller masks unreconstructable events
-        out of the invisible loss. At prediction time it uses explicit decoded
-        assignment hypotheses through :meth:`assignment_parent_context`.
+        ``hypothesis`` trains p(nu|X,A) with the truth assignment only when it is
+        reconstructable. Prediction uses explicit decoded assignments through
+        :meth:`assignment_parent_context`; it is not an oracle at inference time.
         """
         mode = self.assignment_mode if mode is None else mode
         contexts = []
@@ -110,15 +104,13 @@ class InvisibleGenerator(nn.Module):
                 probabilities = reconstruction["assignment_probabilities"][node]
                 if mode == "soft":
                     summary = torch.sum(
-                        probabilities[:, 1:].unsqueeze(-1) * candidates,
-                        dim=1,
+                        probabilities[:, 1:].unsqueeze(-1) * candidates, dim=1
                     )
                 elif mode == "hard":
                     selected = probabilities.argmax(dim=1) - 1
                     safe = selected.clamp_min(0)
                     summary = candidates[
-                        torch.arange(len(candidates), device=candidates.device),
-                        safe,
+                        torch.arange(len(candidates), device=candidates.device), safe
                     ]
                     summary = summary * (selected >= 0).unsqueeze(1)
                 elif mode == "hypothesis":
@@ -126,8 +118,7 @@ class InvisibleGenerator(nn.Module):
                     selected = pool["truth_index"]
                     safe = selected.clamp_min(0)
                     summary = candidates[
-                        torch.arange(len(candidates), device=candidates.device),
-                        safe,
+                        torch.arange(len(candidates), device=candidates.device), safe
                     ]
                     summary = summary * pool["reconstructable"].unsqueeze(1)
                 elif mode == "truth":
@@ -145,8 +136,7 @@ class InvisibleGenerator(nn.Module):
                             f"node {node}; rows={events}"
                         )
                     summary = candidates[
-                        torch.arange(len(candidates), device=candidates.device),
-                        selected,
+                        torch.arange(len(candidates), device=candidates.device), selected
                     ]
                 else:
                     raise ValueError(
@@ -171,9 +161,8 @@ class InvisibleGenerator(nn.Module):
                     f"dtype={event_mask.dtype}, shape={tuple(event_mask.shape)}"
                 )
             if not event_mask.any():
-                zero = target.sum() * 0.0
                 return {
-                    "loss": zero,
+                    "loss": target.sum() * 0.0,
                     "valid_events": 0,
                     "skipped_all_events": True,
                 }
@@ -181,9 +170,7 @@ class InvisibleGenerator(nn.Module):
             context = context[event_mask]
             mask = mask[event_mask]
             parent_context = parent_context[event_mask]
-        result = self.formulation.loss(
-            target, context, mask, parent_context
-        )
+        result = self.formulation.loss(target, context, mask, parent_context)
         result["valid_events"] = len(target)
         return result
 
@@ -194,9 +181,7 @@ class InvisibleGenerator(nn.Module):
         generator: torch.Generator | None = None,
     ) -> torch.Tensor:
         if self.formulation_name != "flow_matching":
-            raise RuntimeError(
-                "Flow source is only defined for Flow Matching"
-            )
+            raise RuntimeError("Flow source is only defined for Flow Matching")
         return self.formulation.source(target, generator=generator)
 
     def velocity(
@@ -207,9 +192,7 @@ class InvisibleGenerator(nn.Module):
         parent_context: torch.Tensor,
     ) -> torch.Tensor:
         if self.formulation_name != "flow_matching":
-            raise RuntimeError(
-                "Invisible velocity is only defined for Flow Matching"
-            )
+            raise RuntimeError("Invisible velocity is only defined for Flow Matching")
         context, mask = self.visible_context(visible)
         return self.formulation.velocity(
             state, time, context, mask, parent_context
@@ -232,9 +215,10 @@ class InvisibleGenerator(nn.Module):
         mask = mask.repeat_interleave(samples, dim=0)
         parent = parent_context.repeat_interleave(samples, dim=0)
         shape = (batch * samples, roles, 3)
-        selected_budget = (
-            self.inference_budget if budget is None else budget
-        )
+        selected_budget = self.inference_budget if budget is None else int(budget)
+        if selected_budget <= 0:
+            raise ValueError("Invisible inference budget must be positive")
+
         if self.formulation_name == "standard":
             values, nfe = self.formulation.sample(
                 shape,
@@ -291,13 +275,11 @@ class InvisibleGenerator(nn.Module):
                     candidate_index = selected[node]
                     for role in self.spec.nodes[node].composite_roles:
                         child_index = int(
-                            structured["pools"][node]["child_indices"][
-                                role.key
-                            ][candidate_index]
+                            structured["pools"][node]["child_indices"][role.key][
+                                candidate_index
+                            ]
                         )
-                        previous = selected.setdefault(
-                            role.child, child_index
-                        )
+                        previous = selected.setdefault(role.child, child_index)
                         if previous != child_index:
                             raise RuntimeError(
                                 "Decoded hypothesis has inconsistent child "
@@ -315,9 +297,9 @@ class InvisibleGenerator(nn.Module):
                         if node_context is None
                         else node_context[role.node][event]
                     )
-                    candidate = reconstruction["candidate_embeddings"][
-                        role.node
-                    ][event, selected[role.node]]
+                    candidate = reconstruction["candidate_embeddings"][role.node][
+                        event, selected[role.node]
+                    ]
                     contexts.append(base + candidate)
                 per_hypothesis.append(torch.stack(contexts, dim=0))
             per_event.append(torch.stack(per_hypothesis, dim=0))
@@ -333,17 +315,11 @@ class InvisibleGenerator(nn.Module):
         generator: torch.Generator | None = None,
     ) -> tuple[torch.Tensor, int]:
         if parent_context.ndim != 4:
-            raise ValueError(
-                "Hypothesis parent context must be [B,K,Rnu,D]"
-            )
+            raise ValueError("Hypothesis parent context must be [B,K,Rnu,D]")
         batch, hypotheses, roles, width = parent_context.shape
         repeated_visible = {
-            "pooled": visible["pooled"].repeat_interleave(
-                hypotheses, dim=0
-            ),
-            "tokens": visible["tokens"].repeat_interleave(
-                hypotheses, dim=0
-            ),
+            "pooled": visible["pooled"].repeat_interleave(hypotheses, dim=0),
+            "tokens": visible["tokens"].repeat_interleave(hypotheses, dim=0),
             "padding_mask": visible["padding_mask"].repeat_interleave(
                 hypotheses, dim=0
             ),
@@ -355,6 +331,4 @@ class InvisibleGenerator(nn.Module):
             budget=budget,
             generator=generator,
         )
-        return generated.reshape(
-            batch, hypotheses, samples, roles, 3
-        ), nfe
+        return generated.reshape(batch, hypotheses, samples, roles, 3), nfe
