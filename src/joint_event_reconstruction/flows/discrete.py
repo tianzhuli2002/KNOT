@@ -24,12 +24,11 @@ class MaskedDiscreteFlow:
         return torch.where(reveal, target, torch.full_like(target, mask_state))
 
     def loss(self, clean_logits: torch.Tensor, target: torch.Tensor, current_state: torch.Tensor, time: torch.Tensor, *, mask_state: int) -> torch.Tensor:
+        """Clean-state posterior prediction on states that remain masked."""
         masked = current_state == mask_state
         if not masked.any():
             return clean_logits.sum() * 0
-        per_event = F.cross_entropy(clean_logits, target, reduction="none")
-        weight = (1 - time).clamp_min(self.eps).reciprocal()
-        return (per_event[masked] * weight[masked]).mean()
+        return F.cross_entropy(clean_logits[masked], target[masked])
 
     @torch.no_grad()
     def step(self, state: torch.Tensor, clean_logits: torch.Tensor, time: torch.Tensor, next_time: torch.Tensor, *, mask_state: int, generator: torch.Generator | None = None) -> torch.Tensor:
