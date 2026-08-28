@@ -1,4 +1,4 @@
-"""Load and strictly validate the single maintained experiment configuration."""
+"""Load and strictly validate the maintained experiment configuration."""
 
 from __future__ import annotations
 
@@ -8,7 +8,36 @@ from pathlib import Path
 from omegaconf import DictConfig, OmegaConf
 
 
+TOP_LEVEL_KEYS = {
+    "experiment",
+    "topology_config",
+    "visible_config",
+    "data",
+    "model",
+    "inference",
+    "training",
+}
+MODEL_KEYS = {
+    "mode",
+    "visible",
+    "assignment",
+    "invisible",
+    "joint_flow",
+    "coupling",
+    "compatibility",
+}
 FREEZE_KEYS = {"visible", "assignment", "invisible", "compatibility"}
+
+
+def _exact_keys(section, expected: set[str], name: str) -> None:
+    observed = set(section)
+    if observed != expected:
+        missing = sorted(expected - observed)
+        extra = sorted(observed - expected)
+        raise ValueError(
+            f"{name} keys must be exactly {sorted(expected)}; "
+            f"missing={missing}, unknown_or_obsolete={extra}"
+        )
 
 
 def _positive(value, name: str) -> float:
@@ -32,6 +61,30 @@ def _positive_int(value, name: str) -> int:
     return result
 
 
+def _finite(value, name: str) -> float:
+    result = float(value)
+    if not math.isfinite(result):
+        raise ValueError(f"{name} must be finite, found {value!r}")
+    return result
+
+
+def _validate_network(section, name: str) -> None:
+    _exact_keys(
+        section,
+        {"d_model", "n_heads", "layers", "d_feedforward", "dropout"},
+        name,
+    )
+    width = _positive_int(section.d_model, f"{name}.d_model")
+    heads = _positive_int(section.n_heads, f"{name}.n_heads")
+    if width % heads:
+        raise ValueError(f"{name}.d_model must be divisible by {name}.n_heads")
+    _positive_int(section.layers, f"{name}.layers")
+    _positive_int(section.d_feedforward, f"{name}.d_feedforward")
+    dropout = float(section.dropout)
+    if not math.isfinite(dropout) or not 0 <= dropout < 1:
+        raise ValueError(f"{name}.dropout must lie in [0,1)")
+
+
 def load_experiment(
     path: str | Path,
     overrides: list[str] | tuple[str, ...] | None = None,
@@ -47,118 +100,148 @@ def load_experiment(
 
 
 def validate_experiment(config: DictConfig) -> None:
-    required = {
-        "experiment", "topology_config", "visible_config", "data",
-        "model", "inference", "training",
-    }
-    missing = required - set(config)
-    if missing:
+    """Validate the public experiment contract.
+
+    The YAML deliberately exposes only genuine scientific choices, inference budgets and
+    safety limits. Fixed implementation details (linear CFM path, MASK-source DFM,
+    detached C2 feedback and Euler joint integration) are not configurable.
+    """
+    _exact_keys(config, TOP_LEVEL_KEYS, "experiment config")
+    _exact_keys(config.experiment, {"name", "seed"}, "experiment")
+    if not str(config.experiment.name).strip():
+        raise ValueError("experiment.name must be non-empty")
+    int(config.experiment.seed)
+    if not str(config.topology_config).strip() or not str(config.visible_config).strip():
+        raise ValueError("topology_config and visible_config must be non-empty")
+
+    data = config.data
+    _exact_keys(
+        data,
+        {"tensor_cache", "max_events", "max_assignment_states", "invisible"},
+        "data",
+    )
+    _exact_keys(data.max_events, {"train", "val", "test"}, "data.max_events")
+    _exact_keys(data.invisible, {"path", "allow_synthetic"}, "data.invisible")
+    _positive_int(data.max_assignment_states, "data.max_assignment_states")
+    for split in ("train", "val", "test"):
+        limit = data.max_events[split]
+        if limit is not None:
+            _positive_int(limit, f"data.max_events.{split}")
+    if data.max_events.train is not None and int(data.max_events.train) > 500_000:
         raise ValueError(
-            f"Experiment configuration is missing sections {sorted(missing)}"
+            "This development configuration forbids more than 500000 training events"
         )
 
     model = config.model
-    mode = str(model.get("mode", "factorized"))
+    _exact_keys(model, MODEL_KEYS, "model")
+    mode = str(model.mode)
     if mode not in {"factorized", "joint_flow"}:
+        raise ValueError(f"model.mode must be factorized or joint_flow, found {mode!r}")
+    _validate_network(model.visible, "model.visible")
+
+    assignment = model.assignment
+    _exact_keys(
+        assignment,
+        {"formulation", "reasoning", "feedback"},
+        "model.assignment",
+    )
+    formulation = str(assignment.formulation)
+    if formulation not in {"discriminative", "flow_matching"}:
         raise ValueError(
-            f"model.mode must be factorized or joint_flow, found {mode!r}"
+            "model.assignment.formulation must be discriminative or flow_matching"
         )
 
-    visible = model.visible
-    d_model = _positive_int(visible.d_model, "model.visible.d_model")
-    n_heads = _positive_int(visible.n_heads, "model.visible.n_heads")
-    if d_model % n_heads:
+    reasoning = assignment.reasoning
+    _exact_keys(
+        reasoning,
+        {
+            "enabled",
+            "block_layers",
+            "train_steps",
+            "eval_steps",
+            "fixed_input_reinjection",
+        },
+        "model.assignment.reasoning",
+    )
+    _positive_int(reasoning.block_layers, "model.assignment.reasoning.block_layers")
+    train_steps = tuple(int(step) for step in reasoning.train_steps)
+    if not train_steps or any(step <= 0 for step in train_steps):
         raise ValueError(
-            "model.visible.d_model must be divisible by model.visible.n_heads"
+            "model.assignment.reasoning.train_steps must contain positive integers"
         )
-    _positive_int(visible.layers, "model.visible.layers")
-    _positive_int(visible.d_feedforward, "model.visible.d_feedforward")
-    dropout = float(visible.dropout)
-    if not math.isfinite(dropout) or not 0 <= dropout < 1:
-        raise ValueError("model.visible.dropout must lie in [0,1)")
+    _positive_int(reasoning.eval_steps, "model.assignment.reasoning.eval_steps")
 
-    reasoning = model.reasoning
-    reconstruction = model.reconstruction
+    feedback = assignment.feedback
+    _exact_keys(
+        feedback,
+        {"enabled", "start_step", "gate_initial_bias"},
+        "model.assignment.feedback",
+    )
+    _positive_int(feedback.start_step, "model.assignment.feedback.start_step")
+    _finite(feedback.gate_initial_bias, "model.assignment.feedback.gate_initial_bias")
+    if bool(feedback.enabled) and not bool(reasoning.enabled):
+        raise ValueError(
+            "model.assignment.feedback.enabled=true requires "
+            "model.assignment.reasoning.enabled=true"
+        )
+
     invisible = model.invisible
-    coupling = model.coupling
-    compatibility = model.compatibility
-    reconstruction_formulation = str(
-        reconstruction.get("formulation", "discriminative")
+    _exact_keys(
+        invisible,
+        {
+            "enabled",
+            "formulation",
+            "conditioning",
+            "denoiser",
+            "standard",
+            "edm",
+            "flow_matching",
+        },
+        "model.invisible",
     )
-    _positive_int(reasoning.block_layers, "model.reasoning.block_layers")
-
-    if reconstruction_formulation not in {"discriminative", "flow_matching"}:
+    invisible_formulation = str(invisible.formulation)
+    if invisible_formulation not in {"standard", "edm", "flow_matching"}:
         raise ValueError(
-            "model.reconstruction.formulation must be discriminative or flow_matching"
+            "model.invisible.formulation must be standard, edm or flow_matching"
         )
-    assignment_flow = reconstruction.get("flow_matching")
-    if assignment_flow is None:
-        raise ValueError(
-            "model.reconstruction.flow_matching configuration is required"
-        )
-    _positive_int(
-        assignment_flow.get("max_states", 0),
-        "model.reconstruction.flow_matching.max_states",
+    _exact_keys(
+        invisible.conditioning,
+        {"assignment", "allow_truth_oracle"},
+        "model.invisible.conditioning",
     )
-    if reconstruction.feedback.enabled and not reasoning.enabled:
+    conditioning = str(invisible.conditioning.assignment)
+    if conditioning not in {"none", "soft", "hard", "hypothesis", "truth"}:
         raise ValueError(
-            "model.reconstruction.feedback.enabled=true requires "
-            "model.reasoning.enabled=true"
+            "model.invisible.conditioning.assignment must be none, soft, hard, "
+            "hypothesis or truth"
         )
-    if reconstruction.feedback.enabled:
-        _positive_int(
-            reconstruction.feedback.start_step,
-            "model.reconstruction.feedback.start_step",
-        )
-        if not math.isfinite(float(reconstruction.feedback.gate_initial_bias)):
-            raise ValueError(
-                "model.reconstruction.feedback.gate_initial_bias must be finite"
-            )
-
-    if reconstruction_formulation == "flow_matching":
-        if str(assignment_flow.source) != "mask":
-            raise ValueError(
-                "Discrete assignment Flow Matching currently requires source=mask"
-            )
-        if mode == "factorized":
-            if bool(reasoning.enabled) or bool(reconstruction.feedback.enabled):
-                raise ValueError(
-                    "Factorized discrete Flow Matching has its own time-conditioned "
-                    "topology reasoner; disable model.reasoning and reconstruction.feedback"
-                )
-            if bool(invisible.enabled):
-                raise ValueError(
-                    "Factorized discrete Flow Matching is currently assignment-only. "
-                    "Use discriminative reconstruction for p(nu|X,A), or "
-                    "model.mode=joint_flow for coupled discrete-continuous inference."
-                )
-            if (
-                bool(coupling.invisible_to_reconstruction.enabled)
-                or int(coupling.rounds) != 1
-            ):
-                raise ValueError(
-                    "Factorized discrete Flow Matching cannot use C2 posterior feedback"
-                )
-            if bool(compatibility.enabled):
-                raise ValueError(
-                    "Compatibility reranking is maintained for discriminative "
-                    "factorized reconstruction only"
-                )
-
-    if str(invisible.formulation) not in {"standard", "edm", "flow_matching"}:
+    if conditioning == "truth" and not bool(invisible.conditioning.allow_truth_oracle):
         raise ValueError(
-            "model.invisible.formulation must be standard, edm or flow_matching, "
-            f"found {invisible.formulation!r}"
+            "truth assignment conditioning is an oracle and requires "
+            "allow_truth_oracle=true"
         )
+    if conditioning != "truth" and bool(invisible.conditioning.allow_truth_oracle):
+        raise ValueError(
+            "allow_truth_oracle=true is only meaningful with assignment=truth"
+        )
+
+    _exact_keys(
+        invisible.denoiser,
+        {
+            "d_model",
+            "n_heads",
+            "layers",
+            "d_feedforward",
+            "dropout",
+            "zero_init_output",
+        },
+        "model.invisible.denoiser",
+    )
     if bool(invisible.enabled):
         denoiser = invisible.denoiser
-        invisible_width = _positive_int(
-            denoiser.d_model, "model.invisible.denoiser.d_model"
-        )
-        invisible_heads = _positive_int(
-            denoiser.n_heads, "model.invisible.denoiser.n_heads"
-        )
-        if invisible_width % invisible_heads:
+        width = _positive_int(denoiser.d_model, "model.invisible.denoiser.d_model")
+        heads = _positive_int(denoiser.n_heads, "model.invisible.denoiser.n_heads")
+        if width % heads:
             raise ValueError(
                 "model.invisible.denoiser.d_model must be divisible by n_heads"
             )
@@ -166,180 +249,201 @@ def validate_experiment(config: DictConfig) -> None:
         _positive_int(
             denoiser.d_feedforward, "model.invisible.denoiser.d_feedforward"
         )
-        invisible_dropout = float(denoiser.dropout)
-        if not math.isfinite(invisible_dropout) or not 0 <= invisible_dropout < 1:
+        denoiser_dropout = float(denoiser.dropout)
+        if not math.isfinite(denoiser_dropout) or not 0 <= denoiser_dropout < 1:
             raise ValueError("model.invisible.denoiser.dropout must lie in [0,1)")
 
-        if str(invisible.formulation) == "standard":
-            _positive_int(
-                invisible.standard.training_steps,
-                "model.invisible.standard.training_steps",
-            )
-            _positive_int(
-                invisible.standard.inference_steps,
-                "model.invisible.standard.inference_steps",
-            )
-        elif str(invisible.formulation) == "edm":
-            edm = invisible.edm
-            _positive(edm.sigma_data, "model.invisible.edm.sigma_data")
-            _positive(edm.p_std, "model.invisible.edm.p_std")
-            sigma_min = _positive(edm.sigma_min, "model.invisible.edm.sigma_min")
-            sigma_max = _positive(edm.sigma_max, "model.invisible.edm.sigma_max")
-            if sigma_min >= sigma_max:
-                raise ValueError("EDM requires sigma_min < sigma_max")
-            _positive(edm.rho, "model.invisible.edm.rho")
-            _positive_int(edm.inference_nfe, "model.invisible.edm.inference_nfe")
-            if not math.isfinite(float(edm.p_mean)):
-                raise ValueError("model.invisible.edm.p_mean must be finite")
-        else:
-            flow = invisible.get("flow_matching")
-            if flow is None:
-                raise ValueError(
-                    "Flow Matching invisible inference requires model.invisible.flow_matching"
-                )
-            if str(flow.path) != "linear":
-                raise ValueError(
-                    "Only linear continuous Flow Matching is currently implemented"
-                )
-            if str(flow.coupling) not in {"independent", "minibatch_ot"}:
-                raise ValueError(
-                    "Flow Matching coupling must be independent or minibatch_ot"
-                )
-            if str(flow.sampler) not in {"euler", "heun"}:
-                raise ValueError(
-                    "Standalone Flow Matching sampler must be euler or heun"
-                )
-            _positive_int(
-                flow.inference_steps,
-                "model.invisible.flow_matching.inference_steps",
-            )
-
-    assignment = str(invisible.conditioning.assignment)
-    if assignment not in {"none", "soft", "hard", "hypothesis", "truth"}:
+    _exact_keys(invisible.standard, {"training_steps"}, "model.invisible.standard")
+    _positive_int(
+        invisible.standard.training_steps, "model.invisible.standard.training_steps"
+    )
+    _exact_keys(
+        invisible.edm,
+        {"sigma_data", "p_mean", "p_std"},
+        "model.invisible.edm",
+    )
+    _positive(invisible.edm.sigma_data, "model.invisible.edm.sigma_data")
+    _positive(invisible.edm.p_std, "model.invisible.edm.p_std")
+    _finite(invisible.edm.p_mean, "model.invisible.edm.p_mean")
+    _exact_keys(
+        invisible.flow_matching,
+        {"coupling"},
+        "model.invisible.flow_matching",
+    )
+    if str(invisible.flow_matching.coupling) not in {"independent", "minibatch_ot"}:
         raise ValueError(
-            "Invisible assignment conditioning must be none, soft, hard, "
-            f"hypothesis or truth, found {assignment!r}"
-        )
-    if assignment == "truth" and not invisible.conditioning.allow_truth_oracle:
-        raise ValueError(
-            "Truth assignment conditioning is an inference oracle and requires "
-            "allow_truth_oracle=true"
-        )
-    if assignment == "hypothesis" and bool(
-        invisible.conditioning.allow_truth_oracle
-    ):
-        raise ValueError(
-            "hypothesis conditioning is not an inference oracle; set "
-            "allow_truth_oracle=false"
+            "model.invisible.flow_matching.coupling must be independent or minibatch_ot"
         )
 
-    feedback = coupling.invisible_to_reconstruction
-    if feedback.enabled and not invisible.enabled:
-        raise ValueError(
-            "Invisible-to-reconstruction feedback requires model.invisible.enabled=true"
-        )
-    if feedback.enabled and not reasoning.enabled:
-        raise ValueError(
-            "Invisible-to-reconstruction feedback requires recurrent structured reconstruction"
-        )
-    if feedback.enabled and not feedback.detach:
-        raise ValueError(
-            "This implementation requires detached invisible posterior feedback"
-        )
-    if int(coupling.rounds) not in {1, 2}:
-        raise ValueError("model.coupling.rounds must be 1 or 2")
-    if feedback.enabled:
-        _positive_int(
-            feedback.posterior_samples,
-            "model.coupling.invisible_to_reconstruction.posterior_samples",
-        )
-    if compatibility.enabled and not invisible.enabled:
-        raise ValueError(
-            "Compatibility scoring requires reconstruction and invisible hypotheses"
-        )
-    if not math.isfinite(float(compatibility.get("lambda", 1.0))):
-        raise ValueError("model.compatibility.lambda must be finite")
+    joint = model.joint_flow
+    _exact_keys(
+        joint,
+        {"recurrent_state", "block_layers", "train_steps"},
+        "model.joint_flow",
+    )
+    _positive_int(joint.block_layers, "model.joint_flow.block_layers")
+    joint_steps = tuple(int(step) for step in joint.train_steps)
+    if not joint_steps or any(step <= 0 for step in joint_steps):
+        raise ValueError("model.joint_flow.train_steps must contain positive integers")
+
+    coupling = model.coupling
+    _exact_keys(coupling, {"invisible_to_assignment"}, "model.coupling")
+    c2 = coupling.invisible_to_assignment
+    _exact_keys(
+        c2,
+        {"enabled", "posterior_samples", "gate_initial_bias"},
+        "model.coupling.invisible_to_assignment",
+    )
+    _positive_int(c2.posterior_samples, "model.coupling.invisible_to_assignment.posterior_samples")
+    _finite(c2.gate_initial_bias, "model.coupling.invisible_to_assignment.gate_initial_bias")
+
+    compatibility = model.compatibility
+    _exact_keys(
+        compatibility,
+        {"enabled", "include_invisible"},
+        "model.compatibility",
+    )
+
+    if formulation == "flow_matching" and mode == "factorized":
+        if bool(reasoning.enabled) or bool(feedback.enabled):
+            raise ValueError(
+                "factorized assignment Flow Matching has its own time-conditioned "
+                "reasoner; disable model.assignment.reasoning and feedback"
+            )
+        if bool(invisible.enabled):
+            raise ValueError(
+                "factorized assignment Flow Matching is assignment-only; use "
+                "discriminative assignment for p(nu|X,A), or joint_flow"
+            )
+        if bool(c2.enabled) or bool(compatibility.enabled):
+            raise ValueError(
+                "factorized assignment Flow Matching cannot use C2 or compatibility reranking"
+            )
+
+    if bool(c2.enabled):
+        if mode != "factorized" or formulation != "discriminative":
+            raise ValueError("C2 feedback is maintained for factorized discriminative assignment")
+        if not bool(invisible.enabled) or not bool(reasoning.enabled):
+            raise ValueError(
+                "C2 invisible-to-assignment feedback requires invisible inference and "
+                "recurrent assignment reasoning"
+            )
+
+    if bool(compatibility.enabled):
+        if mode != "factorized" or formulation != "discriminative":
+            raise ValueError(
+                "compatibility reranking is maintained for factorized discriminative assignment"
+            )
+        if not bool(invisible.enabled):
+            raise ValueError("compatibility reranking requires invisible hypotheses")
 
     if mode == "joint_flow":
-        if reconstruction_formulation != "flow_matching":
-            raise ValueError(
-                "joint_flow requires model.reconstruction.formulation=flow_matching"
-            )
-        if not invisible.enabled or str(invisible.formulation) != "flow_matching":
-            raise ValueError(
-                "joint_flow requires enabled continuous Flow Matching invisible inference"
-            )
-        if bool(reasoning.enabled):
+        if formulation != "flow_matching":
+            raise ValueError("joint_flow requires model.assignment.formulation=flow_matching")
+        if not bool(invisible.enabled) or invisible_formulation != "flow_matching":
+            raise ValueError("joint_flow requires enabled continuous Flow Matching")
+        if bool(reasoning.enabled) or bool(feedback.enabled):
             raise ValueError(
                 "joint_flow uses model.joint_flow.recurrent_state; disable factorized "
-                "model.reasoning"
+                "assignment reasoning and feedback"
             )
-        if bool(reconstruction.feedback.enabled):
-            raise ValueError(
-                "joint_flow cannot use factorized soft reconstruction feedback"
-            )
-        if bool(feedback.enabled) or int(coupling.rounds) != 1:
-            raise ValueError(
-                "joint_flow cannot use factorized invisible-to-reconstruction coupling"
-            )
-        if bool(compatibility.enabled):
-            raise ValueError(
-                "joint_flow compatibility reranking is deliberately disabled"
-            )
-        if assignment != "none":
+        if bool(c2.enabled) or bool(compatibility.enabled):
+            raise ValueError("joint_flow cannot use factorized C2 or compatibility reranking")
+        if conditioning != "none":
             raise ValueError(
                 "joint_flow assignment-neutrino coupling is internal; set "
                 "model.invisible.conditioning.assignment=none"
             )
-        joint = model.get("joint_flow")
-        if joint is None:
-            raise ValueError("joint_flow mode requires model.joint_flow configuration")
-        _positive_int(joint.block_layers, "model.joint_flow.block_layers")
-        train_steps = tuple(int(step) for step in joint.train_steps)
-        if not train_steps or any(step <= 0 for step in train_steps):
-            raise ValueError(
-                "model.joint_flow.train_steps must contain positive integers"
-            )
 
     inference = config.inference
+    _exact_keys(
+        inference,
+        {
+            "top_k_assignments",
+            "posterior_samples",
+            "invisible",
+            "assignment_flow",
+            "joint_flow",
+            "compatibility_weight",
+        },
+        "inference",
+    )
     _positive_int(inference.top_k_assignments, "inference.top_k_assignments")
     _positive_int(inference.posterior_samples, "inference.posterior_samples")
-    assignment_inference = inference.get("assignment_flow")
-    if assignment_inference is None:
-        raise ValueError("inference.assignment_flow configuration is required")
-    _positive_int(assignment_inference.steps, "inference.assignment_flow.steps")
-    if mode == "joint_flow":
-        joint_inference = inference.get("joint_flow")
-        if joint_inference is None:
-            raise ValueError(
-                "joint_flow mode requires inference.joint_flow configuration"
-            )
-        _positive_int(joint_inference.steps, "inference.joint_flow.steps")
-        _positive_int(
-            joint_inference.get("sample_chunk_size", 1),
-            "inference.joint_flow.sample_chunk_size",
-        )
-        if str(joint_inference.solver) != "euler":
-            raise ValueError(
-                "Joint discrete-continuous Flow Matching currently uses Euler integration"
-            )
+    _nonnegative(inference.compatibility_weight, "inference.compatibility_weight")
 
-    steps = tuple(int(step) for step in reasoning.train_steps)
-    if not steps or any(step <= 0 for step in steps):
-        raise ValueError("model.reasoning.train_steps must contain positive integers")
-    _positive_int(reasoning.eval_steps, "model.reasoning.eval_steps")
-
-    for split in ("train", "val", "test"):
-        limit = config.data.max_events[split]
-        if limit is not None:
-            _positive_int(limit, f"data.max_events.{split}")
-    train_limit = config.data.max_events.train
-    if train_limit is not None and int(train_limit) > 500_000:
+    invisible_inference = inference.invisible
+    _exact_keys(
+        invisible_inference,
+        {"standard", "edm", "flow_matching"},
+        "inference.invisible",
+    )
+    _exact_keys(invisible_inference.standard, {"steps"}, "inference.invisible.standard")
+    standard_steps = _positive_int(
+        invisible_inference.standard.steps, "inference.invisible.standard.steps"
+    )
+    if standard_steps > int(invisible.standard.training_steps):
         raise ValueError(
-            "This development configuration forbids more than 500000 training events"
+            "inference.invisible.standard.steps cannot exceed model.invisible.standard.training_steps"
         )
+
+    _exact_keys(
+        invisible_inference.edm,
+        {"sigma_min", "sigma_max", "rho", "nfe"},
+        "inference.invisible.edm",
+    )
+    sigma_min = _positive(invisible_inference.edm.sigma_min, "inference.invisible.edm.sigma_min")
+    sigma_max = _positive(invisible_inference.edm.sigma_max, "inference.invisible.edm.sigma_max")
+    if sigma_min >= sigma_max:
+        raise ValueError("EDM inference requires sigma_min < sigma_max")
+    _positive(invisible_inference.edm.rho, "inference.invisible.edm.rho")
+    edm_nfe = _positive_int(invisible_inference.edm.nfe, "inference.invisible.edm.nfe")
+    if edm_nfe < 3 or edm_nfe % 2 == 0:
+        raise ValueError("inference.invisible.edm.nfe must be an odd integer >= 3")
+
+    _exact_keys(
+        invisible_inference.flow_matching,
+        {"steps", "solver"},
+        "inference.invisible.flow_matching",
+    )
+    _positive_int(
+        invisible_inference.flow_matching.steps,
+        "inference.invisible.flow_matching.steps",
+    )
+    if str(invisible_inference.flow_matching.solver) not in {"euler", "heun"}:
+        raise ValueError("inference.invisible.flow_matching.solver must be euler or heun")
+
+    _exact_keys(inference.assignment_flow, {"steps"}, "inference.assignment_flow")
+    _positive_int(inference.assignment_flow.steps, "inference.assignment_flow.steps")
+    _exact_keys(
+        inference.joint_flow,
+        {"steps", "sample_chunk_size"},
+        "inference.joint_flow",
+    )
+    _positive_int(inference.joint_flow.steps, "inference.joint_flow.steps")
+    _positive_int(
+        inference.joint_flow.sample_chunk_size,
+        "inference.joint_flow.sample_chunk_size",
+    )
 
     training = config.training
+    _exact_keys(
+        training,
+        {
+            "learning_rate",
+            "weight_decay",
+            "epochs",
+            "precision",
+            "gradient_clip",
+            "accumulate_grad_batches",
+            "loss_weights",
+            "freeze",
+            "scheduler",
+            "early_stopping",
+            "output",
+        },
+        "training",
+    )
     _positive(training.learning_rate, "training.learning_rate")
     _nonnegative(training.weight_decay, "training.weight_decay")
     _positive_int(training.epochs, "training.epochs")
@@ -347,35 +451,45 @@ def validate_experiment(config: DictConfig) -> None:
     _positive_int(
         training.accumulate_grad_batches, "training.accumulate_grad_batches"
     )
-    for name in ("reconstruction", "invisible", "compatibility"):
-        _nonnegative(
-            training.loss_weights[name], f"training.loss_weights.{name}"
-        )
+    if not str(training.precision).strip() or not str(training.output).strip():
+        raise ValueError("training.precision and training.output must be non-empty")
 
-    freeze = training.freeze
-    freeze_keys = set(freeze)
-    if freeze_keys != FREEZE_KEYS:
-        missing = sorted(FREEZE_KEYS - freeze_keys)
-        extra = sorted(freeze_keys - FREEZE_KEYS)
-        raise ValueError(
-            "training.freeze keys must be exactly "
-            f"{sorted(FREEZE_KEYS)}; missing={missing}, obsolete_or_unknown={extra}"
-        )
+    _exact_keys(
+        training.loss_weights,
+        {"assignment", "invisible", "compatibility"},
+        "training.loss_weights",
+    )
+    for name in ("assignment", "invisible", "compatibility"):
+        _nonnegative(training.loss_weights[name], f"training.loss_weights.{name}")
+
+    _exact_keys(training.freeze, FREEZE_KEYS, "training.freeze")
     if mode == "joint_flow" and (
-        bool(freeze.assignment) or bool(freeze.invisible) or bool(freeze.compatibility)
+        bool(training.freeze.assignment)
+        or bool(training.freeze.invisible)
+        or bool(training.freeze.compatibility)
     ):
         raise ValueError(
-            "joint_flow has shared assignment/invisible dynamics; partial assignment, "
-            "invisible or compatibility freezing is intentionally unsupported. "
-            "Only training.freeze.visible may be used in joint_flow mode."
+            "joint_flow has shared assignment/invisible dynamics; only "
+            "training.freeze.visible may be used"
         )
 
+    _exact_keys(
+        training.scheduler,
+        {"enabled", "factor", "patience", "min_lr"},
+        "training.scheduler",
+    )
     if bool(training.scheduler.enabled):
         factor = float(training.scheduler.factor)
         if not math.isfinite(factor) or not 0 < factor < 1:
             raise ValueError("training.scheduler.factor must lie in (0,1)")
         _nonnegative(training.scheduler.patience, "training.scheduler.patience")
         _nonnegative(training.scheduler.min_lr, "training.scheduler.min_lr")
+
+    _exact_keys(
+        training.early_stopping,
+        {"enabled", "patience"},
+        "training.early_stopping",
+    )
     if bool(training.early_stopping.enabled):
         _positive_int(
             training.early_stopping.patience,
