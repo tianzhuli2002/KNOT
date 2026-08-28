@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """File-free throughput/memory benchmark for maintained reconstruction modes.
 
-This benchmark measures model execution on a fixed synthetic in-memory batch. It is
-intended for relative software profiling only: it excludes HDF5 conversion/loading
-and is not a physics-performance or production-throughput result.
+The benchmark measures model execution on one fixed synthetic in-memory batch. It excludes
+HDF5 conversion/loading and is a software profile, not a physics-performance result.
 """
 
 from __future__ import annotations
@@ -40,18 +39,16 @@ def _configure(base, mode: str):
     if mode not in MODES:
         raise ValueError(f"Unknown benchmark mode {mode!r}")
     config = copy.deepcopy(base)
+    assignment = config.model.assignment
     config.model.mode = "factorized"
-    config.model.reasoning.enabled = False
-    config.model.reconstruction.formulation = "discriminative"
-    config.model.reconstruction.feedback.enabled = False
+    assignment.reasoning.enabled = False
+    assignment.formulation = "discriminative"
+    assignment.feedback.enabled = False
     config.model.invisible.enabled = False
-    config.model.coupling.rounds = 1
-    config.model.coupling.invisible_to_reconstruction.enabled = False
+    config.model.coupling.invisible_to_assignment.enabled = False
     config.model.compatibility.enabled = False
-    config.training.freeze.visible = False
-    config.training.freeze.assignment = False
-    config.training.freeze.invisible = False
-    config.training.freeze.compatibility = False
+    for name in ("visible", "assignment", "invisible", "compatibility"):
+        config.training.freeze[name] = False
 
     if mode == "cfm":
         config.model.invisible.enabled = True
@@ -59,10 +56,10 @@ def _configure(base, mode: str):
         config.model.invisible.conditioning.assignment = "none"
         config.model.invisible.conditioning.allow_truth_oracle = False
     elif mode == "dfm":
-        config.model.reconstruction.formulation = "flow_matching"
+        assignment.formulation = "flow_matching"
     elif mode == "joint":
         config.model.mode = "joint_flow"
-        config.model.reconstruction.formulation = "flow_matching"
+        assignment.formulation = "flow_matching"
         config.model.invisible.enabled = True
         config.model.invisible.formulation = "flow_matching"
         config.model.invisible.conditioning.assignment = "none"
@@ -262,15 +259,15 @@ def benchmark(
             invisible_scaler=(scaler if bool(config.model.invisible.enabled) else None),
             synthetic_data=True,
         ).to(device)
-        total_parameters = sum(parameter.numel() for parameter in module.parameters())
-        trainable_parameters = sum(
-            parameter.numel()
-            for parameter in module.parameters()
-            if parameter.requires_grad
-        )
         results["modes"][mode] = {
-            "total_parameters": total_parameters,
-            "trainable_parameters": trainable_parameters,
+            "total_parameters": sum(
+                parameter.numel() for parameter in module.parameters()
+            ),
+            "trainable_parameters": sum(
+                parameter.numel()
+                for parameter in module.parameters()
+                if parameter.requires_grad
+            ),
             "training": _train_benchmark(
                 module,
                 batch,
@@ -303,12 +300,7 @@ def main() -> None:
         type=Path,
         default=Path("configs/experiments/ttbar1L.yaml"),
     )
-    parser.add_argument(
-        "--modes",
-        nargs="+",
-        choices=MODES,
-        default=list(MODES),
-    )
+    parser.add_argument("--modes", nargs="+", choices=MODES, default=list(MODES))
     parser.add_argument("--device", choices=("cpu", "cuda"), default="cpu")
     parser.add_argument("--events", type=int, default=32)
     parser.add_argument("--warmup", type=int, default=2)
@@ -319,7 +311,11 @@ def main() -> None:
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     for name in (
-        "events", "warmup", "iterations", "posterior_samples", "flow_steps",
+        "events",
+        "warmup",
+        "iterations",
+        "posterior_samples",
+        "flow_steps",
         "joint_sample_chunk_size",
     ):
         value = getattr(args, name)
