@@ -14,6 +14,9 @@ from joint_event_reconstruction.models.event import JointEventModel
 from joint_event_reconstruction.topology.compiler import load_topology
 
 
+ARCHITECTURE_SIGNATURE_VERSION = 2
+
+
 def _resolved(value):
     return OmegaConf.to_container(value, resolve=True)
 
@@ -64,20 +67,14 @@ def active_architecture(model) -> dict:
             invisible["conditioning"] = _resolved(model.invisible.conditioning)
 
         if formulation == "standard":
-            # training_steps fixes the registered alpha_bar buffer shape.
             invisible["standard"] = _selected(
                 model.invisible.standard, "training_steps"
             )
         elif formulation == "edm":
-            # sigma_data changes preconditioning; p_mean/p_std define the
-            # training noise distribution. sigma_min/max/rho and NFE are
-            # sampling choices and are intentionally excluded.
             invisible["edm"] = _selected(
                 model.invisible.edm, "sigma_data", "p_mean", "p_std"
             )
         elif formulation == "flow_matching":
-            # The path and source coupling define training. Solver and number
-            # of inference steps are runtime choices.
             invisible["flow_matching"] = _selected(
                 model.invisible.flow_matching, "path", "coupling"
             )
@@ -155,10 +152,9 @@ class JointEventModule(L.LightningModule):
         if bool(freeze.visible):
             self.event_model.visible.requires_grad_(False)
         if bool(freeze.reconstruction):
+            self.event_model.reconstruction.requires_grad_(False)
             if self.event_model.assignment_flow is not None:
                 self.event_model.assignment_flow.requires_grad_(False)
-            else:
-                self.event_model.reconstruction.requires_grad_(False)
         if bool(freeze.invisible) and self.event_model.invisible is not None:
             self.event_model.invisible.requires_grad_(False)
 
@@ -177,6 +173,7 @@ class JointEventModule(L.LightningModule):
             recurrent_representation = "shared_visible_topology_tokens_v1"
         self.save_hyperparameters({
             "topology_signature": self.spec.signature,
+            "architecture_signature_version": ARCHITECTURE_SIGNATURE_VERSION,
             "architecture_signature": signature,
             "model_mode": mode,
             "assignment_formulation": str(
@@ -276,16 +273,18 @@ class JointEventModule(L.LightningModule):
 
     def validate_checkpoint_metadata(self, checkpoint: dict) -> None:
         saved = checkpoint.get("hyper_parameters", {})
-        for key in (
-            "topology_signature",
-            "architecture_signature",
-            "input_features",
-            "source_type_ids",
-        ):
+        for key in ("topology_signature", "input_features", "source_type_ids"):
             if saved.get(key) != self.hparams.get(key):
                 raise ValueError(
                     f"Incompatible checkpoint metadata {key}: "
                     f"checkpoint={saved.get(key)!r}, current={self.hparams.get(key)!r}"
+                )
+        if saved.get("architecture_signature_version") == ARCHITECTURE_SIGNATURE_VERSION:
+            if saved.get("architecture_signature") != self.hparams.get("architecture_signature"):
+                raise ValueError(
+                    "Incompatible active architecture signature: "
+                    f"checkpoint={saved.get('architecture_signature')!r}, "
+                    f"current={self.hparams.get('architecture_signature')!r}"
                 )
         if checkpoint.get("invisible_scaler") != self.scaler_metadata:
             raise ValueError("Incompatible invisible target scaling metadata")
