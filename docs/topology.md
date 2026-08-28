@@ -1,8 +1,10 @@
 # Topology format
 
-A topology file contains one `topology` mapping. Each decay node contains named roles.
-The format is intentionally small: visible leaves, repeated exchangeable leaves,
-composite references and invisible leaves are enough to compile the reconstruction graph.
+Topology YAML is the authoritative description of decay structure. Model code should not
+contain process-name branches: a new process should normally require a topology file, a
+visible-data configuration, and truth in the declared semantic order.
+
+A topology contains one `topology` mapping. Each decay node contains named roles:
 
 ```yaml
 topology:
@@ -19,65 +21,152 @@ topology:
     nu: [NEUTRINO, 0]
 ```
 
-- `[SOURCE, TRUTH_INDEX]` is one leaf.
-- A list of leaves under the same named role is one exchangeable group. Thus
-  `Whad.q[0] <-> Whad.q[1]`; roles with different names are never exchangeable.
-- A string is a reference to another decay node. References infer the hierarchy;
-  declaration order has no meaning.
-- `NEUTRINO` is invisible truth. MET is observed detector context and is never a
-  decay leaf.
+## Grammar
 
-The compiler rejects malformed leaves, duplicate truth ownership, undefined references
-and cycles. It derives:
+- `[SOURCE, TRUTH_INDEX]` is one leaf.
+- Several leaves under the same named role are exchangeable. In the example,
+  `Whad.q[0] <-> Whad.q[1]` exactly; differently named roles are never exchangeable.
+- A string value is a reference to another decay node. References define the hierarchy;
+  declaration order is irrelevant.
+- `NEUTRINO` denotes invisible truth. The invisible role order is compiled from the
+  topology and is preserved in `[B,Rnu,3] = [px,py,pz]` targets.
+- MET is observed detector context, not a decay daughter.
+
+The compiler rejects malformed leaves, duplicate semantic truth ownership, undefined
+references and cycles. It derives:
 
 - DAG order, roots, parents, children and descendants;
 - visible and invisible semantic roles;
 - hierarchy-preserving candidate pools;
-- exact repeated-role exchange symmetries;
-- leaf ownership used for global assignment feasibility;
+- exact exchange symmetry for repeated roles;
+- visible-object ownership for global compatibility;
 - recurrent topology tokens;
-- topology signatures used by checkpoints and prediction files.
+- stable topology signatures stored in checkpoints and prediction files.
 
-## Complete assignment space
+Hierarchical candidates reuse compiled child candidates. A parent top containing a W uses
+the W candidate representation rather than rebuilding an independent flat leaf tuple.
 
-Discrete Flow Matching and joint flow additionally compile a complete assignment space
-from the root candidate pools. A clean state is one globally feasible tuple of root
-choices. Each root may select one candidate or its physical `NULL` state. States that
-reuse the same visible object across incompatible roots are removed exactly.
+## Reconstructability and NULL
 
-The transient DFM `MASK` state is separate from physical `NULL`:
+A node is reconstructable when its declared truth candidate can be represented by the
+selected model inputs. Physical `NULL` means that a branch is not reconstructed from a
+physical candidate in that event.
+
+Raw visible label zero means a real unassigned object. NaN is allowed only for a padded or
+non-existent object. Truth beyond a configured object cap remains physically present but
+makes the affected branch unreconstructable from the model input.
+
+`NULL` and the discrete-flow `MASK` state have different meanings:
 
 ```text
-NULL  = this physical branch is not reconstructable from the selected input objects
-MASK  = the discrete generative process has not yet resolved the assignment
+NULL  physical clean assignment choice / unreconstructed branch
+MASK  transient unresolved state used only during discrete Flow Matching
 ```
 
-Repeated exchangeable daughters are already quotient-ed in candidate construction, so
-the complete state space does not reintroduce two labels for the same physical solution.
+`MASK` is never part of the final physical assignment support.
 
-Complete assignment tensors are materialised only for `reconstruction.formulation =
-flow_matching` or `model.mode = joint_flow`. Ordinary discriminative/EDM/CFM baselines
-therefore do not pay the combinatorial state-space cost. The experiment setting
-`model.reconstruction.flow_matching.max_states` is a memory/safety guard and is not part
-of checkpoint architecture identity.
+## Assignment support semantics
 
-For a new topology, inspect the resulting candidate/state counts before raising that
-limit. Exact complete-state DFM is deliberately retained while it is practical because
-it gives a particularly clean globally constrained baseline.
+The repository deliberately records two different complete-assignment supports.
+
+### Discriminative factorized decoding
+
+The local node classifiers contain a NULL class, but the exact global top-K decoder uses
+
+```text
+complete_non_null
+```
+
+support: every root selects a physical candidate and the chosen roots are globally
+compatible. NULL remains meaningful locally but is excluded from the decoded complete
+prediction support.
+
+### DFM and joint DFM+CFM
+
+The clean categorical state space uses
+
+```text
+complete_null_including
+```
+
+support: every globally feasible clean tuple is represented, including physical NULL
+choices. The extra MASK state exists only during the generative trajectory.
+
+These supports are not interchangeable denominators. Prediction HDF5 files persist the
+support definition, evaluators reproduce it in `metrics.json`, and comparison plotting
+separates assignment accuracies by support.
+
+## Complete DFM assignment space
+
+Assignment-only DFM and joint flow compile the clean categorical state space from root
+candidate pools. Globally incompatible visible-object reuse is removed exactly.
+Exchangeable repeated daughters have already been quotiented in candidate construction,
+so the state space does not create duplicate labels for physically identical permutations.
+
+The complete state tensor is materialised only when
+
+```yaml
+model:
+  assignment:
+    formulation: flow_matching
+```
+
+or when
+
+```yaml
+model:
+  mode: joint_flow
+```
+
+Ordinary discriminative M1/M2/M3, diffusion and factorized CFM runs therefore do not pay
+this complete-state tensor cost.
+
+The safety limit is
+
+```yaml
+data:
+  max_assignment_states: 100000
+```
+
+It is a memory guard, not a learned architecture parameter and not part of checkpoint
+identity. If the compiled topology exceeds it, inspect candidate counts before increasing
+the limit. Exact complete-state DFM is retained while practical because it provides a
+clean globally constrained baseline.
+
+## Invisible-role genericity
+
+The model is generic in the number of ordered invisible roles `Rnu`.
+
+Production examples currently include one-neutrino semileptonic and two-neutrino
+dileptonic topologies. CI additionally uses `configs/topology/synthetic_multinu.yaml`,
+which contains three distinct invisible roles (`Rnu=3`) together with a three-member
+exchangeable visible role and multiple roots. This fixture exists specifically to catch
+hard-coded assumptions about one or two neutrinos.
+
+The `Rnu=3` fixture is a software/genericity contract, not a physics benchmark.
 
 ## Adding a topology
 
 A production topology should require only:
 
 1. one topology YAML;
-2. a visible dataset configuration that exposes every named visible source;
+2. a visible dataset configuration exposing every named visible source;
 3. raw truth labels with the declared semantic indices;
 4. invisible truth roles in the declared order when invisible inference is enabled.
 
-No model file should branch on the topology name. `configs/topology/synthetic_contract.yaml`
-is kept specifically as a non-ttbar CI fixture to exercise hierarchy, repeated-role
-symmetry, an invisible role and multiple roots through the same maintained code path.
+Useful checks before training are:
 
-Raw visible label zero means a real unassigned object. NaN is permitted only for a
-padded/nonexistent object. Truth beyond the selected object cap is physically present
-but makes the affected branch unreconstructable from the model input.
+```bash
+python scripts/inspect_topology.py --topology configs/topology/<name>.yaml
+```
+
+and, for maintained experiment products,
+
+```bash
+python -m joint_event_reconstruction.cli.run validate-data \
+  --experiment configs/experiments/<name>.yaml
+```
+
+`configs/topology/synthetic_contract.yaml` and `synthetic_multinu.yaml` are CI fixtures
+that prove hierarchy, repeated-role symmetry, multi-root assignment construction and
+invisible-role genericity through the same production code paths.
