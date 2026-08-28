@@ -1,11 +1,8 @@
 study:
   name: posterior_size
-  description: >-
-    Posterior-convergence study with no retraining between prediction points. For the
-    factorized hypothesis model, scan retained assignment top-K and samples M per branch.
-    For joint flow, scan the number S of joint posterior hypotheses at fixed flow depth.
+  description: Check convergence with assignment top-K, conditional posterior M, and joint posterior sample count S on ttbar2L.
   experiment_pattern: configs/experiments/{topology}.yaml
-  topologies: [ttbar1L, ttbar2L, ttH1L]
+  topologies: [ttbar2L]
   seeds: [42]
   split: test
 
@@ -13,83 +10,54 @@ variants:
   assignment_reference:
     label: M3 assignment reference
     reporting: setup
-    train_overrides:
-      - model.mode=factorized
-      - model.assignment.formulation=discriminative
-      - model.assignment.reasoning.enabled=true
-      - model.assignment.feedback.enabled=true
-      - model.invisible.enabled=false
-      - model.coupling.invisible_to_assignment.enabled=false
-      - model.compatibility.enabled=false
-      - training.loss_weights.assignment=1.0
-      - training.loss_weights.invisible=0.0
-      - training.loss_weights.compatibility=0.0
+    patch:
+      model:
+        assignment:
+          method: discriminative
+          recurrence: {train_steps: [1, 2, 3, 4], eval_steps: 4, feedback: soft}
+      training: {trainable: [visible, assignment]}
     initialise_from: null
     initialise_components: []
     predictions: {}
 
   factorized:
-    label: hypothesis CFM
+    label: factorized hypothesis CFM
     reporting: primary
-    train_overrides:
-      - model.mode=factorized
-      - model.assignment.formulation=discriminative
-      - model.assignment.reasoning.enabled=true
-      - model.assignment.feedback.enabled=true
-      - model.invisible.enabled=true
-      - model.invisible.formulation=flow_matching
-      - model.invisible.flow_matching.coupling=independent
-      - model.invisible.conditioning.assignment=hypothesis
-      - model.invisible.conditioning.allow_truth_oracle=false
-      - model.coupling.invisible_to_assignment.enabled=false
-      - model.compatibility.enabled=false
-      - training.freeze.visible=true
-      - training.freeze.assignment=true
-      - training.loss_weights.assignment=0.0
-      - training.loss_weights.invisible=1.0
-      - training.loss_weights.compatibility=0.0
+    patch:
+      model:
+        assignment:
+          method: discriminative
+          recurrence: {train_steps: [1, 2, 3, 4], eval_steps: 4, feedback: soft}
+        invisible: {method: cfm, conditioning: hypothesis}
+      training: {trainable: [invisible]}
     initialise_from: assignment_reference
     initialise_components: [visible, assignment]
     predictions:
-      k1_m16: {label: K=1 M=16, overrides: [inference.top_k_assignments=1, inference.posterior_samples=16, inference.invisible.flow_matching.steps=17, inference.invisible.flow_matching.solver=euler], recurrent_steps: 4}
-      k2_m16: {label: K=2 M=16, overrides: [inference.top_k_assignments=2, inference.posterior_samples=16, inference.invisible.flow_matching.steps=17, inference.invisible.flow_matching.solver=euler], recurrent_steps: 4}
-      k3_m16: {label: K=3 M=16, overrides: [inference.top_k_assignments=3, inference.posterior_samples=16, inference.invisible.flow_matching.steps=17, inference.invisible.flow_matching.solver=euler], recurrent_steps: 4}
-      k5_m16: {label: K=5 M=16, overrides: [inference.top_k_assignments=5, inference.posterior_samples=16, inference.invisible.flow_matching.steps=17, inference.invisible.flow_matching.solver=euler], recurrent_steps: 4}
-      k10_m16: {label: K=10 M=16, overrides: [inference.top_k_assignments=10, inference.posterior_samples=16, inference.invisible.flow_matching.steps=17, inference.invisible.flow_matching.solver=euler], recurrent_steps: 4}
-      k5_m1: {label: K=5 M=1, overrides: [inference.top_k_assignments=5, inference.posterior_samples=1, inference.invisible.flow_matching.steps=17, inference.invisible.flow_matching.solver=euler], recurrent_steps: 4}
-      k5_m4: {label: K=5 M=4, overrides: [inference.top_k_assignments=5, inference.posterior_samples=4, inference.invisible.flow_matching.steps=17, inference.invisible.flow_matching.solver=euler], recurrent_steps: 4}
-      k5_m8: {label: K=5 M=8, overrides: [inference.top_k_assignments=5, inference.posterior_samples=8, inference.invisible.flow_matching.steps=17, inference.invisible.flow_matching.solver=euler], recurrent_steps: 4}
-      k5_m32: {label: K=5 M=32, overrides: [inference.top_k_assignments=5, inference.posterior_samples=32, inference.invisible.flow_matching.steps=17, inference.invisible.flow_matching.solver=euler], recurrent_steps: 4}
-      k5_m64: {label: K=5 M=64, overrides: [inference.top_k_assignments=5, inference.posterior_samples=64, inference.invisible.flow_matching.steps=17, inference.invisible.flow_matching.solver=euler], recurrent_steps: 4}
+      k1_m16: {label: K=1 M=16, patch: {prediction: {top_k: 1, samples: 16, steps: 17, solver: euler}}, recurrent_steps: 4}
+      k2_m16: {label: K=2 M=16, patch: {prediction: {top_k: 2, samples: 16, steps: 17, solver: euler}}, recurrent_steps: 4}
+      k3_m16: {label: K=3 M=16, patch: {prediction: {top_k: 3, samples: 16, steps: 17, solver: euler}}, recurrent_steps: 4}
+      k5_m16: {label: K=5 M=16, patch: {prediction: {top_k: 5, samples: 16, steps: 17, solver: euler}}, recurrent_steps: 4}
+      k10_m16: {label: K=10 M=16, patch: {prediction: {top_k: 10, samples: 16, steps: 17, solver: euler}}, recurrent_steps: 4}
+      k5_m1: {label: K=5 M=1, patch: {prediction: {top_k: 5, samples: 1, steps: 17, solver: euler}}, recurrent_steps: 4}
+      k5_m4: {label: K=5 M=4, patch: {prediction: {top_k: 5, samples: 4, steps: 17, solver: euler}}, recurrent_steps: 4}
+      k5_m8: {label: K=5 M=8, patch: {prediction: {top_k: 5, samples: 8, steps: 17, solver: euler}}, recurrent_steps: 4}
+      k5_m32: {label: K=5 M=32, patch: {prediction: {top_k: 5, samples: 32, steps: 17, solver: euler}}, recurrent_steps: 4}
+      k5_m64: {label: K=5 M=64, patch: {prediction: {top_k: 5, samples: 64, steps: 17, solver: euler}}, recurrent_steps: 4}
 
   joint:
     label: joint DFM+CFM
     reporting: primary
-    train_overrides:
-      - model.mode=joint_flow
-      - model.assignment.formulation=flow_matching
-      - model.assignment.reasoning.enabled=false
-      - model.assignment.feedback.enabled=false
-      - model.invisible.enabled=true
-      - model.invisible.formulation=flow_matching
-      - model.invisible.conditioning.assignment=none
-      - model.invisible.conditioning.allow_truth_oracle=false
-      - model.joint_flow.recurrent_state=false
-      - model.coupling.invisible_to_assignment.enabled=false
-      - model.compatibility.enabled=false
-      - training.freeze.visible=true
-      - training.freeze.assignment=false
-      - training.freeze.invisible=false
-      - training.freeze.compatibility=false
-      - training.loss_weights.assignment=1.0
-      - training.loss_weights.invisible=1.0
-      - training.loss_weights.compatibility=0.0
+    patch:
+      model:
+        assignment: null
+        joint_flow: {recurrent: false}
+      training: {trainable: [assignment, invisible]}
     initialise_from: factorized
     initialise_components: [visible, invisible]
     predictions:
-      s1: {label: joint S=1, overrides: [inference.posterior_samples=1, inference.joint_flow.steps=8, inference.joint_flow.sample_chunk_size=1], recurrent_steps: null}
-      s4: {label: joint S=4, overrides: [inference.posterior_samples=4, inference.joint_flow.steps=8, inference.joint_flow.sample_chunk_size=4], recurrent_steps: null}
-      s8: {label: joint S=8, overrides: [inference.posterior_samples=8, inference.joint_flow.steps=8, inference.joint_flow.sample_chunk_size=8], recurrent_steps: null}
-      s16: {label: joint S=16, overrides: [inference.posterior_samples=16, inference.joint_flow.steps=8, inference.joint_flow.sample_chunk_size=8], recurrent_steps: null}
-      s32: {label: joint S=32, overrides: [inference.posterior_samples=32, inference.joint_flow.steps=8, inference.joint_flow.sample_chunk_size=8], recurrent_steps: null}
-      s64: {label: joint S=64, overrides: [inference.posterior_samples=64, inference.joint_flow.steps=8, inference.joint_flow.sample_chunk_size=8], recurrent_steps: null}
+      s1: {label: S=1, patch: {prediction: {samples: 1, steps: 8, sample_chunk_size: 1}}, recurrent_steps: null}
+      s4: {label: S=4, patch: {prediction: {samples: 4, steps: 8, sample_chunk_size: 4}}, recurrent_steps: null}
+      s8: {label: S=8, patch: {prediction: {samples: 8, steps: 8, sample_chunk_size: 8}}, recurrent_steps: null}
+      s16: {label: S=16, patch: {prediction: {samples: 16, steps: 8, sample_chunk_size: 8}}, recurrent_steps: null}
+      s32: {label: S=32, patch: {prediction: {samples: 32, steps: 8, sample_chunk_size: 8}}, recurrent_steps: null}
+      s64: {label: S=64, patch: {prediction: {samples: 64, steps: 8, sample_chunk_size: 8}}, recurrent_steps: null}
