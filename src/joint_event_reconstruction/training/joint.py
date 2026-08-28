@@ -29,10 +29,10 @@ def _selected(value, *keys: str) -> dict:
 def active_architecture(model) -> dict:
     """Return model/training semantics that must match a checkpoint.
 
-    Sampling budgets and numerical solvers deliberately do not belong here: the
-    same trained checkpoint must be usable for NFE/solver studies. Settings that
-    define parameter shapes or the learned formulation remain part of the
-    signature.
+    Sampling budgets, numerical solvers and safety/memory guards deliberately do
+    not belong here: the same trained checkpoint must be usable for NFE/solver
+    studies and different assignment-space safety caps. Settings that define
+    parameter shapes or the learned formulation remain part of the signature.
     """
     mode = str(model.get("mode", "factorized"))
     reconstruction_formulation = str(
@@ -43,16 +43,16 @@ def active_architecture(model) -> dict:
         "visible": _resolved(model.visible),
         "reconstruction": {"formulation": reconstruction_formulation},
     }
+    if reconstruction_formulation == "flow_matching":
+        payload["reconstruction"]["flow_matching"] = _selected(
+            model.reconstruction.flow_matching, "source"
+        )
 
     if mode == "factorized":
         payload["reasoning"] = _resolved(model.reasoning)
         if reconstruction_formulation == "discriminative":
             payload["reconstruction"]["feedback"] = _resolved(
                 model.reconstruction.feedback
-            )
-        else:
-            payload["reconstruction"]["flow_matching"] = _resolved(
-                model.reconstruction.flow_matching
             )
 
     if bool(model.invisible.enabled):
@@ -166,6 +166,9 @@ class JointEventModule(L.LightningModule):
             None if invisible_scaler is None else invisible_scaler.as_dict()
         )
         mode = str(model.get("mode", "factorized"))
+        assignment_formulation = str(
+            model.reconstruction.get("formulation", "discriminative")
+        )
         recurrent_representation = None
         if mode == "joint_flow" and bool(model.joint_flow.recurrent_state):
             recurrent_representation = "persistent_topology_flow_state_v1"
@@ -176,13 +179,14 @@ class JointEventModule(L.LightningModule):
             "architecture_signature_version": ARCHITECTURE_SIGNATURE_VERSION,
             "architecture_signature": signature,
             "model_mode": mode,
-            "assignment_formulation": str(
-                model.reconstruction.get("formulation", "discriminative")
-            ),
+            "assignment_formulation": assignment_formulation,
             "input_features": list(schema.names),
             "source_type_ids": dict(schema.source_type_ids),
             "candidate_representation": "hierarchical_symmetric_v1",
-            "assignment_state_representation": "complete_feasible_states_v1",
+            "assignment_state_representation": (
+                "complete_feasible_states_v1"
+                if assignment_formulation == "flow_matching" else None
+            ),
             "recurrent_representation": recurrent_representation,
             "invisible_formulation": (
                 str(model.invisible.formulation) if model.invisible.enabled else None
