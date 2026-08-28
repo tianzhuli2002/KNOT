@@ -14,7 +14,7 @@ from joint_event_reconstruction.models.event import JointEventModel
 from joint_event_reconstruction.topology.compiler import load_topology
 
 
-ARCHITECTURE_SIGNATURE_VERSION = 2
+ARCHITECTURE_SIGNATURE_VERSION = 3
 
 
 def _resolved(value):
@@ -27,12 +27,11 @@ def _selected(value, *keys: str) -> dict:
 
 
 def active_architecture(model) -> dict:
-    """Return model/training semantics that must match a checkpoint.
+    """Return learned/training semantics that must match a checkpoint.
 
-    Sampling budgets, numerical solvers and safety/memory guards deliberately do
-    not belong here: the same trained checkpoint must be usable for NFE/solver
-    studies and different assignment-space safety caps. Settings that define
-    parameter shapes or the learned formulation remain part of the signature.
+    Inference depth, numerical solvers, reranking strength, oracle permissions and
+    safety/memory guards deliberately do not belong here. The same trained checkpoint
+    must remain usable for recurrent-depth, NFE, solver, top-K and reranking scans.
     """
     mode = str(model.get("mode", "factorized"))
     reconstruction_formulation = str(
@@ -49,7 +48,13 @@ def active_architecture(model) -> dict:
         )
 
     if mode == "factorized":
-        payload["reasoning"] = _resolved(model.reasoning)
+        payload["reasoning"] = _selected(
+            model.reasoning,
+            "enabled",
+            "block_layers",
+            "train_steps",
+            "fixed_input_reinjection",
+        )
         if reconstruction_formulation == "discriminative":
             payload["reconstruction"]["feedback"] = _resolved(
                 model.reconstruction.feedback
@@ -64,7 +69,9 @@ def active_architecture(model) -> dict:
             "denoiser": _resolved(model.invisible.denoiser),
         }
         if mode == "factorized":
-            invisible["conditioning"] = _resolved(model.invisible.conditioning)
+            invisible["conditioning"] = {
+                "assignment": str(model.invisible.conditioning.assignment)
+            }
 
         if formulation == "standard":
             invisible["standard"] = _selected(
@@ -88,7 +95,9 @@ def active_architecture(model) -> dict:
         if bool(model.coupling.invisible_to_reconstruction.enabled):
             payload["coupling"] = _resolved(model.coupling)
         if bool(model.compatibility.enabled):
-            payload["compatibility"] = _resolved(model.compatibility)
+            payload["compatibility"] = _selected(
+                model.compatibility, "enabled", "include_invisible"
+            )
     return payload
 
 
@@ -211,8 +220,7 @@ class JointEventModule(L.LightningModule):
             "invisible_role_count": len(self.spec.invisible_roles),
             "canonical_data_schema": (
                 "joint_event_reconstruction_canonical_v1"
-                if model.invisible.enabled and not synthetic_data
-                else None
+                if model.invisible.enabled and not synthetic_data else None
             ),
             "synthetic_data": bool(synthetic_data),
         })
