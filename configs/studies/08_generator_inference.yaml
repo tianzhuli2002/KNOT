@@ -1,0 +1,114 @@
+study:
+  name: generator_inference
+  description: >-
+    Reuse one trained checkpoint per invisible formulation and scan inference cost only.
+    CFM Euler and Heun are paired at approximately equal NFE; EDM and DDIM are evaluated
+    across low-to-moderate NFE. All predictions use 32 posterior samples.
+  experiment_pattern: configs/experiments/{topology}.yaml
+  topologies: [ttbar1L, ttbar2L, ttH1L]
+  seeds: [42]
+  split: test
+
+variants:
+  assignment_reference:
+    label: M3 assignment reference
+    reporting: setup
+    train_overrides:
+      - model.mode=factorized
+      - model.assignment.formulation=discriminative
+      - model.assignment.reasoning.enabled=true
+      - model.assignment.feedback.enabled=true
+      - model.invisible.enabled=false
+      - model.coupling.invisible_to_assignment.enabled=false
+      - model.compatibility.enabled=false
+      - training.loss_weights.assignment=1.0
+      - training.loss_weights.invisible=0.0
+      - training.loss_weights.compatibility=0.0
+    initialise_from: null
+    initialise_components: []
+    predictions: {}
+
+  standard:
+    label: DDIM
+    reporting: primary
+    train_overrides:
+      - model.mode=factorized
+      - model.assignment.formulation=discriminative
+      - model.assignment.reasoning.enabled=true
+      - model.assignment.feedback.enabled=true
+      - model.invisible.enabled=true
+      - model.invisible.formulation=standard
+      - model.invisible.conditioning.assignment=none
+      - model.invisible.conditioning.allow_truth_oracle=false
+      - model.coupling.invisible_to_assignment.enabled=false
+      - model.compatibility.enabled=false
+      - training.freeze.visible=true
+      - training.freeze.assignment=true
+      - training.loss_weights.assignment=0.0
+      - training.loss_weights.invisible=1.0
+      - training.loss_weights.compatibility=0.0
+    initialise_from: assignment_reference
+    initialise_components: [visible, assignment]
+    predictions:
+      nfe8: {label: DDIM NFE=8, overrides: [inference.posterior_samples=32, inference.invisible.standard.steps=8], recurrent_steps: null}
+      nfe16: {label: DDIM NFE=16, overrides: [inference.posterior_samples=32, inference.invisible.standard.steps=16], recurrent_steps: null}
+      nfe32: {label: DDIM NFE=32, overrides: [inference.posterior_samples=32, inference.invisible.standard.steps=32], recurrent_steps: null}
+      nfe50: {label: DDIM NFE=50, overrides: [inference.posterior_samples=32, inference.invisible.standard.steps=50], recurrent_steps: null}
+
+  edm:
+    label: EDM
+    reporting: primary
+    train_overrides:
+      - model.mode=factorized
+      - model.assignment.formulation=discriminative
+      - model.assignment.reasoning.enabled=true
+      - model.assignment.feedback.enabled=true
+      - model.invisible.enabled=true
+      - model.invisible.formulation=edm
+      - model.invisible.conditioning.assignment=none
+      - model.invisible.conditioning.allow_truth_oracle=false
+      - model.coupling.invisible_to_assignment.enabled=false
+      - model.compatibility.enabled=false
+      - training.freeze.visible=true
+      - training.freeze.assignment=true
+      - training.loss_weights.assignment=0.0
+      - training.loss_weights.invisible=1.0
+      - training.loss_weights.compatibility=0.0
+    initialise_from: assignment_reference
+    initialise_components: [visible, assignment]
+    predictions:
+      nfe5: {label: EDM NFE=5, overrides: [inference.posterior_samples=32, inference.invisible.edm.nfe=5], recurrent_steps: null}
+      nfe9: {label: EDM NFE=9, overrides: [inference.posterior_samples=32, inference.invisible.edm.nfe=9], recurrent_steps: null}
+      nfe17: {label: EDM NFE=17, overrides: [inference.posterior_samples=32, inference.invisible.edm.nfe=17], recurrent_steps: null}
+      nfe33: {label: EDM NFE=33, overrides: [inference.posterior_samples=32, inference.invisible.edm.nfe=33], recurrent_steps: null}
+      nfe49: {label: EDM NFE=49, overrides: [inference.posterior_samples=32, inference.invisible.edm.nfe=49], recurrent_steps: null}
+
+  cfm:
+    label: CFM
+    reporting: primary
+    train_overrides:
+      - model.mode=factorized
+      - model.assignment.formulation=discriminative
+      - model.assignment.reasoning.enabled=true
+      - model.assignment.feedback.enabled=true
+      - model.invisible.enabled=true
+      - model.invisible.formulation=flow_matching
+      - model.invisible.flow_matching.coupling=independent
+      - model.invisible.conditioning.assignment=none
+      - model.invisible.conditioning.allow_truth_oracle=false
+      - model.coupling.invisible_to_assignment.enabled=false
+      - model.compatibility.enabled=false
+      - training.freeze.visible=true
+      - training.freeze.assignment=true
+      - training.loss_weights.assignment=0.0
+      - training.loss_weights.invisible=1.0
+      - training.loss_weights.compatibility=0.0
+    initialise_from: assignment_reference
+    initialise_components: [visible, assignment]
+    predictions:
+      euler8: {label: CFM Euler NFE=8, overrides: [inference.posterior_samples=32, inference.invisible.flow_matching.steps=8, inference.invisible.flow_matching.solver=euler], recurrent_steps: null}
+      heun4: {label: CFM Heun NFE=8, overrides: [inference.posterior_samples=32, inference.invisible.flow_matching.steps=4, inference.invisible.flow_matching.solver=heun], recurrent_steps: null}
+      euler16: {label: CFM Euler NFE=16, overrides: [inference.posterior_samples=32, inference.invisible.flow_matching.steps=16, inference.invisible.flow_matching.solver=euler], recurrent_steps: null}
+      heun8: {label: CFM Heun NFE=16, overrides: [inference.posterior_samples=32, inference.invisible.flow_matching.steps=8, inference.invisible.flow_matching.solver=heun], recurrent_steps: null}
+      euler32: {label: CFM Euler NFE=32, overrides: [inference.posterior_samples=32, inference.invisible.flow_matching.steps=32, inference.invisible.flow_matching.solver=euler], recurrent_steps: null}
+      heun16: {label: CFM Heun NFE=32, overrides: [inference.posterior_samples=32, inference.invisible.flow_matching.steps=16, inference.invisible.flow_matching.solver=heun], recurrent_steps: null}
