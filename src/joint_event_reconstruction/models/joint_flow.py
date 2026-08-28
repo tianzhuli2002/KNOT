@@ -40,22 +40,18 @@ def _repeat_visible(visible: dict, repeats: int) -> dict:
     return {
         "pooled": visible["pooled"].repeat_interleave(repeats, dim=0),
         "tokens": visible["tokens"].repeat_interleave(repeats, dim=0),
-        "padding_mask": visible["padding_mask"].repeat_interleave(
-            repeats, dim=0
-        ),
+        "padding_mask": visible["padding_mask"].repeat_interleave(repeats, dim=0),
     }
 
 
 def _repeat_structured(structured: dict, repeats: int) -> dict:
-    """Repeat event-dependent pool/assignment tensors; keep static templates shared."""
+    """Repeat event tensors while sharing topology-static candidate templates."""
     pools = {}
     for name, pool in structured["pools"].items():
         pools[name] = dict(pool)
         for field in ("candidate_mask", "truth_index", "reconstructable"):
             if field in pool:
-                pools[name][field] = pool[field].repeat_interleave(
-                    repeats, dim=0
-                )
+                pools[name][field] = pool[field].repeat_interleave(repeats, dim=0)
     result = {"pools": pools}
     if "assignments" in structured:
         assignments = dict(structured["assignments"])
@@ -70,7 +66,7 @@ def _repeat_structured(structured: dict, repeats: int) -> dict:
 
 
 class JointFlow(nn.Module):
-    """Flow-specific shared dynamics; reconstruction and invisible models stay external."""
+    """Shared dynamics coupling complete assignments and invisible momenta."""
 
     def __init__(
         self,
@@ -130,9 +126,7 @@ class JointFlow(nn.Module):
         time: torch.Tensor,
     ) -> JointStepOutput:
         if invisible.formulation_name != "flow_matching":
-            raise ValueError(
-                "JointFlow requires a continuous Flow Matching invisible model"
-            )
+            raise ValueError("JointFlow requires continuous Flow Matching")
         assignment_context = self.state_encoder.encode(
             state.assignment, space, candidate_embeddings
         )
@@ -155,9 +149,7 @@ class JointFlow(nn.Module):
         expected_assignment = self.state_encoder.expectation(
             complete_probabilities, space, candidate_embeddings
         )
-        parent_context = self._parent_context(
-            node_context, expected_assignment
-        )
+        parent_context = self._parent_context(node_context, expected_assignment)
         velocity = invisible.velocity(
             state.invisible, time, visible, parent_context
         )
@@ -190,13 +182,12 @@ class JointFlow(nn.Module):
         invisible_loss = F.mse_loss(
             output.invisible_velocity, target_velocity
         )
-        total = (
-            self.assignment_loss_weight * assignment_loss
-            + self.invisible_loss_weight * invisible_loss
-        )
         return {
-            "loss": total,
-            "reconstruction_loss": assignment_loss,
+            "loss": (
+                self.assignment_loss_weight * assignment_loss
+                + self.invisible_loss_weight * invisible_loss
+            ),
+            "assignment_loss": assignment_loss,
             "invisible_loss": invisible_loss,
         }
 
@@ -236,22 +227,9 @@ class JointFlow(nn.Module):
             time=time,
             target_velocity=target_velocity,
         )
-        return {
-            **losses,
-            "candidate_embeddings": candidate_embeddings,
-            "assignment_logits": output.local_assignment_logits,
-            "assignment_probabilities": output.local_assignment_probabilities,
-            "complete_assignment_logits": output.complete_assignment_logits,
-            "complete_assignment_probabilities": (
-                output.complete_assignment_probabilities
-            ),
-            "node_context": output.node_context,
-            "topology_state": output.topology,
-            "flow_time": time,
-            "flow_state": state,
-            "truth_state": space.truth_state,
-            "recurrent_steps": 0,
-        }
+        return self._training_output(
+            losses, candidate_embeddings, output, space, state, time, steps=0
+        )
 
     def _recurrent_loss(
         self,
@@ -263,21 +241,18 @@ class JointFlow(nn.Module):
         candidate_embeddings: dict[str, torch.Tensor],
         target: torch.Tensor,
     ) -> dict:
-        step_index = int(
-            torch.randint(len(self.train_steps), (), device=target.device)
-        )
-        steps = self.train_steps[step_index]
+        steps = self.train_steps[
+            int(torch.randint(len(self.train_steps), (), device=target.device))
+        ]
         final_time = self.discrete_flow.sample_time(
             len(target), device=target.device, dtype=target.dtype
         )
         source = invisible.flow_source(target)
-        reveal = torch.rand(
-            len(target), device=target.device, dtype=target.dtype
-        )
-        topology = None
-        last_state = None
-        output = None
+        reveal = torch.rand(len(target), device=target.device, dtype=target.dtype)
         target_velocity = target - source
+        topology = None
+        state = None
+        output = None
         for index in range(1, steps + 1):
             time = final_time * (index / steps)
             invisible_state, _ = linear_path(source, target, time)
@@ -286,9 +261,7 @@ class JointFlow(nn.Module):
                 space.truth_state,
                 torch.full_like(space.truth_state, space.mask_state),
             )
-            last_state = JointFlowState(
-                assignment_state, invisible_state, topology
-            )
+            state = JointFlowState(assignment_state, invisible_state, topology)
             output = self.step(
                 visible,
                 structured,
@@ -296,30 +269,49 @@ class JointFlow(nn.Module):
                 invisible,
                 space,
                 candidate_embeddings,
-                last_state,
+                state,
                 time,
             )
             topology = output.topology
         losses = self._loss_from_step(
             output,
             space=space,
-            state=last_state,
+            state=state,
             time=final_time,
             target_velocity=target_velocity,
         )
+        return self._training_output(
+            losses,
+            candidate_embeddings,
+            output,
+            space,
+            state,
+            final_time,
+            steps=steps,
+        )
+
+    @staticmethod
+    def _training_output(
+        losses: dict,
+        candidate_embeddings: dict[str, torch.Tensor],
+        output: JointStepOutput,
+        space: AssignmentSpace,
+        state: JointFlowState,
+        time: torch.Tensor,
+        *,
+        steps: int,
+    ) -> dict:
         return {
             **losses,
             "candidate_embeddings": candidate_embeddings,
             "assignment_logits": output.local_assignment_logits,
             "assignment_probabilities": output.local_assignment_probabilities,
             "complete_assignment_logits": output.complete_assignment_logits,
-            "complete_assignment_probabilities": (
-                output.complete_assignment_probabilities
-            ),
+            "complete_assignment_probabilities": output.complete_assignment_probabilities,
             "node_context": output.node_context,
             "topology_state": output.topology,
-            "flow_time": final_time,
-            "flow_state": last_state,
+            "flow_time": time,
+            "flow_state": state,
             "truth_state": space.truth_state,
             "recurrent_steps": steps,
         }
@@ -332,18 +324,14 @@ class JointFlow(nn.Module):
         reconstruction: nn.Module,
         invisible: nn.Module,
     ) -> dict:
-        if target.ndim != 3 or target.shape[1:] != (
-            len(self.spec.invisible_roles),
-            3,
-        ):
+        expected = (len(self.spec.invisible_roles), 3)
+        if target.ndim != 3 or target.shape[1:] != expected:
             raise ValueError(
-                "Joint invisible target must be "
-                f"[B,{len(self.spec.invisible_roles)},3]"
+                f"Joint invisible target must be [B,{expected[0]},3], "
+                f"found {tuple(target.shape)}"
             )
         space = AssignmentSpace.from_structured(structured)
-        candidates = reconstruction.encode_candidates(
-            visible["tokens"], structured
-        )
+        candidates = reconstruction.encode_candidates(visible["tokens"], structured)
         if self.recurrent_state:
             return self._recurrent_loss(
                 visible,
@@ -379,13 +367,11 @@ class JointFlow(nn.Module):
     ) -> dict:
         if samples <= 0 or steps <= 0 or sample_chunk_size <= 0:
             raise ValueError(
-                "Joint posterior samples, flow steps and sample_chunk_size "
-                "must be positive"
+                "Joint posterior samples, flow steps and sample_chunk_size must be positive"
             )
         if invisible.formulation_name != "flow_matching":
-            raise ValueError(
-                "JointFlow requires a continuous Flow Matching invisible model"
-            )
+            raise ValueError("JointFlow requires continuous Flow Matching")
+
         base_space = AssignmentSpace.from_structured(structured)
         base_candidates = reconstruction.encode_candidates(
             visible["tokens"], structured
@@ -407,9 +393,7 @@ class JointFlow(nn.Module):
             width = min(chunk_size, samples - start)
             repeated_visible = _repeat_visible(visible, width)
             repeated_structured = _repeat_structured(structured, width)
-            repeated_space = AssignmentSpace.from_structured(
-                repeated_structured
-            )
+            repeated_space = AssignmentSpace.from_structured(repeated_structured)
             repeated_candidates = {
                 name: values.repeat_interleave(width, dim=0)
                 for name, values in base_candidates.items()
@@ -423,11 +407,7 @@ class JointFlow(nn.Module):
                     device=visible["tokens"].device,
                 ),
                 invisible=torch.randn(
-                    (
-                        expanded_batch,
-                        len(self.spec.invisible_roles),
-                        3,
-                    ),
+                    (expanded_batch, len(self.spec.invisible_roles), 3),
                     device=visible["tokens"].device,
                     dtype=visible["tokens"].dtype,
                     generator=generator,
@@ -448,9 +428,7 @@ class JointFlow(nn.Module):
                     time,
                 )
                 dt = following - current
-                state.invisible = (
-                    state.invisible + dt * output.invisible_velocity
-                )
+                state.invisible = state.invisible + dt * output.invisible_velocity
                 state.assignment = self.discrete_flow.step(
                     state.assignment,
                     output.complete_assignment_logits,
@@ -459,16 +437,10 @@ class JointFlow(nn.Module):
                     mask_state=repeated_space.mask_state,
                     generator=generator,
                 )
-                state.topology = (
-                    output.topology if self.recurrent_state else None
-                )
+                state.topology = output.topology if self.recurrent_state else None
             if (state.assignment == repeated_space.mask_state).any():
-                raise RuntimeError(
-                    "Joint Flow ended with unresolved assignment MASK"
-                )
-            assignment_chunks.append(
-                state.assignment.reshape(batch, width)
-            )
+                raise RuntimeError("Joint Flow ended with unresolved assignment MASK")
+            assignment_chunks.append(state.assignment.reshape(batch, width))
             invisible_chunks.append(
                 state.invisible.reshape(
                     batch, width, len(self.spec.invisible_roles), 3
