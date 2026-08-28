@@ -7,6 +7,7 @@ import argparse
 from pathlib import Path
 
 import matplotlib
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
@@ -14,7 +15,7 @@ from tensorboard.backend.event_processing.event_accumulator import EventAccumula
 
 MAINTAINED_LOSSES = (
     "loss",
-    "reconstruction_loss",
+    "assignment_loss",
     "invisible_loss",
     "compatibility_loss",
 )
@@ -26,7 +27,16 @@ def _series(accumulator: EventAccumulator, tag: str):
     return [(event.step, event.value) for event in accumulator.Scalars(tag)]
 
 
-def _plot_metric(accumulator: EventAccumulator, metric: str, output: Path) -> Path | None:
+def _finish_axis(ax) -> None:
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.tick_params(direction="in", top=False, right=False)
+    ax.grid(axis="y", alpha=0.2, linewidth=0.7)
+
+
+def _plot_metric(
+    accumulator: EventAccumulator, metric: str, output: Path
+) -> Path | None:
     available = {
         split: _series(accumulator, f"{split}_{metric}")
         for split in ("train", "val", "test")
@@ -34,18 +44,19 @@ def _plot_metric(accumulator: EventAccumulator, metric: str, output: Path) -> Pa
     available = {split: values for split, values in available.items() if values}
     if not available:
         return None
-    fig, ax = plt.subplots(figsize=(7, 5))
+    fig, ax = plt.subplots(figsize=(6.4, 4.4))
     for split, values in available.items():
         x, y = zip(*values)
-        ax.plot(x, y, label=split)
-    ax.set_xlabel("logged step")
-    ax.set_ylabel(metric.replace("_", " "))
+        ax.plot(x, y, label=split, linewidth=1.6)
+    ax.set_xlabel("Logged step")
+    ax.set_ylabel(metric.replace("_", " ").capitalize())
     if len(available) > 1:
-        ax.legend()
+        ax.legend(frameon=False)
+    _finish_axis(ax)
     fig.tight_layout()
     target = output / f"{metric}.pdf"
     fig.savefig(target, bbox_inches="tight")
-    fig.savefig(target.with_suffix(".png"), dpi=200, bbox_inches="tight")
+    fig.savefig(target.with_suffix(".png"), dpi=220, bbox_inches="tight")
     plt.close(fig)
     return target
 
