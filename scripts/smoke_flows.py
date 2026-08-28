@@ -12,9 +12,12 @@ from pathlib import Path
 
 import torch
 from omegaconf import OmegaConf
+from torch.nn import functional as F
 
 from joint_event_reconstruction.configuration import validate_experiment
 from joint_event_reconstruction.data.structured import StructuredDataModule
+from joint_event_reconstruction.models.joint_flow import JointFlowState
+from joint_event_reconstruction.topology.assignments import AssignmentSpace
 from joint_event_reconstruction.training.joint import JointEventModule
 
 
@@ -64,6 +67,7 @@ def configure(base, mode):
     config.model.joint_flow.train_steps = [1, 2]
     config.inference.joint_flow.steps = 2
     config.inference.joint_flow.solver = "euler"
+    config.inference.joint_flow.sample_chunk_size = 2
     config.inference.posterior_samples = 2
 
     if mode == "ot_cfm":
@@ -82,8 +86,88 @@ def configure(base, mode):
 
 
 def _finite_gradients(module):
-    values = [parameter.grad for parameter in module.parameters() if parameter.grad is not None]
+    values = [
+        parameter.grad
+        for parameter in module.parameters()
+        if parameter.grad is not None
+    ]
     return bool(values) and all(torch.isfinite(value).all() for value in values)
+
+
+def _gradient_l1(values) -> float:
+    return sum(
+        float(value.abs().sum().detach())
+        for value in values
+        if value is not None
+    )
+
+
+def _joint_coupling_gradients(module, batch) -> tuple[float, float]:
+    """Deterministically verify both cross-modal paths in one joint-flow step.
+
+    The normal training loss samples random flow times and random DFM reveal states. On
+    a tiny smoke batch every assignment can occasionally be revealed already, making the
+    DFM training loss exactly zero. That is a valid sampled training state, but it is not
+    a valid test of whether the architectural nu->A path exists. This probe therefore
+    fixes all assignments to MASK at t=0.5 and tests the two computational paths directly.
+    """
+    model = module.event_model
+    joint = model.joint_flow
+    visible = model.visible(
+        batch["tokens"], batch["type_ids"], batch["padding_mask"]
+    )
+    space = AssignmentSpace.from_structured(batch["structured"])
+    candidates = model.reconstruction.encode_candidates(
+        visible["tokens"], batch["structured"]
+    )
+    batch_size = len(batch["tokens"])
+    time = torch.full(
+        (batch_size,),
+        0.5,
+        device=batch["tokens"].device,
+        dtype=batch["tokens"].dtype,
+    )
+    state = JointFlowState(
+        assignment=torch.full(
+            (batch_size,),
+            space.mask_state,
+            dtype=torch.long,
+            device=batch["tokens"].device,
+        ),
+        invisible=batch["invisible_truth_scaled"],
+        topology=None,
+    )
+    step = joint.step(
+        visible,
+        batch["structured"],
+        model.reconstruction,
+        model.invisible,
+        space,
+        candidates,
+        state,
+        time,
+    )
+
+    assignment_probe = F.cross_entropy(
+        step.complete_assignment_logits, space.truth_state
+    )
+    invisible_to_assignment = torch.autograd.grad(
+        assignment_probe,
+        tuple(joint.reasoner.invisible_projection.parameters()),
+        retain_graph=True,
+        allow_unused=True,
+    )
+    nu_to_a = _gradient_l1(invisible_to_assignment)
+
+    velocity_probe = step.invisible_velocity.square().mean()
+    assignment_to_invisible = torch.autograd.grad(
+        velocity_probe,
+        tuple(joint.state_encoder.parameters()),
+        retain_graph=False,
+        allow_unused=True,
+    )
+    a_to_nu = _gradient_l1(assignment_to_invisible)
+    return a_to_nu, nu_to_a
 
 
 def run_mode(base, visible, batch, scaler, mode, device):
@@ -103,29 +187,11 @@ def run_mode(base, visible, batch, scaler, mode, device):
     }
 
     if mode.startswith("joint_flow"):
-        assignment_to_invisible = torch.autograd.grad(
-            output["invisible_loss"],
-            tuple(module.event_model.joint_flow.state_encoder.parameters()),
-            retain_graph=True,
-            allow_unused=True,
-        )
-        a_to_nu = sum(
-            float(value.abs().sum().detach())
-            for value in assignment_to_invisible if value is not None
-        )
-        invisible_to_assignment = torch.autograd.grad(
-            output["reconstruction_loss"],
-            tuple(module.event_model.joint_flow.reasoner.invisible_projection.parameters()),
-            retain_graph=True,
-            allow_unused=True,
-        )
-        nu_to_a = sum(
-            float(value.abs().sum().detach())
-            for value in invisible_to_assignment if value is not None
-        )
+        a_to_nu, nu_to_a = _joint_coupling_gradients(module, batch)
         if a_to_nu <= 0 or nu_to_a <= 0:
             raise RuntimeError(
-                f"joint cross-modal gradients missing: A->nu={a_to_nu}, nu->A={nu_to_a}"
+                "joint cross-modal gradients missing in deterministic coupling probe: "
+                f"A->nu={a_to_nu}, nu->A={nu_to_a}"
             )
         summary["assignment_to_invisible_gradient_l1"] = a_to_nu
         summary["invisible_to_assignment_gradient_l1"] = nu_to_a
@@ -145,9 +211,14 @@ def run_mode(base, visible, batch, scaler, mode, device):
                 generator=torch.Generator(device=device).manual_seed(9),
             )
             if generated.shape != (
-                len(batch["tokens"]), 2, len(module.spec.invisible_roles), 3
+                len(batch["tokens"]),
+                2,
+                len(module.spec.invisible_roles),
+                3,
             ):
-                raise RuntimeError(f"CFM sample shape is wrong: {tuple(generated.shape)}")
+                raise RuntimeError(
+                    f"CFM sample shape is wrong: {tuple(generated.shape)}"
+                )
             if nfe != 2 or not torch.isfinite(generated).all():
                 raise RuntimeError("CFM Euler sampling failed")
             summary.update({"nfe": nfe, "sample_shape": list(generated.shape)})
@@ -164,12 +235,16 @@ def run_mode(base, visible, batch, scaler, mode, device):
             rows = torch.arange(len(states), device=states.device)
             if not valid[rows, states].all():
                 raise RuntimeError("DFM generated an event-invalid assignment state")
-            summary.update({
-                "nfe": sampled["nfe"],
-                "assignment_state_count": int(
-                    batch["structured"]["assignments"]["root_candidate_indices"].shape[0]
-                ),
-            })
+            summary.update(
+                {
+                    "nfe": sampled["nfe"],
+                    "assignment_state_count": int(
+                        batch["structured"]["assignments"][
+                            "root_candidate_indices"
+                        ].shape[0]
+                    ),
+                }
+            )
         else:
             sampled = module.event_model.joint_flow.sample(
                 output["visible"],
@@ -178,24 +253,41 @@ def run_mode(base, visible, batch, scaler, mode, device):
                 module.event_model.invisible,
                 samples=2,
                 steps=2,
+                sample_chunk_size=2,
                 generator=torch.Generator(device=device).manual_seed(11),
             )
             states = sampled["assignment_state"]
             valid = batch["structured"]["assignments"]["valid_mask"]
-            rows = torch.arange(len(states), device=states.device).unsqueeze(1).expand_as(states)
+            rows = (
+                torch.arange(len(states), device=states.device)
+                .unsqueeze(1)
+                .expand_as(states)
+            )
             if not valid[rows, states].all():
-                raise RuntimeError("Joint Flow generated an event-invalid assignment state")
+                raise RuntimeError(
+                    "Joint Flow generated an event-invalid assignment state"
+                )
             if not torch.isfinite(sampled["invisible"]).all():
-                raise RuntimeError("Joint Flow generated non-finite invisible momenta")
-            summary.update({
-                "nfe": sampled["nfe"],
-                "joint_assignment_shape": list(states.shape),
-                "joint_invisible_shape": list(sampled["invisible"].shape),
-                "recurrent_state": bool(sampled["recurrent_state"]),
-                "training_recurrent_steps": int(output["recurrent_steps"]),
-            })
-            if mode == "joint_flow_recurrent" and output["recurrent_steps"] not in {1, 2}:
-                raise RuntimeError("Recurrent joint-flow training used an invalid unroll depth")
+                raise RuntimeError(
+                    "Joint Flow generated non-finite invisible momenta"
+                )
+            summary.update(
+                {
+                    "nfe": sampled["nfe"],
+                    "joint_assignment_shape": list(states.shape),
+                    "joint_invisible_shape": list(sampled["invisible"].shape),
+                    "sample_chunk_size": int(sampled["sample_chunk_size"]),
+                    "recurrent_state": bool(sampled["recurrent_state"]),
+                    "training_recurrent_steps": int(output["recurrent_steps"]),
+                }
+            )
+            if (
+                mode == "joint_flow_recurrent"
+                and output["recurrent_steps"] not in {1, 2}
+            ):
+                raise RuntimeError(
+                    "Recurrent joint-flow training used an invalid unroll depth"
+                )
     return summary
 
 
@@ -220,16 +312,25 @@ def run_flow_smoke(
         base.data.max_events[split] = events
 
     sidecar = Path("data/synthetic") / f"{base.experiment.name}_flow_{events}.h5"
-    subprocess.run([
-        sys.executable,
-        "scripts/data/make_synthetic_invisible.py",
-        "--experiment", str(experiment_path),
-        "--output", str(sidecar),
-        "--max-events", str(events),
-        "--seed", str(base.experiment.seed),
-        "--visible-config", str(base.visible_config),
-        "--tensor-cache", str(base.data.tensor_cache),
-    ], check=True)
+    subprocess.run(
+        [
+            sys.executable,
+            "scripts/data/make_synthetic_invisible.py",
+            "--experiment",
+            str(experiment_path),
+            "--output",
+            str(sidecar),
+            "--max-events",
+            str(events),
+            "--seed",
+            str(base.experiment.seed),
+            "--visible-config",
+            str(base.visible_config),
+            "--tensor-cache",
+            str(base.data.tensor_cache),
+        ],
+        check=True,
+    )
     base.data.invisible.path = str(sidecar.resolve())
     base.data.invisible.allow_synthetic = True
 
@@ -259,9 +360,10 @@ def run_flow_smoke(
 
     results = {}
     for mode in FLOW_MODES if modes is None else modes:
-        results[mode] = {"status": "PASS", **run_mode(
-            base, visible, batch, data.invisible_scaler, mode, device
-        )}
+        results[mode] = {
+            "status": "PASS",
+            **run_mode(base, visible, batch, data.invisible_scaler, mode, device),
+        }
     print(json.dumps(results, indent=2, sort_keys=True))
     return results
 
@@ -272,7 +374,9 @@ def main():
     parser.add_argument("--device", choices=("cpu", "cuda"), default="cpu")
     parser.add_argument("--events", type=int, default=8)
     args = parser.parse_args()
-    run_flow_smoke(Path(args.experiment), device=args.device, events=args.events)
+    run_flow_smoke(
+        Path(args.experiment), device=args.device, events=args.events
+    )
 
 
 if __name__ == "__main__":
