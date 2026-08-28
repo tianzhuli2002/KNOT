@@ -153,7 +153,10 @@ def run_mode(base, visible, batch, scaler, mode, device):
             summary.update({"nfe": nfe, "sample_shape": list(generated.shape)})
         elif mode == "dfm_assignment":
             sampled = module.event_model.assignment_flow.sample(
-                output["visible"], batch["structured"], steps=2,
+                output["visible"],
+                batch["structured"],
+                module.event_model.reconstruction,
+                steps=2,
                 generator=torch.Generator(device=device).manual_seed(10),
             )
             states = sampled["sampled_assignment_state"]
@@ -171,6 +174,8 @@ def run_mode(base, visible, batch, scaler, mode, device):
             sampled = module.event_model.joint_flow.sample(
                 output["visible"],
                 batch["structured"],
+                module.event_model.reconstruction,
+                module.event_model.invisible,
                 samples=2,
                 steps=2,
                 generator=torch.Generator(device=device).manual_seed(11),
