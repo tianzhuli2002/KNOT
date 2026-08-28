@@ -1,0 +1,98 @@
+study:
+  name: data_scaling
+  description: Measure how the selected recurrent assignment baseline scales from 10k to 500k ttbar2L training events with fixed validation/test samples.
+  experiment_pattern: configs/experiments/{topology}.yaml
+  topologies: [ttbar2L]
+  seeds: [42]
+  split: test
+
+variants:
+  n10k:
+    label: 10k train events
+    reporting: primary
+    patch:
+      data: {events: {train: 10000, validation: 50000, test: 50000}}
+      model:
+        assignment:
+          method: discriminative
+          recurrence: {train_steps: [1, 2, 3, 4], eval_steps: 4, feedback: soft}
+      training: {trainable: [visible, assignment]}
+    initialise_from: null
+    initialise_components: []
+    predictions:
+      r4: {label: 10k, patch: {}, recurrent_steps: 4}
+
+  n25k:
+    label: 25k train events
+    reporting: primary
+    patch:
+      data: {events: {train: 25000, validation: 50000, test: 50000}}
+      model:
+        assignment:
+          method: discriminative
+          recurrence: {train_steps: [1, 2, 3, 4], eval_steps: 4, feedback: soft}
+      training: {trainable: [visible, assignment]}
+    initialise_from: null
+    initialise_components: []
+    predictions:
+      r4: {label: 25k, patch: {}, recurrent_steps: 4}
+
+  n50k:
+    label: 50k train events
+    reporting: primary
+    patch:
+      data: {events: {train: 50000, validation: 50000, test: 50000}}
+      model:
+        assignment:
+          method: discriminative
+          recurrence: {train_steps: [1, 2, 3, 4], eval_steps: 4, feedback: soft}
+      training: {trainable: [visible, assignment]}
+    initialise_from: null
+    initialise_components: []
+    predictions:
+      r4: {label: 50k, patch: {}, recurrent_steps: 4}
+
+  n100k:
+    label: 100k train events
+    reporting: primary
+    patch:
+      data: {events: {train: 100000, validation: 50000, test: 50000}}
+      model:
+        assignment:
+          method: discriminative
+          recurrence: {train_steps: [1, 2, 3, 4], eval_steps: 4, feedback: soft}
+      training: {trainable: [visible, assignment]}
+    initialise_from: null
+    initialise_components: []
+    predictions:
+      r4: {label: 100k, patch: {}, recurrent_steps: 4}
+
+  n250k:
+    label: 250k train events
+    reporting: primary
+    patch:
+      data: {events: {train: 250000, validation: 50000, test: 50000}}
+      model:
+        assignment:
+          method: discriminative
+          recurrence: {train_steps: [1, 2, 3, 4], eval_steps: 4, feedback: soft}
+      training: {trainable: [visible, assignment]}
+    initialise_from: null
+    initialise_components: []
+    predictions:
+      r4: {label: 250k, patch: {}, recurrent_steps: 4}
+
+  n500k:
+    label: 500k train events
+    reporting: primary
+    patch:
+      data: {events: {train: 500000, validation: 50000, test: 50000}}
+      model:
+        assignment:
+          method: discriminative
+          recurrence: {train_steps: [1, 2, 3, 4], eval_steps: 4, feedback: soft}
+      training: {trainable: [visible, assignment]}
+    initialise_from: null
+    initialise_components: []
+    predictions:
+      r4: {label: 500k, patch: {}, recurrent_steps: 4}
