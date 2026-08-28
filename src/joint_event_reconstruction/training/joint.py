@@ -1,4 +1,4 @@
-"""Single Lightning module for configured reconstruction experiments."""
+"""Single Lightning module for maintained event-reconstruction experiments."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from joint_event_reconstruction.models.event import JointEventModel
 from joint_event_reconstruction.topology.compiler import load_topology
 
 
-ARCHITECTURE_SIGNATURE_VERSION = 3
+ARCHITECTURE_SIGNATURE_VERSION = 4
 
 
 def _resolved(value):
@@ -27,77 +27,61 @@ def _selected(value, *keys: str) -> dict:
 
 
 def active_architecture(model) -> dict:
-    """Return learned/training semantics that must match a checkpoint.
+    """Return learned/training semantics that define checkpoint identity.
 
-    Inference depth, numerical solvers, reranking strength, oracle permissions and
-    safety/memory guards deliberately do not belong here. The same trained checkpoint
-    must remain usable for recurrent-depth, NFE, solver, top-K and reranking scans.
+    Inference depth, numerical solvers, reranking strength, oracle permission and
+    assignment-state safety limits are deliberately absent. They may be scanned with the
+    same trained checkpoint.
     """
-    mode = str(model.get("mode", "factorized"))
-    reconstruction_formulation = str(
-        model.reconstruction.get("formulation", "discriminative")
-    )
+    mode = str(model.mode)
+    assignment = model.assignment
+    formulation = str(assignment.formulation)
     payload = {
         "mode": mode,
         "visible": _resolved(model.visible),
-        "reconstruction": {"formulation": reconstruction_formulation},
+        "assignment": {"formulation": formulation},
     }
-    if reconstruction_formulation == "flow_matching":
-        payload["reconstruction"]["flow_matching"] = _selected(
-            model.reconstruction.flow_matching, "source"
-        )
-
     if mode == "factorized":
-        payload["reasoning"] = _selected(
-            model.reasoning,
+        payload["assignment"]["reasoning"] = _selected(
+            assignment.reasoning,
             "enabled",
             "block_layers",
             "train_steps",
             "fixed_input_reinjection",
         )
-        if reconstruction_formulation == "discriminative":
-            payload["reconstruction"]["feedback"] = _resolved(
-                model.reconstruction.feedback
-            )
+        if formulation == "discriminative":
+            payload["assignment"]["feedback"] = _resolved(assignment.feedback)
 
     if bool(model.invisible.enabled):
-        formulation = str(model.invisible.formulation)
+        invisible_formulation = str(model.invisible.formulation)
         invisible = {
             "enabled": True,
-            "formulation": formulation,
-            "target": _resolved(model.invisible.target),
+            "formulation": invisible_formulation,
             "denoiser": _resolved(model.invisible.denoiser),
         }
         if mode == "factorized":
             invisible["conditioning"] = {
                 "assignment": str(model.invisible.conditioning.assignment)
             }
-
-        if formulation == "standard":
-            invisible["standard"] = _selected(
-                model.invisible.standard, "training_steps"
-            )
-        elif formulation == "edm":
-            invisible["edm"] = _selected(
-                model.invisible.edm, "sigma_data", "p_mean", "p_std"
-            )
-        elif formulation == "flow_matching":
-            invisible["flow_matching"] = _selected(
-                model.invisible.flow_matching, "path", "coupling"
-            )
+        if invisible_formulation == "standard":
+            invisible["standard"] = _resolved(model.invisible.standard)
+        elif invisible_formulation == "edm":
+            invisible["edm"] = _resolved(model.invisible.edm)
+        elif invisible_formulation == "flow_matching":
+            invisible["flow_matching"] = _resolved(model.invisible.flow_matching)
         else:
-            raise ValueError(f"Unknown invisible formulation {formulation!r}")
+            raise ValueError(
+                f"Unknown invisible formulation {invisible_formulation!r}"
+            )
         payload["invisible"] = invisible
 
     if mode == "joint_flow":
         payload["joint_flow"] = _resolved(model.joint_flow)
     else:
-        if bool(model.coupling.invisible_to_reconstruction.enabled):
+        if bool(model.coupling.invisible_to_assignment.enabled):
             payload["coupling"] = _resolved(model.coupling)
         if bool(model.compatibility.enabled):
-            payload["compatibility"] = _selected(
-                model.compatibility, "enabled", "include_invisible"
-            )
+            payload["compatibility"] = _resolved(model.compatibility)
     return payload
 
 
@@ -119,48 +103,46 @@ class JointEventModule(L.LightningModule):
         self.spec = load_topology(experiment.topology_config)
         schema = build_token_schema(visible_config.dataset)
         model = experiment.model
-        visible = model.visible
-        reasoning = model.reasoning
-        feedback = model.reconstruction.feedback
+        assignment = model.assignment
+        reasoning = assignment.reasoning
+        feedback = assignment.feedback
         invisible_config = model.invisible if bool(model.invisible.enabled) else None
         coupling_config = (
             model.coupling
-            if invisible_config is not None
-            and str(model.get("mode", "factorized")) == "factorized"
+            if invisible_config is not None and str(model.mode) == "factorized"
             else None
         )
         self.event_model = JointEventModel(
             self.spec,
             n_features=schema.dim,
             n_object_types=len(schema.source_type_ids),
-            d_model=int(visible.d_model),
-            n_heads=int(visible.n_heads),
-            n_layers=int(visible.layers),
-            d_feedforward=int(visible.d_feedforward),
-            dropout=float(visible.dropout),
-            model_mode=str(model.get("mode", "factorized")),
-            reconstruction_formulation=str(
-                model.reconstruction.get("formulation", "discriminative")
-            ),
+            d_model=int(model.visible.d_model),
+            n_heads=int(model.visible.n_heads),
+            n_layers=int(model.visible.layers),
+            d_feedforward=int(model.visible.d_feedforward),
+            dropout=float(model.visible.dropout),
+            model_mode=str(model.mode),
+            assignment_formulation=str(assignment.formulation),
             reasoning_enabled=bool(reasoning.enabled),
             reasoning_block_layers=int(reasoning.block_layers),
-            train_steps=tuple(int(x) for x in reasoning.train_steps),
+            train_steps=tuple(int(step) for step in reasoning.train_steps),
             eval_steps=int(reasoning.eval_steps),
             fixed_input_reinjection=bool(reasoning.fixed_input_reinjection),
             feedback_enabled=bool(feedback.enabled),
             feedback_start_step=int(feedback.start_step),
             feedback_gate_initial_bias=float(feedback.gate_initial_bias),
             invisible_config=invisible_config,
+            invisible_inference_config=(
+                experiment.inference.invisible if invisible_config is not None else None
+            ),
             coupling_config=coupling_config,
+            assignment_loss_weight=float(experiment.training.loss_weights.assignment),
             invisible_loss_weight=float(experiment.training.loss_weights.invisible),
             compatibility_config=model.compatibility,
             compatibility_loss_weight=float(
                 experiment.training.loss_weights.compatibility
             ),
-            reconstruction_loss_weight=float(
-                experiment.training.loss_weights.reconstruction
-            ),
-            joint_flow_config=model.get("joint_flow"),
+            joint_flow_config=model.joint_flow,
         )
 
         freeze = experiment.training.freeze
@@ -187,43 +169,47 @@ class JointEventModule(L.LightningModule):
         self.scaler_metadata = (
             None if invisible_scaler is None else invisible_scaler.as_dict()
         )
-        mode = str(model.get("mode", "factorized"))
-        assignment_formulation = str(
-            model.reconstruction.get("formulation", "discriminative")
-        )
+        mode = str(model.mode)
+        assignment_formulation = str(assignment.formulation)
         recurrent_representation = None
         if mode == "joint_flow" and bool(model.joint_flow.recurrent_state):
             recurrent_representation = "persistent_topology_flow_state_v1"
         elif bool(reasoning.enabled):
             recurrent_representation = "shared_visible_topology_tokens_v1"
-        self.save_hyperparameters({
-            "topology_signature": self.spec.signature,
-            "architecture_signature_version": ARCHITECTURE_SIGNATURE_VERSION,
-            "architecture_signature": signature,
-            "model_mode": mode,
-            "assignment_formulation": assignment_formulation,
-            "input_features": list(schema.names),
-            "source_type_ids": dict(schema.source_type_ids),
-            "candidate_representation": "hierarchical_symmetric_v1",
-            "assignment_state_representation": (
-                "complete_feasible_states_v1"
-                if assignment_formulation == "flow_matching" else None
-            ),
-            "recurrent_representation": recurrent_representation,
-            "invisible_formulation": (
-                str(model.invisible.formulation) if model.invisible.enabled else None
-            ),
-            "invisible_target": (
-                "cartesian_px_py_pz_v1" if model.invisible.enabled else None
-            ),
-            "invisible_roles": [role.key for role in self.spec.invisible_roles],
-            "invisible_role_count": len(self.spec.invisible_roles),
-            "canonical_data_schema": (
-                "joint_event_reconstruction_canonical_v1"
-                if model.invisible.enabled and not synthetic_data else None
-            ),
-            "synthetic_data": bool(synthetic_data),
-        })
+        self.save_hyperparameters(
+            {
+                "topology_signature": self.spec.signature,
+                "architecture_signature_version": ARCHITECTURE_SIGNATURE_VERSION,
+                "architecture_signature": signature,
+                "model_mode": mode,
+                "assignment_formulation": assignment_formulation,
+                "input_features": list(schema.names),
+                "source_type_ids": dict(schema.source_type_ids),
+                "candidate_representation": "hierarchical_symmetric_v1",
+                "assignment_state_representation": (
+                    "complete_feasible_states_v1"
+                    if assignment_formulation == "flow_matching"
+                    else None
+                ),
+                "recurrent_representation": recurrent_representation,
+                "invisible_formulation": (
+                    str(model.invisible.formulation)
+                    if model.invisible.enabled
+                    else None
+                ),
+                "invisible_target": (
+                    "cartesian_px_py_pz_v1" if model.invisible.enabled else None
+                ),
+                "invisible_roles": [role.key for role in self.spec.invisible_roles],
+                "invisible_role_count": len(self.spec.invisible_roles),
+                "canonical_data_schema": (
+                    "joint_event_reconstruction_canonical_v1"
+                    if model.invisible.enabled and not synthetic_data
+                    else None
+                ),
+                "synthetic_data": bool(synthetic_data),
+            }
+        )
         self.learning_rate = float(experiment.training.learning_rate)
         self.weight_decay = float(experiment.training.weight_decay)
         self.scheduler_config = experiment.training.scheduler
@@ -243,8 +229,8 @@ class JointEventModule(L.LightningModule):
             prog_bar=stage != "train",
         )
         self.log(
-            f"{stage}_reconstruction_loss",
-            output["reconstruction_loss"],
+            f"{stage}_assignment_loss",
+            output["assignment_loss"],
             on_step=False,
             on_epoch=True,
             batch_size=batch_size,
@@ -277,7 +263,9 @@ class JointEventModule(L.LightningModule):
         return self._step(batch, "test")
 
     def configure_optimizers(self):
-        trainable = [parameter for parameter in self.parameters() if parameter.requires_grad]
+        trainable = [
+            parameter for parameter in self.parameters() if parameter.requires_grad
+        ]
         if not trainable:
             raise RuntimeError("Experiment freezes every trainable parameter")
         optimiser = torch.optim.AdamW(
@@ -311,7 +299,9 @@ class JointEventModule(L.LightningModule):
                     f"checkpoint={saved.get(key)!r}, current={self.hparams.get(key)!r}"
                 )
         if saved.get("architecture_signature_version") == ARCHITECTURE_SIGNATURE_VERSION:
-            if saved.get("architecture_signature") != self.hparams.get("architecture_signature"):
+            if saved.get("architecture_signature") != self.hparams.get(
+                "architecture_signature"
+            ):
                 raise ValueError(
                     "Incompatible active architecture signature: "
                     f"checkpoint={saved.get('architecture_signature')!r}, "
