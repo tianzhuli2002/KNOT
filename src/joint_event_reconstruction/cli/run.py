@@ -177,7 +177,7 @@ def predict(config, args) -> None:
             ),
             device=device,
             checkpoint_path=args.checkpoint,
-            compatibility_lambda=float(config.inference.compatibility_weight),
+            compatibility_weight=float(config.inference.compatibility_weight),
         )
 
 
