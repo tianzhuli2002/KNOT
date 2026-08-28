@@ -2,27 +2,25 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import h5py
+import numpy as np
 import torch
-from torch.utils.data import DataLoader, Dataset
 from omegaconf import OmegaConf
+from torch.utils.data import DataLoader, Dataset, Subset
 
-from joint_event_reconstruction.m0.data.module import (
-    TransformerDataModule,
-    _collate_transformer,
-)
-from joint_event_reconstruction.data.invisible import (
-    InvisibleScaler,
-    InvisibleTruthStore,
-)
+from joint_event_reconstruction.data.invisible import InvisibleScaler, InvisibleTruthStore
+from joint_event_reconstruction.m0.data.module import TransformerDataModule, _collate_transformer
 from joint_event_reconstruction.topology.assignments import build_assignment_template
 from joint_event_reconstruction.topology.candidates import build_event_candidates
 from joint_event_reconstruction.topology.compiler import load_topology
 
 
 class StructuredCollator:
+    """Attach topology-derived candidate/assignment tensors to a fixed token layout."""
+
     def __init__(
         self,
         topology_path: str | Path,
@@ -42,7 +40,7 @@ class StructuredCollator:
         self._spec = None
         self._templates = None
         self._assignment_template = None
-        self._source_positions = None
+        self._type_layout = None
         self.invisible_store = None
         self.invisible_scaler = None
 
@@ -55,29 +53,45 @@ class StructuredCollator:
     def _initialise_static_layout(
         self, type_ids: torch.Tensor
     ) -> dict[str, torch.Tensor]:
+        if type_ids.ndim != 2 or not torch.equal(
+            type_ids, type_ids[:1].expand_as(type_ids)
+        ):
+            raise ValueError(
+                "Structured reconstruction requires one fixed token-source layout "
+                "for every event; type-ID positions vary within the batch"
+            )
+        self._type_layout = type_ids[0].clone()
         source_positions = {}
         for source in {role.source for role in self.spec.visible_leaf_roles}:
             if source not in self.source_type_ids:
                 raise KeyError(
                     f"Visible topology source {source} has no token type ID"
                 )
-            expected = type_ids == self.source_type_ids[source]
-            counts = expected.sum(dim=1)
-            if not torch.equal(counts, counts[:1].expand_as(counts)):
-                raise ValueError(
-                    f"Token layout for source {source} varies within a batch"
-                )
-            positions = expected[0].nonzero(as_tuple=False).flatten()
+            positions = (self._type_layout == self.source_type_ids[source]).nonzero(
+                as_tuple=False
+            ).flatten()
             if not positions.numel():
                 raise ValueError(
                     f"Token layout contains no slots for visible source {source}"
                 )
             source_positions[source] = positions
-        self._source_positions = source_positions
         self._templates, self._assignment_template = self._build_templates(
             source_positions, type_ids.shape[1]
         )
         return source_positions
+
+    def _validate_static_layout(self, type_ids: torch.Tensor) -> None:
+        if self._type_layout is None:
+            self._initialise_static_layout(type_ids)
+            return
+        if type_ids.ndim != 2 or type_ids.shape[1] != len(self._type_layout):
+            raise ValueError(
+                "Token layout width changed after structured candidate templates were cached"
+            )
+        if not torch.equal(type_ids, self._type_layout.unsqueeze(0).expand_as(type_ids)):
+            raise ValueError(
+                "Token-source positions changed after structured candidate templates were cached"
+            )
 
     def __call__(self, items: list[dict]) -> dict:
         batch = _collate_transformer(items)
@@ -88,8 +102,7 @@ class StructuredCollator:
         type_ids = batch["type_ids"]
         padding = batch["padding_mask"]
         raw = batch["reco_raw_labels"]
-        if self._templates is None:
-            self._initialise_static_layout(type_ids)
+        self._validate_static_layout(type_ids)
 
         batch_size = len(items)
         truth_by_node = {}
@@ -110,9 +123,7 @@ class StructuredCollator:
                 values = raw[:, indices.reshape(-1)].reshape(
                     batch_size, len(indices), role.multiplicity
                 )
-                expected = template["truth_values"][role.key].to(
-                    dtype=values.dtype
-                )
+                expected = template["truth_values"][role.key].to(dtype=values.dtype)
                 candidate_truth &= (
                     values.sort(dim=2).values == expected
                 ).all(dim=2)
@@ -151,9 +162,7 @@ class StructuredCollator:
         if self.invisible_store is not None:
             invisible = self.invisible_store.lookup(batch["event_index"])
             batch["invisible_truth"] = invisible
-            batch["invisible_truth_scaled"] = self.invisible_scaler.transform(
-                invisible
-            )
+            batch["invisible_truth_scaled"] = self.invisible_scaler.transform(invisible)
         return batch
 
     def _build_templates(
@@ -167,14 +176,17 @@ class StructuredCollator:
         templates = {}
         for node_name in self.spec.dag_order:
             candidates = records[node_name]
+            if not candidates:
+                raise ValueError(
+                    f"Topology node {node_name!r} has no candidates for the configured "
+                    f"token layout; available source slots={available}"
+                )
             ownership = torch.zeros(
                 (len(candidates), token_count), dtype=torch.bool
             )
             leaf_indices = {
                 role.key: torch.full(
-                    (len(candidates), role.multiplicity),
-                    -1,
-                    dtype=torch.long,
+                    (len(candidates), role.multiplicity), -1, dtype=torch.long
                 )
                 for role in self.spec.nodes[node_name].leaf_roles
                 if not role.invisible
@@ -187,17 +199,15 @@ class StructuredCollator:
                 if not role.invisible
             }
             child_indices = {
-                role.key: torch.full(
-                    (len(candidates),), -1, dtype=torch.long
-                )
+                role.key: torch.full((len(candidates),), -1, dtype=torch.long)
                 for role in self.spec.nodes[node_name].composite_roles
             }
             for candidate in candidates:
                 for role_key, local_indices in candidate.constituents:
                     source = self.spec.leaf_roles[role_key].source
-                    leaf_indices[role_key][candidate.index] = source_positions[
-                        source
-                    ][torch.tensor(local_indices, dtype=torch.long)]
+                    leaf_indices[role_key][candidate.index] = source_positions[source][
+                        torch.tensor(local_indices, dtype=torch.long)
+                    ]
                 for role_key, child_index in candidate.children:
                     child_indices[role_key][candidate.index] = child_index
                 for source, local_index in candidate.leaf_ownership:
@@ -218,9 +228,7 @@ class StructuredCollator:
                 self.max_assignment_states is not None
                 and assignment_template.state_count > self.max_assignment_states
             ):
-                root_sizes = {
-                    root: len(records[root]) for root in self.spec.roots
-                }
+                root_sizes = {root: len(records[root]) for root in self.spec.roots}
                 raise RuntimeError(
                     "Complete assignment state space is too large for configured "
                     "DFM/joint flow: "
@@ -237,8 +245,6 @@ class StructuredCachedDataset(Dataset):
     """Read the validated visible cache without constructing obsolete M0 pools."""
 
     def __init__(self, payload: dict, positions):
-        import numpy as np
-
         self.payload = payload
         self.positions = np.asarray(positions, dtype=np.int64)
 
@@ -273,9 +279,7 @@ class StructuredDataModule(TransformerDataModule):
         max_assignment_states: int | None = None,
     ):
         self.tensor_cache = (
-            None
-            if tensor_cache is None
-            else Path(tensor_cache).expanduser().resolve()
+            None if tensor_cache is None else Path(tensor_cache).expanduser().resolve()
         )
         config.dataset.cache.enabled = False
         super().__init__(config)
@@ -309,14 +313,10 @@ class StructuredDataModule(TransformerDataModule):
             raise FileNotFoundError(
                 f"Explicit tensor cache has no manifest: {manifest_path}"
             )
-        import json
-        import numpy as np
 
         manifest = json.loads(manifest_path.read_text())
         expected = {
-            "runtime_input_h5_path": str(
-                Path(self.h5_path).expanduser().resolve()
-            ),
+            "runtime_input_h5_path": str(Path(self.h5_path).expanduser().resolve()),
             "token_feature_dim": int(self.schema.dim),
             "token_features": list(self.schema.names),
             "source_type_ids": dict(self.schema.source_type_ids),
@@ -342,10 +342,8 @@ class StructuredDataModule(TransformerDataModule):
         payload_indices = torch.as_tensor(
             payload.get("indices"), dtype=torch.long
         ).numpy()
-        selected = __import__("numpy").asarray(
-            self.split_indices["selected"], dtype=__import__("numpy").int64
-        )
-        if not __import__("numpy").array_equal(payload_indices, selected):
+        selected = np.asarray(self.split_indices["selected"], dtype=np.int64)
+        if not np.array_equal(payload_indices, selected):
             raise ValueError(
                 "Explicit tensor cache event indices do not equal the stable "
                 "selected split: "
@@ -353,51 +351,36 @@ class StructuredDataModule(TransformerDataModule):
             )
 
         def selected_positions(indices):
-            indices = __import__("numpy").asarray(
-                indices, dtype=__import__("numpy").int64
-            )
-            positions = __import__("numpy").searchsorted(selected, indices)
+            indices = np.asarray(indices, dtype=np.int64)
+            positions = np.searchsorted(selected, indices)
             if (
                 (positions >= len(selected)).any()
-                or not __import__("numpy").array_equal(
-                    selected[positions], indices
-                )
+                or not np.array_equal(selected[positions], indices)
             ):
                 raise ValueError(
-                    "Stable split contains an event absent from the explicit "
-                    "tensor cache"
+                    "Stable split contains an event absent from the explicit tensor cache"
                 )
             return positions
 
         self.cache_payload = payload
         self.train_dataset = StructuredCachedDataset(
-            payload,
-            selected_positions(self.split_indices["train"]),
+            payload, selected_positions(self.split_indices["train"])
         )
         self.val_dataset = StructuredCachedDataset(
-            payload,
-            selected_positions(self.split_indices["validation"]),
+            payload, selected_positions(self.split_indices["validation"])
         )
         self.test_dataset = StructuredCachedDataset(
-            payload,
-            selected_positions(self.split_indices["test"]),
+            payload, selected_positions(self.split_indices["test"])
         )
         self._apply_event_limits_and_invisible_truth()
         self._joint_setup_done = True
 
     def _selected_ids(self, split_name: str, positions):
-        import numpy as np
-
-        rows = np.asarray(
-            self.split_indices[split_name], dtype=np.int64
-        )[positions]
+        rows = np.asarray(self.split_indices[split_name], dtype=np.int64)[positions]
         with h5py.File(self.h5_path, "r") as source:
             return source["EVENT_ID"][rows] if "EVENT_ID" in source else rows
 
     def _apply_event_limits_and_invisible_truth(self):
-        import numpy as np
-        from torch.utils.data import Subset
-
         split_names = {
             "train": "train",
             "val": "validation",
@@ -406,11 +389,7 @@ class StructuredDataModule(TransformerDataModule):
         selected_positions = {}
         for offset, (loader_name, split_name) in enumerate(split_names.items()):
             dataset = getattr(self, f"{loader_name}_dataset")
-            count = (
-                None
-                if self.max_events is None
-                else self.max_events.get(loader_name)
-            )
+            count = None if self.max_events is None else self.max_events.get(loader_name)
             positions = np.arange(len(dataset), dtype=np.int64)
             if count is not None and int(count) < len(positions):
                 rng = np.random.default_rng(self.subset_seed + offset)
@@ -436,19 +415,14 @@ class StructuredDataModule(TransformerDataModule):
             allow_synthetic=self.allow_synthetic,
         )
         if store.synthetic:
-            scaler_ids = self._selected_ids(
-                "train", selected_positions["train"]
-            )
+            scaler_ids = self._selected_ids("train", selected_positions["train"])
         else:
             full_train = np.arange(
                 len(self.split_indices["train"]), dtype=np.int64
             )
             scaler_ids = self._selected_ids("train", full_train)
         train_truth = store.lookup(scaler_ids)
-        self.invisible_scaler = InvisibleScaler.fit(
-            train_truth,
-            role_names,
-        )
+        self.invisible_scaler = InvisibleScaler.fit(train_truth, role_names)
         self.structured_collator.invisible_store = store
         self.structured_collator.invisible_scaler = self.invisible_scaler
 
