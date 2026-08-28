@@ -93,9 +93,10 @@ class InvisibleGenerator(nn.Module):
     ) -> torch.Tensor:
         """Build the training/inference context for non-hypothesis posterior modes.
 
-        ``hypothesis`` uses truth assignments during training to learn p(nu|X,A),
-        but predicted complete hypotheses at inference through
-        :meth:`assignment_parent_context`.
+        ``hypothesis`` learns p(nu|X,A) using truth assignments only where those
+        assignments are reconstructable. The caller masks unreconstructable events
+        out of the invisible loss. At prediction time it uses explicit decoded
+        assignment hypotheses through :meth:`assignment_parent_context`.
         """
         mode = self.assignment_mode if mode is None else mode
         contexts = []
@@ -120,7 +121,16 @@ class InvisibleGenerator(nn.Module):
                         safe,
                     ]
                     summary = summary * (selected >= 0).unsqueeze(1)
-                elif mode in {"hypothesis", "truth"}:
+                elif mode == "hypothesis":
+                    pool = structured["pools"][node]
+                    selected = pool["truth_index"]
+                    safe = selected.clamp_min(0)
+                    summary = candidates[
+                        torch.arange(len(candidates), device=candidates.device),
+                        safe,
+                    ]
+                    summary = summary * pool["reconstructable"].unsqueeze(1)
+                elif mode == "truth":
                     pool = structured["pools"][node]
                     selected = pool["truth_index"]
                     if (selected < 0).any():
@@ -130,14 +140,9 @@ class InvisibleGenerator(nn.Module):
                             .flatten()[:10]
                             .tolist()
                         )
-                        label = (
-                            "Hypothesis-conditioned training"
-                            if mode == "hypothesis"
-                            else "Truth-oracle conditioning"
-                        )
                         raise RuntimeError(
-                            f"{label} requested for unreconstructable node {node}; "
-                            f"rows={events}"
+                            "Truth-oracle conditioning requested for unreconstructable "
+                            f"node {node}; rows={events}"
                         )
                     summary = candidates[
                         torch.arange(len(candidates), device=candidates.device),
@@ -155,11 +160,32 @@ class InvisibleGenerator(nn.Module):
         target: torch.Tensor,
         visible: dict,
         parent_context: torch.Tensor,
+        *,
+        event_mask: torch.Tensor | None = None,
     ) -> dict:
         context, mask = self.visible_context(visible)
-        return self.formulation.loss(
+        if event_mask is not None:
+            if event_mask.dtype != torch.bool or event_mask.shape != (len(target),):
+                raise ValueError(
+                    "Invisible event_mask must be boolean [B], found "
+                    f"dtype={event_mask.dtype}, shape={tuple(event_mask.shape)}"
+                )
+            if not event_mask.any():
+                zero = target.sum() * 0.0
+                return {
+                    "loss": zero,
+                    "valid_events": 0,
+                    "skipped_all_events": True,
+                }
+            target = target[event_mask]
+            context = context[event_mask]
+            mask = mask[event_mask]
+            parent_context = parent_context[event_mask]
+        result = self.formulation.loss(
             target, context, mask, parent_context
         )
+        result["valid_events"] = len(target)
+        return result
 
     def flow_source(
         self,
