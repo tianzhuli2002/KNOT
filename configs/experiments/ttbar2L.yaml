@@ -1,70 +1,24 @@
 experiment:
   name: ttbar2L
   seed: 42
-topology_config: configs/topology/ttbar2L.yaml
-visible_config: configs/real_ttbar2L.yaml
+
+topology: configs/topology/ttbar2L.yaml
 
 data:
-  tensor_cache: null
-  max_events: {train: 100000, val: 50000, test: 50000}
+  config: configs/data/ttbar2L.yaml
+  events: {train: 100000, validation: 50000, test: 50000}
   max_assignment_states: 100000
-  invisible:
-    path: /mnt/iusers01/fatpou01/phy01/w00238tl/scratch/JointEventReconstruction/data/real/ttbar2L_canonical.h5
-    allow_synthetic: false
 
 model:
-  mode: factorized
-  visible: {d_model: 128, n_heads: 4, layers: 4, d_feedforward: 384, dropout: 0.05}
-
+  encoder: {d_model: 128, n_heads: 4, layers: 4, d_feedforward: 384, dropout: 0.05}
   assignment:
-    formulation: discriminative
-    reasoning:
-      enabled: false
-      block_layers: 2
-      train_steps: [1, 2, 3, 4]
-      eval_steps: 4
-      fixed_input_reinjection: true
-    feedback: {enabled: false, start_step: 1, gate_initial_bias: -2.0}
+    method: discriminative
 
-  invisible:
-    enabled: false
-    formulation: edm
-    conditioning: {assignment: none, allow_truth_oracle: false}
-    denoiser: {d_model: 128, n_heads: 4, layers: 4, d_feedforward: 512, dropout: 0.0, zero_init_output: true}
-    standard: {training_steps: 1000}
-    edm: {sigma_data: 1.0, p_mean: -0.5, p_std: 1.2}
-    flow_matching: {coupling: independent}
-
-  joint_flow:
-    recurrent_state: false
-    block_layers: 2
-    train_steps: [1, 2, 3, 4]
-
-  coupling:
-    invisible_to_assignment: {enabled: false, posterior_samples: 4, gate_initial_bias: -2.0}
-
-  compatibility: {enabled: false, include_invisible: true}
-
-inference:
-  top_k_assignments: 1
-  posterior_samples: 1
-  invisible:
-    standard: {steps: 50}
-    edm: {sigma_min: 0.004, sigma_max: 160.0, rho: 7.0, nfe: 17}
-    flow_matching: {steps: 8, solver: heun}
-  assignment_flow: {steps: 8}
-  joint_flow: {steps: 8, sample_chunk_size: 8}
-  compatibility_weight: 1.0
+prediction: {}
 
 training:
   learning_rate: 0.000361545
   weight_decay: 0.00006073529387441413
   epochs: 20
   precision: 16-mixed
-  gradient_clip: 1.0
-  accumulate_grad_batches: 1
-  loss_weights: {assignment: 1.0, invisible: 1.0, compatibility: 1.0}
-  freeze: {visible: false, assignment: false, invisible: false, compatibility: false}
-  scheduler: {enabled: true, factor: 0.8, patience: 8, min_lr: 1.0e-6}
-  early_stopping: {enabled: true, patience: 20}
   output: results/ttbar2L
