@@ -31,7 +31,10 @@ class AssignmentStateEncoder(nn.Module):
         for node_index, name in enumerate(space.nodes):
             selected = indices[:, node_index]
             candidates = candidate_embeddings[name]
-            gathered = candidates[rows, selected.clamp_min(0)]
+            if candidates.shape[1] == 0:
+                gathered = candidates.new_zeros((len(state), candidates.shape[-1]))
+            else:
+                gathered = candidates[rows, selected.clamp_min(0)]
             null = self.null_embeddings[name].unsqueeze(0).expand_as(gathered)
             mask = self.mask_embeddings[name].unsqueeze(0).expand_as(gathered)
             gathered = torch.where((selected == -1).unsqueeze(1), null, gathered)
@@ -59,21 +62,20 @@ class AssignmentStateEncoder(nn.Module):
 
 
 class DiscreteAssignmentFlow(nn.Module):
-    """Factorised DFM baseline using the maintained hierarchical reconstruction scorer."""
+    """Flow-specific assignment state and reasoner; reconstruction remains externally owned."""
 
-    def __init__(self, spec: TopologySpec, reconstruction: nn.Module, *, d_model: int, n_heads: int, block_layers: int, d_feedforward: int, dropout: float):
+    def __init__(self, spec: TopologySpec, *, d_model: int, n_heads: int, block_layers: int, d_feedforward: int, dropout: float):
         super().__init__()
         self.spec = spec
-        self.reconstruction = reconstruction
         self.state_encoder = AssignmentStateEncoder(spec, d_model)
         self.reasoner = TopologyFlowReasoner(spec, d_model, n_heads, block_layers, d_feedforward, dropout)
         self.flow = MaskedDiscreteFlow()
 
-    def _predict(self, visible: dict, structured: dict, space: AssignmentSpace, candidate_embeddings: dict[str, torch.Tensor], state: torch.Tensor, time: torch.Tensor) -> dict:
+    def _predict(self, visible: dict, structured: dict, reconstruction: nn.Module, space: AssignmentSpace, candidate_embeddings: dict[str, torch.Tensor], state: torch.Tensor, time: torch.Tensor) -> dict:
         assignment_context = self.state_encoder.encode(state, space, candidate_embeddings)
         topology = self.reasoner.step(visible, assignment_context, None, time, state=None)
         node_context = self.reasoner.as_dict(topology)
-        local_logits, local_probabilities = self.reconstruction.score_candidates(candidate_embeddings, visible["pooled"], structured, node_context=node_context)
+        local_logits, local_probabilities = reconstruction.score_candidates(candidate_embeddings, visible["pooled"], structured, node_context=node_context)
         complete_logits = space.state_logits(local_logits)
         return {
             "assignment_logits": complete_logits,
@@ -84,12 +86,12 @@ class DiscreteAssignmentFlow(nn.Module):
             "topology_state": topology,
         }
 
-    def loss(self, visible: dict, structured: dict) -> dict:
+    def loss(self, visible: dict, structured: dict, reconstruction: nn.Module) -> dict:
         space = AssignmentSpace.from_structured(structured)
-        candidates = self.reconstruction.encode_candidates(visible["tokens"], structured)
+        candidates = reconstruction.encode_candidates(visible["tokens"], structured)
         time = self.flow.sample_time(len(visible["tokens"]), device=visible["tokens"].device, dtype=visible["tokens"].dtype)
         state = self.flow.training_state(space.truth_state, time, space.mask_state)
-        prediction = self._predict(visible, structured, space, candidates, state, time)
+        prediction = self._predict(visible, structured, reconstruction, space, candidates, state, time)
         loss = self.flow.loss(prediction["assignment_logits"], space.truth_state, state, time, mask_state=space.mask_state)
         return {
             **prediction,
@@ -102,17 +104,17 @@ class DiscreteAssignmentFlow(nn.Module):
         }
 
     @torch.no_grad()
-    def sample(self, visible: dict, structured: dict, *, steps: int, generator: torch.Generator | None = None) -> dict:
+    def sample(self, visible: dict, structured: dict, reconstruction: nn.Module, *, steps: int, generator: torch.Generator | None = None) -> dict:
         if steps <= 0:
             raise ValueError("Discrete flow inference steps must be positive")
         space = AssignmentSpace.from_structured(structured)
-        candidates = self.reconstruction.encode_candidates(visible["tokens"], structured)
+        candidates = reconstruction.encode_candidates(visible["tokens"], structured)
         state = torch.full((len(visible["tokens"]),), space.mask_state, dtype=torch.long, device=visible["tokens"].device)
         schedule = torch.linspace(0, 1, steps + 1, device=visible["tokens"].device, dtype=visible["tokens"].dtype)
         prediction = None
         for current, following in zip(schedule[:-1], schedule[1:]):
             time = current.expand(len(state))
-            prediction = self._predict(visible, structured, space, candidates, state, time)
+            prediction = self._predict(visible, structured, reconstruction, space, candidates, state, time)
             state = self.flow.step(state, prediction["assignment_logits"], time, following.expand(len(state)), mask_state=space.mask_state, generator=generator)
         if (state == space.mask_state).any():
             raise RuntimeError("Discrete Flow Matching ended with unresolved MASK states")
