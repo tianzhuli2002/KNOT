@@ -30,9 +30,9 @@ _COMPONENT_PREFIXES = {
         "event_model.reasoner.",
         "event_model.feedback.",
         "event_model.assignment_flow.",
-        "event_model.posterior_feedback.",
     ),
     "invisible": ("event_model.invisible.",),
+    "coupling": ("event_model.posterior_feedback.",),
     "compatibility": ("event_model.compatibility.",),
 }
 
