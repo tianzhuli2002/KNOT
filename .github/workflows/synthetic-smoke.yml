@@ -33,21 +33,24 @@ jobs:
         run: python -m compileall -q src scripts
       - name: Check fatal static errors
         run: ruff check src scripts --select E9,F63,F7,F82
-      - name: Validate maintained experiment configs
+      - name: Validate compact experiment configs
         run: |
           python - <<'PY'
           from pathlib import Path
-          from joint_event_reconstruction.configuration import load_experiment
+          from joint_event_reconstruction.configuration import load_experiment, load_visible_config
           for path in sorted(Path("configs/experiments").glob("*.yaml")):
-              load_experiment(path)
+              config = load_experiment(path)
+              load_visible_config(config)
               print(f"validated {path}")
           PY
-      - name: Validate maintained study manifests
-        if: matrix.topology == 'ttbar1L'
+      - name: Validate structured study manifests
+        if: matrix.topology == 'ttbar2L'
         run: |
           python - <<'PY'
           from pathlib import Path
-          from joint_event_reconstruction.configuration import load_experiment
+          from omegaconf import OmegaConf
+          from joint_event_reconstruction.configuration import validate_experiment
+          from joint_event_reconstruction.public_config import resolve_public_experiment
           from joint_event_reconstruction.studies import load_study
 
           root = Path.cwd()
@@ -55,25 +58,30 @@ jobs:
               study = load_study(path)
               for topology in study.topologies:
                   experiment = study.experiment_path(root, topology)
+                  base = OmegaConf.load(experiment)
                   for seed in study.seeds:
                       for variant in study.variants:
-                          base = [
-                              *variant.train_overrides,
-                              f"experiment.seed={seed}",
-                              "training.output=/tmp/jer-study-ci",
-                          ]
-                          load_experiment(experiment, base)
+                          public = OmegaConf.merge(
+                              base,
+                              OmegaConf.create(variant.patch),
+                              {"experiment": {"seed": seed}, "training": {"output": "/tmp/jer-study-ci"}},
+                          )
+                          validate_experiment(resolve_public_experiment(public))
                           for prediction in variant.predictions:
-                              load_experiment(experiment, [*base, *prediction.overrides])
+                              validate_experiment(
+                                  resolve_public_experiment(
+                                      OmegaConf.merge(public, OmegaConf.create(prediction.patch))
+                                  )
+                              )
               print(f"validated {path}")
           PY
       - name: Synthetic smoke
         run: python scripts/smoke_synthetic.py --topology ${{ matrix.topology }} --device cpu --events 4
       - name: Synthetic benchmark smoke
-        if: matrix.topology == 'ttbar1L'
+        if: matrix.topology == 'ttbar2L'
         run: |
           python scripts/benchmark_synthetic.py \
-            --experiment configs/experiments/ttbar1L.yaml \
+            --experiment configs/experiments/ttbar2L.yaml \
             --modes visible cfm dfm joint \
             --device cpu --events 2 --warmup 0 --iterations 1 \
             --posterior-samples 1 --flow-steps 1 --joint-sample-chunk-size 1
