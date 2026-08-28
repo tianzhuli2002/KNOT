@@ -202,5 +202,11 @@ def evaluate_any_predictions(path: str | Path) -> dict:
         schema = source.attrs.get("schema_version")
     if schema == JOINT_PREDICTION_SCHEMA:
         return evaluate_joint_predictions(path)
+
+    from joint_event_reconstruction.prediction_discrete import DISCRETE_PREDICTION_SCHEMA
+    if schema == DISCRETE_PREDICTION_SCHEMA:
+        from joint_event_reconstruction.evaluation_discrete import evaluate_discrete_predictions
+        return evaluate_discrete_predictions(path)
+
     from joint_event_reconstruction.evaluation import evaluate_predictions
     return evaluate_predictions(path)
