@@ -1,0 +1,103 @@
+study:
+  name: joint_vs_factorized
+  description: >-
+    Compare the explicit factorisation p(A|X)p(nu|X,A) with native joint DFM+CFM.
+    The factorized CFM generator is trained from one frozen M3 assignment reference;
+    joint flow then reuses the visible encoder and continuous generator weights while
+    learning coupled discrete-continuous dynamics.
+  experiment_pattern: configs/experiments/{topology}.yaml
+  topologies: [ttbar1L, ttbar2L, ttH1L]
+  seeds: [42]
+  split: test
+
+variants:
+  assignment_reference:
+    label: M3 assignment reference
+    reporting: setup
+    train_overrides:
+      - model.mode=factorized
+      - model.assignment.formulation=discriminative
+      - model.assignment.reasoning.enabled=true
+      - model.assignment.feedback.enabled=true
+      - model.invisible.enabled=false
+      - model.coupling.invisible_to_assignment.enabled=false
+      - model.compatibility.enabled=false
+      - training.loss_weights.assignment=1.0
+      - training.loss_weights.invisible=0.0
+      - training.loss_weights.compatibility=0.0
+    initialise_from: null
+    initialise_components: []
+    predictions: {}
+
+  factorized:
+    label: factorized hypothesis CFM
+    reporting: primary
+    train_overrides:
+      - model.mode=factorized
+      - model.assignment.formulation=discriminative
+      - model.assignment.reasoning.enabled=true
+      - model.assignment.feedback.enabled=true
+      - model.invisible.enabled=true
+      - model.invisible.formulation=flow_matching
+      - model.invisible.flow_matching.coupling=independent
+      - model.invisible.conditioning.assignment=hypothesis
+      - model.invisible.conditioning.allow_truth_oracle=false
+      - model.coupling.invisible_to_assignment.enabled=false
+      - model.compatibility.enabled=false
+      - training.freeze.visible=true
+      - training.freeze.assignment=true
+      - training.freeze.invisible=false
+      - training.loss_weights.assignment=0.0
+      - training.loss_weights.invisible=1.0
+      - training.loss_weights.compatibility=0.0
+    initialise_from: assignment_reference
+    initialise_components: [visible, assignment]
+    predictions:
+      k5_m16:
+        label: factorized K=5 M=16
+        overrides:
+          - inference.top_k_assignments=5
+          - inference.posterior_samples=16
+          - inference.invisible.flow_matching.steps=17
+          - inference.invisible.flow_matching.solver=euler
+        recurrent_steps: 4
+
+  joint:
+    label: joint DFM+CFM
+    reporting: primary
+    train_overrides:
+      - model.mode=joint_flow
+      - model.assignment.formulation=flow_matching
+      - model.assignment.reasoning.enabled=false
+      - model.assignment.feedback.enabled=false
+      - model.invisible.enabled=true
+      - model.invisible.formulation=flow_matching
+      - model.invisible.conditioning.assignment=none
+      - model.invisible.conditioning.allow_truth_oracle=false
+      - model.joint_flow.recurrent_state=false
+      - model.coupling.invisible_to_assignment.enabled=false
+      - model.compatibility.enabled=false
+      - training.freeze.visible=true
+      - training.freeze.assignment=false
+      - training.freeze.invisible=false
+      - training.freeze.compatibility=false
+      - training.loss_weights.assignment=1.0
+      - training.loss_weights.invisible=1.0
+      - training.loss_weights.compatibility=0.0
+    initialise_from: factorized
+    initialise_components: [visible, invisible]
+    predictions:
+      s64_t8:
+        label: joint S=64 T=8
+        overrides:
+          - inference.posterior_samples=64
+          - inference.joint_flow.steps=8
+          - inference.joint_flow.sample_chunk_size=8
+        recurrent_steps: null
+      s64_t16:
+        label: joint S=64 T=16
+        overrides:
+          - inference.posterior_samples=64
+          - inference.joint_flow.steps=16
+          - inference.joint_flow.sample_chunk_size=8
+        recurrent_steps: null
