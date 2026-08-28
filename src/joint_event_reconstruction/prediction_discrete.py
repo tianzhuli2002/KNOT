@@ -1,4 +1,4 @@
-"""Prediction writer for sampled complete assignments from factorized Discrete Flow Matching."""
+"""Prediction writer for sampled complete assignments from factorized DFM."""
 
 from __future__ import annotations
 
@@ -13,10 +13,14 @@ import torch
 from joint_event_reconstruction.topology.assignments import AssignmentSpace
 
 
-DISCRETE_PREDICTION_SCHEMA = "joint_event_reconstruction_discrete_flow_predictions_v1"
+DISCRETE_PREDICTION_SCHEMA = (
+    "joint_event_reconstruction_discrete_flow_predictions_v1"
+)
 
 
-def _create(group: h5py.Group, name: str, tail: tuple[int, ...], dtype) -> h5py.Dataset:
+def _create(
+    group: h5py.Group, name: str, tail: tuple[int, ...], dtype
+) -> h5py.Dataset:
     return group.create_dataset(
         name,
         (0,) + tail,
@@ -52,13 +56,19 @@ def predict_discrete_flow_hdf5(
     checkpoint_path: str = "",
 ) -> None:
     if posterior_samples <= 0 or steps <= 0:
-        raise ValueError("Discrete posterior samples and flow steps must be positive")
+        raise ValueError(
+            "Discrete posterior samples and flow steps must be positive"
+        )
     if module.event_model.model_mode != "factorized":
         raise ValueError("Discrete-flow prediction requires factorized model mode")
     if module.event_model.assignment_flow is None:
-        raise ValueError("Discrete-flow prediction requires assignment Flow Matching")
+        raise ValueError(
+            "Discrete-flow prediction requires assignment Flow Matching"
+        )
     if module.event_model.invisible is not None:
-        raise ValueError("Factorized discrete-flow prediction is assignment-only")
+        raise ValueError(
+            "Factorized discrete-flow prediction is assignment-only"
+        )
 
     loader = {
         "train": data.train_dataloader,
@@ -77,47 +87,51 @@ def predict_discrete_flow_hdf5(
     with h5py.File(temporary, "w") as destination, torch.inference_mode():
         source_path = Path(data.h5_path).expanduser().resolve()
         source_stat = source_path.stat()
-        destination.attrs.update({
-            "schema_version": DISCRETE_PREDICTION_SCHEMA,
-            "model_mode": "factorized",
-            "assignment_formulation": "flow_matching",
-            "topology_signature": module.spec.signature,
-            "architecture_signature_version": int(
-                module.hparams.architecture_signature_version
-            ),
-            "architecture_signature": module.hparams.architecture_signature,
-            "checkpoint": (
-                str(Path(checkpoint_path).expanduser().resolve())
-                if checkpoint_path else "untrained"
-            ),
-            "split": split,
-            "posterior_samples": posterior_samples,
-            "flow_steps": steps,
-            "nfe_per_sample": steps,
-            "network_calls_per_event": steps * posterior_samples,
-            "sample_frequencies_are_exact_likelihoods": False,
-            "source_data": str(source_path),
-            "source_data_size_bytes": source_stat.st_size,
-            "source_data_mtime_ns": source_stat.st_mtime_ns,
-        })
+        destination.attrs.update(
+            {
+                "schema_version": DISCRETE_PREDICTION_SCHEMA,
+                "model_mode": "factorized",
+                "assignment_formulation": "flow_matching",
+                "topology_signature": module.spec.signature,
+                "architecture_signature_version": int(
+                    module.hparams.architecture_signature_version
+                ),
+                "architecture_signature": module.hparams.architecture_signature,
+                "checkpoint": (
+                    str(Path(checkpoint_path).expanduser().resolve())
+                    if checkpoint_path
+                    else "untrained"
+                ),
+                "split": split,
+                "posterior_samples": posterior_samples,
+                "flow_steps": steps,
+                "nfe_per_sample": steps,
+                "network_calls_per_event": steps * posterior_samples,
+                "candidate_embeddings_reused_across_samples": True,
+                "sample_frequencies_are_exact_likelihoods": False,
+                "source_data": str(source_path),
+                "source_data_size_bytes": source_stat.st_size,
+                "source_data_mtime_ns": source_stat.st_mtime_ns,
+            }
+        )
 
         for batch in loader:
             batch = _move(batch, device)
             visible = module.event_model.visible(
-                batch["tokens"], batch["type_ids"], batch["padding_mask"]
+                batch["tokens"],
+                batch["type_ids"],
+                batch["padding_mask"],
             )
             space = AssignmentSpace.from_structured(batch["structured"])
-            samples = []
-            for _ in range(posterior_samples):
-                generated = module.event_model.assignment_flow.sample(
-                    visible,
-                    batch["structured"],
-                    module.event_model.reconstruction,
-                    steps=steps,
-                    generator=generator,
-                )
-                samples.append(generated["sampled_assignment_state"])
-            states = torch.stack(samples, dim=1)
+            generated = module.event_model.assignment_flow.sample_many(
+                visible,
+                batch["structured"],
+                module.event_model.reconstruction,
+                samples=posterior_samples,
+                steps=steps,
+                generator=generator,
+            )
+            states = generated["sampled_assignment_state"]
             flat = states.reshape(-1)
             root_indices = space.root_candidate_indices[flat].reshape(
                 len(states), posterior_samples, len(space.roots)
@@ -131,7 +145,9 @@ def predict_discrete_flow_hdf5(
 
             jet_type = data.schema.source_type_ids.get("JET")
             if jet_type is None:
-                raise RuntimeError("Prediction schema has no JET source for Njet diagnostics")
+                raise RuntimeError(
+                    "Prediction schema has no JET source for Njet diagnostics"
+                )
             njet = (
                 (batch["type_ids"] == jet_type) & ~batch["padding_mask"]
             ).sum(dim=1)
@@ -143,7 +159,10 @@ def predict_discrete_flow_hdf5(
                 datasets = {
                     "event": _create(destination, "EVENT_ID", (), "<i8"),
                     "state": _create(
-                        hypotheses, "assignment_state", (posterior_samples,), "<i4"
+                        hypotheses,
+                        "assignment_state",
+                        (posterior_samples,),
+                        "<i4",
                     ),
                     "roots": _create(
                         hypotheses,
@@ -157,15 +176,26 @@ def predict_discrete_flow_hdf5(
                         (posterior_samples, len(space.nodes)),
                         "<i4",
                     ),
-                    "truth_state": _create(truth, "assignment_state", (), "<i4"),
+                    "truth_state": _create(
+                        truth, "assignment_state", (), "<i4"
+                    ),
                     "truth_roots": _create(
-                        truth, "root_candidate_indices", (len(space.roots),), "<i4"
+                        truth,
+                        "root_candidate_indices",
+                        (len(space.roots),),
+                        "<i4",
                     ),
                     "truth_nodes": _create(
-                        truth, "node_candidate_indices", (len(space.nodes),), "<i4"
+                        truth,
+                        "node_candidate_indices",
+                        (len(space.nodes),),
+                        "<i4",
                     ),
                     "truth_hit": _create(
-                        truth, "hypothesis_assignment", (posterior_samples,), "?"
+                        truth,
+                        "hypothesis_assignment",
+                        (posterior_samples,),
+                        "?",
                     ),
                     "njet": _create(observed, "njet", (), "<i2"),
                 }
@@ -177,9 +207,15 @@ def predict_discrete_flow_hdf5(
                 datasets["event"],
                 batch["event_index"].cpu().numpy().astype(np.int64),
             )
-            _append(datasets["state"], states.cpu().numpy().astype(np.int32))
-            _append(datasets["roots"], root_indices.cpu().numpy().astype(np.int32))
-            _append(datasets["nodes"], node_indices.cpu().numpy().astype(np.int32))
+            _append(
+                datasets["state"], states.cpu().numpy().astype(np.int32)
+            )
+            _append(
+                datasets["roots"], root_indices.cpu().numpy().astype(np.int32)
+            )
+            _append(
+                datasets["nodes"], node_indices.cpu().numpy().astype(np.int32)
+            )
             _append(
                 datasets["truth_state"],
                 space.truth_state.cpu().numpy().astype(np.int32),
@@ -193,7 +229,9 @@ def predict_discrete_flow_hdf5(
                 truth_node_indices.cpu().numpy().astype(np.int32),
             )
             _append(datasets["truth_hit"], truth_hit.cpu().numpy())
-            _append(datasets["njet"], njet.cpu().numpy().astype(np.int16))
+            _append(
+                datasets["njet"], njet.cpu().numpy().astype(np.int16)
+            )
 
     validate_discrete_prediction(temporary)
     os.replace(temporary, target)
@@ -202,10 +240,14 @@ def predict_discrete_flow_hdf5(
 def validate_discrete_prediction(path: str | Path) -> None:
     with h5py.File(path, "r") as source:
         if source.attrs.get("schema_version") != DISCRETE_PREDICTION_SCHEMA:
-            raise ValueError(f"Invalid discrete-flow prediction schema in {path}")
+            raise ValueError(
+                f"Invalid discrete-flow prediction schema in {path}"
+            )
         count = len(source["EVENT_ID"])
         if count == 0 or len(np.unique(source["EVENT_ID"][:])) != count:
-            raise ValueError(f"Prediction output {path} is empty or has duplicate EVENT_ID")
+            raise ValueError(
+                f"Prediction output {path} is empty or has duplicate EVENT_ID"
+            )
         for name in (
             "HYPOTHESES/assignment_state",
             "HYPOTHESES/root_candidate_indices",
@@ -216,8 +258,12 @@ def validate_discrete_prediction(path: str | Path) -> None:
             "OBSERVED/njet",
         ):
             if len(source[name]) != count:
-                raise ValueError(f"Prediction output has inconsistent {name} length")
+                raise ValueError(
+                    f"Prediction output has inconsistent {name} length"
+                )
         states = source["HYPOTHESES/assignment_state"][:]
         state_count = int(source.attrs["assignment_state_count"])
         if ((states < 0) | (states >= state_count)).any():
-            raise ValueError("Discrete-flow prediction contains invalid clean state indices")
+            raise ValueError(
+                "Discrete-flow prediction contains invalid clean state indices"
+            )
