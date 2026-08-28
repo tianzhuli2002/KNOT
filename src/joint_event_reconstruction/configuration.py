@@ -180,6 +180,9 @@ def validate_experiment(config: DictConfig) -> None:
         raise ValueError("inference.top_k_assignments must be positive")
     if int(config.inference.posterior_samples) <= 0:
         raise ValueError("inference.posterior_samples must be positive")
+    assignment_inference = config.inference.get("assignment_flow")
+    if assignment_inference is None or int(assignment_inference.steps) <= 0:
+        raise ValueError("inference.assignment_flow.steps must be positive")
     if mode == "joint_flow":
         joint_inference = config.inference.get("joint_flow")
         if joint_inference is None:
