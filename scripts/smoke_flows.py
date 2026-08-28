@@ -249,6 +249,10 @@ def run_flow_smoke(
         allow_synthetic=True,
         max_events={"train": events, "val": events, "test": events},
         subset_seed=int(base.experiment.seed),
+        build_assignments=True,
+        max_assignment_states=int(
+            data_config.model.reconstruction.flow_matching.max_states
+        ),
     )
     data.setup("fit")
     batch = move(next(iter(data.train_dataloader())), torch.device(device))
