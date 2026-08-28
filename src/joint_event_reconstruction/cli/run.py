@@ -24,6 +24,10 @@ def build_data(config, visible):
     invisible = config.data.invisible
     if config.model.invisible.enabled and invisible.path is None:
         raise ValueError("Invisible inference is enabled but data.invisible.path is null")
+    build_assignments = (
+        str(config.model.get("mode", "factorized")) == "joint_flow"
+        or str(config.model.reconstruction.formulation) == "flow_matching"
+    )
     return StructuredDataModule(
         visible,
         config.topology_config,
@@ -32,6 +36,11 @@ def build_data(config, visible):
         allow_synthetic=bool(invisible.allow_synthetic),
         max_events=OmegaConf.to_container(config.data.max_events, resolve=True),
         subset_seed=int(config.experiment.seed),
+        build_assignments=build_assignments,
+        max_assignment_states=(
+            int(config.model.reconstruction.flow_matching.max_states)
+            if build_assignments else None
+        ),
     )
 
 
@@ -96,6 +105,18 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("command", choices=("train", "smoke", "validate-data", "predict", "evaluate"))
     parser.add_argument("--experiment", required=True)
+    parser.add_argument(
+        "--set",
+        dest="overrides",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help=(
+            "Override one experiment value using OmegaConf dot notation. "
+            "Repeat for multiple scientific choices, e.g. "
+            "--set model.invisible.formulation=flow_matching"
+        ),
+    )
     parser.add_argument("--checkpoint")
     parser.add_argument("--split", choices=("train", "validation", "test"), default="test")
     parser.add_argument("--output")
@@ -104,7 +125,7 @@ def main() -> None:
     parser.add_argument("--recurrent-steps", type=int)
     args = parser.parse_args()
 
-    config = load_experiment(args.experiment)
+    config = load_experiment(args.experiment, args.overrides)
     if args.command == "train":
         train(config)
         return
