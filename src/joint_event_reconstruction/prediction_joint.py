@@ -116,14 +116,19 @@ def predict_joint_flow_hdf5(
     steps: int,
     device: str,
     checkpoint_path: str = "",
+    sample_chunk_size: int = 1,
 ) -> None:
-    if posterior_samples <= 0 or steps <= 0:
-        raise ValueError("Joint posterior samples and flow steps must be positive")
+    if posterior_samples <= 0 or steps <= 0 or sample_chunk_size <= 0:
+        raise ValueError(
+            "Joint posterior samples, flow steps and sample_chunk_size must be positive"
+        )
     if module.event_model.model_mode != "joint_flow":
         raise ValueError("Joint-flow prediction requires a joint_flow checkpoint")
     if scaler is None:
         raise ValueError("Joint-flow prediction requires the trained invisible scaler")
 
+    sample_chunk_size = min(sample_chunk_size, posterior_samples)
+    chunk_count = (posterior_samples + sample_chunk_size - 1) // sample_chunk_size
     loader = {
         "train": data.train_dataloader,
         "validation": data.val_dataloader,
@@ -159,7 +164,10 @@ def predict_joint_flow_hdf5(
             "flow_steps": steps,
             "actual_nfe": steps,
             "nfe_per_sample": steps,
-            "network_calls_per_event": steps * posterior_samples,
+            "sample_chunk_size": sample_chunk_size,
+            "posterior_chunk_count": chunk_count,
+            "batched_network_evaluations_per_event": steps * chunk_count,
+            "sample_equivalent_nfe_per_event": steps * posterior_samples,
             "recurrent_state": bool(module.event_model.joint_flow.recurrent_state),
             "invisible_roles": json.dumps(
                 [role.key for role in module.spec.invisible_roles]
@@ -183,6 +191,7 @@ def predict_joint_flow_hdf5(
                 module.event_model.invisible,
                 samples=posterior_samples,
                 steps=steps,
+                sample_chunk_size=sample_chunk_size,
             )
             space = AssignmentSpace.from_structured(batch["structured"])
             states = generated["assignment_state"]
