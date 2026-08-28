@@ -1,0 +1,153 @@
+study:
+  name: generator_formulations
+  description: >-
+    Compare standard diffusion, EDM, independent CFM and minibatch-OT CFM from the same
+    frozen M3 visible/assignment reference. The primary prediction uses approximately
+    matched 17-network-evaluation sampling budgets and 32 posterior samples per event.
+  experiment_pattern: configs/experiments/{topology}.yaml
+  topologies: [ttbar1L, ttbar2L, ttH1L]
+  seeds: [42]
+  split: test
+
+variants:
+  assignment_reference:
+    label: M3 assignment reference
+    reporting: setup
+    train_overrides:
+      - model.mode=factorized
+      - model.assignment.formulation=discriminative
+      - model.assignment.reasoning.enabled=true
+      - model.assignment.feedback.enabled=true
+      - model.invisible.enabled=false
+      - model.coupling.invisible_to_assignment.enabled=false
+      - model.compatibility.enabled=false
+      - training.loss_weights.assignment=1.0
+      - training.loss_weights.invisible=0.0
+      - training.loss_weights.compatibility=0.0
+    initialise_from: null
+    initialise_components: []
+    predictions: {}
+
+  standard:
+    label: DDIM
+    reporting: primary
+    train_overrides:
+      - model.mode=factorized
+      - model.assignment.formulation=discriminative
+      - model.assignment.reasoning.enabled=true
+      - model.assignment.feedback.enabled=true
+      - model.invisible.enabled=true
+      - model.invisible.formulation=standard
+      - model.invisible.conditioning.assignment=none
+      - model.invisible.conditioning.allow_truth_oracle=false
+      - model.coupling.invisible_to_assignment.enabled=false
+      - model.compatibility.enabled=false
+      - training.freeze.visible=true
+      - training.freeze.assignment=true
+      - training.freeze.invisible=false
+      - training.loss_weights.assignment=0.0
+      - training.loss_weights.invisible=1.0
+      - training.loss_weights.compatibility=0.0
+    initialise_from: assignment_reference
+    initialise_components: [visible, assignment]
+    predictions:
+      nfe17:
+        label: DDIM NFE=17
+        overrides:
+          - inference.posterior_samples=32
+          - inference.invisible.standard.steps=17
+        recurrent_steps: null
+
+  edm:
+    label: EDM
+    reporting: primary
+    train_overrides:
+      - model.mode=factorized
+      - model.assignment.formulation=discriminative
+      - model.assignment.reasoning.enabled=true
+      - model.assignment.feedback.enabled=true
+      - model.invisible.enabled=true
+      - model.invisible.formulation=edm
+      - model.invisible.conditioning.assignment=none
+      - model.invisible.conditioning.allow_truth_oracle=false
+      - model.coupling.invisible_to_assignment.enabled=false
+      - model.compatibility.enabled=false
+      - training.freeze.visible=true
+      - training.freeze.assignment=true
+      - training.freeze.invisible=false
+      - training.loss_weights.assignment=0.0
+      - training.loss_weights.invisible=1.0
+      - training.loss_weights.compatibility=0.0
+    initialise_from: assignment_reference
+    initialise_components: [visible, assignment]
+    predictions:
+      nfe17:
+        label: EDM NFE=17
+        overrides:
+          - inference.posterior_samples=32
+          - inference.invisible.edm.nfe=17
+        recurrent_steps: null
+
+  cfm:
+    label: CFM
+    reporting: primary
+    train_overrides:
+      - model.mode=factorized
+      - model.assignment.formulation=discriminative
+      - model.assignment.reasoning.enabled=true
+      - model.assignment.feedback.enabled=true
+      - model.invisible.enabled=true
+      - model.invisible.formulation=flow_matching
+      - model.invisible.flow_matching.coupling=independent
+      - model.invisible.conditioning.assignment=none
+      - model.invisible.conditioning.allow_truth_oracle=false
+      - model.coupling.invisible_to_assignment.enabled=false
+      - model.compatibility.enabled=false
+      - training.freeze.visible=true
+      - training.freeze.assignment=true
+      - training.freeze.invisible=false
+      - training.loss_weights.assignment=0.0
+      - training.loss_weights.invisible=1.0
+      - training.loss_weights.compatibility=0.0
+    initialise_from: assignment_reference
+    initialise_components: [visible, assignment]
+    predictions:
+      nfe17:
+        label: CFM Euler NFE=17
+        overrides:
+          - inference.posterior_samples=32
+          - inference.invisible.flow_matching.steps=17
+          - inference.invisible.flow_matching.solver=euler
+        recurrent_steps: null
+
+  ot_cfm:
+    label: OT-CFM
+    reporting: primary
+    train_overrides:
+      - model.mode=factorized
+      - model.assignment.formulation=discriminative
+      - model.assignment.reasoning.enabled=true
+      - model.assignment.feedback.enabled=true
+      - model.invisible.enabled=true
+      - model.invisible.formulation=flow_matching
+      - model.invisible.flow_matching.coupling=minibatch_ot
+      - model.invisible.conditioning.assignment=none
+      - model.invisible.conditioning.allow_truth_oracle=false
+      - model.coupling.invisible_to_assignment.enabled=false
+      - model.compatibility.enabled=false
+      - training.freeze.visible=true
+      - training.freeze.assignment=true
+      - training.freeze.invisible=false
+      - training.loss_weights.assignment=0.0
+      - training.loss_weights.invisible=1.0
+      - training.loss_weights.compatibility=0.0
+    initialise_from: assignment_reference
+    initialise_components: [visible, assignment]
+    predictions:
+      nfe17:
+        label: OT-CFM Euler NFE=17
+        overrides:
+          - inference.posterior_samples=32
+          - inference.invisible.flow_matching.steps=17
+          - inference.invisible.flow_matching.solver=euler
+        recurrent_steps: null
