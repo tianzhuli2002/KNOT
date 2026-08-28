@@ -1,0 +1,12 @@
+topology:
+  pair:
+    daughter:
+      - [JET, 1]
+      - [JET, 2]
+  parent:
+    pair: pair
+    bachelor: [JET, 3]
+  other_branch:
+    visible: [JET, 4]
+    lepton: [LEPTON, 1]
+    invisible: [NEUTRINO, 0]
