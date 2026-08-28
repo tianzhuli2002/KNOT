@@ -21,19 +21,20 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import h5py
+import numpy as np
 import torch
 from omegaconf import OmegaConf
 
+from joint_event_reconstruction.configuration import validate_experiment
 from joint_event_reconstruction.data.invisible import InvisibleScaler
 from joint_event_reconstruction.data.structured import StructuredCollator
-from joint_event_reconstruction.evaluation_discrete import (
-    evaluate_discrete_predictions,
-)
+from joint_event_reconstruction.evaluation import evaluate_predictions
+from joint_event_reconstruction.evaluation_discrete import evaluate_discrete_predictions
 from joint_event_reconstruction.evaluation_joint import evaluate_joint_predictions
 from joint_event_reconstruction.m0.data.module import build_token_schema
-from joint_event_reconstruction.prediction_discrete import (
-    predict_discrete_flow_hdf5,
-)
+from joint_event_reconstruction.plotting import plot_comparison, plot_prediction
+from joint_event_reconstruction.prediction import predict_hdf5
+from joint_event_reconstruction.prediction_discrete import predict_discrete_flow_hdf5
 from joint_event_reconstruction.prediction_joint import predict_joint_flow_hdf5
 from joint_event_reconstruction.topology.assignments import AssignmentSpace
 from joint_event_reconstruction.topology.compiler import load_topology
@@ -53,9 +54,7 @@ def _synthetic_items(
     experiment, visible, *, events: int, seed: int
 ) -> tuple[list[dict], object]:
     if events < 2:
-        raise ValueError(
-            "Synthetic smoke needs at least two events for finite scaling"
-        )
+        raise ValueError("Synthetic smoke needs at least two events for finite scaling")
     schema = build_token_schema(visible.dataset)
     spec = load_topology(experiment.topology_config)
     generator = torch.Generator().manual_seed(seed)
@@ -117,6 +116,27 @@ def _synthetic_items(
     return items, schema
 
 
+def _synthetic_physics_vectors(
+    batch: dict, schema, *, seed: int
+) -> torch.Tensor:
+    """Build finite `(E,px,py,pz)` tokens solely to exercise physics I/O paths."""
+    generator = torch.Generator().manual_seed(seed)
+    batch_size, token_count = batch["type_ids"].shape
+    momentum = 20.0 * torch.randn(
+        (batch_size, token_count, 3), generator=generator
+    )
+    masses = torch.full((batch_size, token_count), 0.5)
+    met_type = schema.source_type_ids.get("MET")
+    if met_type is not None:
+        met = batch["type_ids"] == int(met_type)
+        momentum[..., 2] = torch.where(
+            met, torch.zeros_like(momentum[..., 2]), momentum[..., 2]
+        )
+        masses = torch.where(met, torch.zeros_like(masses), masses)
+    energy = torch.sqrt(momentum.square().sum(dim=-1) + masses.square())
+    return torch.cat((energy.unsqueeze(-1), momentum), dim=-1)
+
+
 def build_synthetic_batch(experiment, *, events: int, device: str):
     visible = OmegaConf.load(experiment.visible_config)
     items, schema = _synthetic_items(
@@ -149,6 +169,9 @@ def build_synthetic_batch(experiment, *, events: int, device: str):
     )
     batch["invisible_truth"] = invisible_truth
     batch["invisible_truth_scaled"] = scaler.transform(invisible_truth)
+    batch["physics_vectors"] = _synthetic_physics_vectors(
+        batch, schema, seed=int(experiment.experiment.seed) + 31
+    )
 
     def move(value):
         if torch.is_tensor(value):
@@ -178,8 +201,27 @@ class _SyntheticPredictionData:
         return [self._batch]
 
 
+def _factorized_cfm_config(base, assignment: str):
+    config = configure_flow(base, "cfm_no_assignment")
+    config.model.invisible.conditioning.assignment = assignment
+    config.model.invisible.conditioning.allow_truth_oracle = False
+    config.inference.top_k_assignments = 2
+    config.inference.posterior_samples = 2
+    validate_experiment(config)
+    return config
+
+
+def _assert_plot_outputs(paths: list[Path], *, name: str) -> None:
+    if not paths or not all(path.is_file() and path.stat().st_size > 0 for path in paths):
+        raise RuntimeError(f"{name} plotting did not produce non-empty outputs")
+    if not any(path.name == "metrics.json" for path in paths):
+        raise RuntimeError(f"{name} plotting did not write metrics.json")
+    if not any(path.suffix == ".png" for path in paths):
+        raise RuntimeError(f"{name} plotting did not write a PNG diagnostic")
+
+
 def _prediction_roundtrip(base, visible, batch, scaler, device):
-    """Exercise native DFM and joint-flow prediction/evaluation schemas."""
+    """Exercise every maintained posterior schema through predict/evaluate/plot."""
     with tempfile.TemporaryDirectory(prefix="jer-smoke-") as directory:
         directory = Path(directory)
         source_path = directory / "source.h5"
@@ -188,6 +230,44 @@ def _prediction_roundtrip(base, visible, batch, scaler, device):
                 "EVENT_ID", data=batch["event_index"].detach().cpu().numpy()
             )
         data = _SyntheticPredictionData(batch, visible, source_path)
+        prediction_paths = {}
+        summaries = {}
+
+        for assignment in ("none", "hypothesis"):
+            config = _factorized_cfm_config(base, assignment)
+            module = JointEventModule(
+                config,
+                visible,
+                invisible_scaler=scaler,
+                synthetic_data=True,
+            ).to(device)
+            path = directory / f"cfm_{assignment}.h5"
+            predict_hdf5(
+                module,
+                data,
+                scaler,
+                path,
+                split="test",
+                top_k=2,
+                posterior_samples=2,
+                device=device,
+            )
+            metrics = evaluate_predictions(path)
+            if metrics["events"] != len(batch["tokens"]):
+                raise RuntimeError(
+                    f"CFM {assignment} prediction round-trip changed event count"
+                )
+            if metrics["invisible_assignment_conditioning"] != assignment:
+                raise RuntimeError(
+                    f"CFM {assignment} evaluation lost conditioning semantics"
+                )
+            prediction_paths[f"cfm_{assignment}"] = path
+            summaries[f"cfm_{assignment}"] = {
+                "events": metrics["events"],
+                "samples": metrics["posterior_samples"],
+                "top_k": metrics["top_k_assignments"],
+                "conditioning": metrics["invisible_assignment_conditioning"],
+            }
 
         dfm_config = configure_flow(base, "dfm_assignment")
         dfm = JointEventModule(
@@ -209,6 +289,12 @@ def _prediction_roundtrip(base, visible, batch, scaler, device):
         dfm_metrics = evaluate_discrete_predictions(dfm_path)
         if dfm_metrics["events"] != len(batch["tokens"]):
             raise RuntimeError("DFM prediction round-trip changed event count")
+        prediction_paths["dfm"] = dfm_path
+        summaries["dfm"] = {
+            "events": dfm_metrics["events"],
+            "samples": dfm_metrics["posterior_samples"],
+            "steps": dfm_metrics["flow_steps"],
+        }
 
         joint_config = configure_flow(base, "joint_flow")
         joint = JointEventModule(
@@ -226,24 +312,44 @@ def _prediction_roundtrip(base, visible, batch, scaler, device):
             split="test",
             posterior_samples=2,
             steps=2,
+            sample_chunk_size=2,
             device=device,
         )
         joint_metrics = evaluate_joint_predictions(joint_path)
         if joint_metrics["events"] != len(batch["tokens"]):
             raise RuntimeError("Joint prediction round-trip changed event count")
-
-        return {
-            "dfm": {
-                "events": dfm_metrics["events"],
-                "samples": dfm_metrics["posterior_samples"],
-                "steps": dfm_metrics["flow_steps"],
-            },
-            "joint": {
-                "events": joint_metrics["events"],
-                "samples": joint_metrics["posterior_samples"],
-                "steps": joint_metrics["flow_steps"],
-            },
+        prediction_paths["joint"] = joint_path
+        summaries["joint"] = {
+            "events": joint_metrics["events"],
+            "samples": joint_metrics["posterior_samples"],
+            "steps": joint_metrics["flow_steps"],
         }
+
+        for name, path in prediction_paths.items():
+            written = plot_prediction(
+                path,
+                directory / f"plots_{name}",
+                formats=("png",),
+            )
+            _assert_plot_outputs(written, name=name)
+            summaries[name]["plot_files"] = len(written)
+
+        comparison = plot_comparison(
+            [
+                prediction_paths["cfm_none"],
+                prediction_paths["cfm_hypothesis"],
+                prediction_paths["joint"],
+            ],
+            directory / "comparison",
+            labels=["CFM-none", "CFM-hypothesis", "joint-flow"],
+            formats=("png",),
+        )
+        if not comparison or not all(
+            path.is_file() and path.stat().st_size > 0 for path in comparison
+        ):
+            raise RuntimeError("Prediction comparison plotting produced no outputs")
+        summaries["comparison_plot_files"] = len(comparison)
+        return summaries
 
 
 def run_synthetic_smoke(
@@ -358,11 +464,7 @@ def run_topology_contract(
             base, visible, batch, scaler, device
         ),
     }
-    print(
-        json.dumps(
-            {"topology_contract": results}, indent=2, sort_keys=True
-        )
-    )
+    print(json.dumps({"topology_contract": results}, indent=2, sort_keys=True))
     return results
 
 
@@ -371,12 +473,7 @@ def main():
     parser.add_argument(
         "--topology",
         required=True,
-        choices=(
-            "ttbar1L",
-            "ttbar2L",
-            "ttH1L",
-            *CONTRACTS,
-        ),
+        choices=("ttbar1L", "ttbar2L", "ttH1L", *CONTRACTS),
     )
     parser.add_argument("--device", choices=("cpu", "cuda"), default="cpu")
     parser.add_argument("--events", type=int, default=4)
