@@ -188,7 +188,10 @@ def _predict_one(study, topology, variant, prediction, seed, *, root, global_ove
     _, public, resolved = _public_run_config(
         study, topology, variant, seed, root, global_overrides, prediction
     )
-    config_path = _run_dir(root, study, topology, variant.name, seed) / "predictions" / f"{prediction.name}.yaml"
+    config_path = (
+        _run_dir(root, study, topology, variant.name, seed)
+        / "predictions" / f"{prediction.name}.yaml"
+    )
     if not dry_run:
         _write_yaml(config_path, public)
         _write_yaml(config_path.with_suffix(".resolved.yaml"), resolved)
@@ -260,7 +263,10 @@ def _metric_row(study, topology, variant, prediction, seed, metrics):
     invisible = metrics.get("invisible", {})
     energy = None
     if metrics["model_mode"] == "factorized":
-        posterior = invisible.get("truncated_assignment_weighted_mixture") or invisible.get("top1_assignment_conditioned")
+        posterior = (
+            invisible.get("truncated_assignment_weighted_mixture")
+            or invisible.get("top1_assignment_conditioned")
+        )
         if posterior:
             energy = posterior.get("energy_score_joint")
     else:
@@ -286,7 +292,10 @@ def _metric_row(study, topology, variant, prediction, seed, metrics):
         "compatibility_assignment_only_top1": compatibility.get("assignment_only_top1"),
         "compatibility_combined_top1": compatibility.get("combined_top1"),
         "energy_score": energy,
-        "sample_equivalent_nfe_per_event": metrics.get("sample_equivalent_nfe_per_event") or metrics.get("network_calls_per_event"),
+        "sample_equivalent_nfe_per_event": (
+            metrics.get("sample_equivalent_nfe_per_event")
+            or metrics.get("network_calls_per_event")
+        ),
         "prediction_seed": metrics.get("study", {}).get("prediction_seed"),
         "prediction_file": metrics["prediction_file"],
     }
@@ -305,7 +314,12 @@ def _summary(study, topologies, variants, seeds, *, root, dry_run):
                         if dry_run:
                             continue
                         raise FileNotFoundError(path)
-                    rows.append(_metric_row(study, topology, variant, prediction, seed, json.loads(path.read_text())))
+                    rows.append(
+                        _metric_row(
+                            study, topology, variant, prediction, seed,
+                            json.loads(path.read_text()),
+                        )
+                    )
     destination = root / study.name
     print(f"summarize {len(rows)} results -> {destination}")
     if dry_run:
@@ -319,25 +333,37 @@ def _summary(study, topologies, variants, seeds, *, root, dry_run):
 
     groups = defaultdict(list)
     for row in rows:
-        groups[(row["topology"], row["variant"], row["prediction"], row["reporting"], row["assignment_support"])].append(row)
+        groups[
+            (
+                row["topology"], row["variant"], row["prediction"],
+                row["reporting"], row["assignment_support"],
+            )
+        ].append(row)
     aggregate = []
     for key, values in sorted(groups.items()):
         item = {
             "topology": key[0], "variant": key[1], "prediction": key[2],
             "reporting": key[3], "assignment_support": key[4], "seeds": len(values),
         }
-        for metric in ("assignment_accuracy", "common_non_null_assignment_accuracy", "energy_score", "sample_equivalent_nfe_per_event"):
+        for metric in (
+            "assignment_accuracy", "common_non_null_assignment_accuracy",
+            "energy_score", "sample_equivalent_nfe_per_event",
+        ):
             numbers = [float(value[metric]) for value in values if value[metric] is not None]
             item[f"{metric}_mean"] = statistics.mean(numbers) if numbers else None
             item[f"{metric}_seed_std"] = statistics.stdev(numbers) if len(numbers) > 1 else None
         aggregate.append(item)
-    (destination / "summary_aggregate.json").write_text(json.dumps(aggregate, indent=2, sort_keys=True) + "\n")
+    (destination / "summary_aggregate.json").write_text(
+        json.dumps(aggregate, indent=2, sort_keys=True) + "\n"
+    )
 
 
 def _compare(study, topology, variants, seed, *, root, formats, include_diagnostics, dry_run):
     paths, labels = [], []
     for variant in variants:
-        if variant.reporting == "setup" or (variant.reporting != "primary" and not include_diagnostics):
+        if variant.reporting == "setup" or (
+            variant.reporting != "primary" and not include_diagnostics
+        ):
             continue
         for prediction in variant.predictions:
             path = _prediction_path(root, study, topology, variant.name, seed, prediction.name)
@@ -348,19 +374,37 @@ def _compare(study, topology, variants, seed, *, root, formats, include_diagnost
         return
     if not dry_run:
         assert_same_events(paths)
-        plot_comparison(paths, root / study.name / topology / "comparisons" / f"seed_{seed}", labels=labels, formats=formats)
+        plot_comparison(
+            paths,
+            root / study.name / topology / "comparisons" / f"seed_{seed}",
+            labels=labels,
+            formats=formats,
+        )
 
 
-def _plan(study, topologies, variants, seeds, root):
-    print(f"study: {study.name}\ntopologies: {', '.join(topologies)}\nseeds: {', '.join(map(str, seeds))}\noutput: {root / study.name}")
-    for variant in variants:
-        print(f"  {variant.name:24s} {variant.reporting:10s} init={variant.initialise_from or '-':20s} predictions={len(variant.predictions)}")
+def _plan(study, topologies, requested, training, seeds, root):
+    print(
+        f"study: {study.name}\n"
+        f"topologies: {', '.join(topologies)}\n"
+        f"seeds: {', '.join(map(str, seeds))}\n"
+        f"output: {root / study.name}\n"
+        f"requested: {', '.join(variant.name for variant in requested)}\n"
+        f"training closure: {', '.join(variant.name for variant in training)}"
+    )
+    for variant in requested:
+        print(
+            f"  {variant.name:24s} {variant.reporting:10s} "
+            f"init={variant.initialise_from or '-':20s} predictions={len(variant.predictions)}"
+        )
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run a validated JER study manifest")
     parser.add_argument("study", type=Path)
-    parser.add_argument("stage", choices=("plan", "train", "predict", "evaluate", "plot", "compare", "summary", "all"))
+    parser.add_argument(
+        "stage",
+        choices=("plan", "train", "predict", "evaluate", "plot", "compare", "summary", "all"),
+    )
     parser.add_argument("--output-root", type=Path, default=Path("results/studies"))
     parser.add_argument("--topologies", default="all")
     parser.add_argument("--variants", default="all")
@@ -369,59 +413,104 @@ def main() -> None:
     parser.add_argument("--set", dest="global_overrides", action="append", default=[])
     parser.add_argument("--formats", nargs="+", choices=("png", "pdf"), default=("png", "pdf"))
     parser.add_argument("--include-diagnostics", action="store_true")
+    parser.add_argument(
+        "--exact-variants",
+        action="store_true",
+        help="Do not expand training dependencies; intended for dependency-ordered batch workers.",
+    )
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
     study = load_study(args.study)
     topologies = _selected(args.topologies, study.topologies, "topologies")
-    requested = _selected(args.variants, tuple(v.name for v in study.variants), "variants")
-    variants = study.dependency_order() if args.variants == "all" else study.dependency_closure(requested)
-    seeds = study.seeds if args.seeds == "all" else tuple(int(v) for v in args.seeds.split(",") if v)
+    names = tuple(variant.name for variant in study.variants)
+    requested_names = _selected(args.variants, names, "variants")
+    requested = tuple(study.variant_map[name] for name in requested_names)
+    if args.variants == "all":
+        training = study.dependency_order()
+    elif args.exact_variants:
+        training = requested
+    else:
+        training = study.dependency_closure(requested_names)
+
+    seeds = (
+        study.seeds
+        if args.seeds == "all"
+        else tuple(int(value) for value in args.seeds.split(",") if value)
+    )
     unknown_seeds = sorted(set(seeds) - set(study.seeds))
     if unknown_seeds:
         raise ValueError(f"Seeds {unknown_seeds} are not declared by the study")
     root = args.output_root.expanduser().resolve()
     global_overrides = tuple(args.global_overrides)
     formats = tuple(args.formats)
-    _plan(study, topologies, variants, seeds, root)
+    _plan(study, topologies, requested, training, seeds, root)
 
     if args.stage == "plan":
         for topology in topologies:
-            for variant in variants:
+            for variant in training:
                 for seed in seeds:
                     _public_run_config(study, topology, variant, seed, root, global_overrides)
+            for variant in requested:
+                for seed in seeds:
                     for prediction in variant.predictions:
-                        _public_run_config(study, topology, variant, seed, root, global_overrides, prediction)
+                        _public_run_config(
+                            study, topology, variant, seed, root,
+                            global_overrides, prediction,
+                        )
         print("All selected compact training and prediction configurations validate.")
         return
 
-    stages = ("train", "predict", "evaluate", "plot", "compare", "summary") if args.stage == "all" else (args.stage,)
+    stages = (
+        ("train", "predict", "evaluate", "plot", "compare", "summary")
+        if args.stage == "all"
+        else (args.stage,)
+    )
     for stage in stages:
         if stage == "train":
             for topology in topologies:
-                for variant in variants:
+                for variant in training:
                     for seed in seeds:
-                        _train_one(study, topology, variant, seed, root=root, global_overrides=global_overrides, device=args.device, force=args.force, dry_run=args.dry_run)
+                        _train_one(
+                            study, topology, variant, seed, root=root,
+                            global_overrides=global_overrides, device=args.device,
+                            force=args.force, dry_run=args.dry_run,
+                        )
         elif stage in {"predict", "evaluate", "plot"}:
             for topology in topologies:
-                for variant in variants:
+                for variant in requested:
                     if variant.reporting == "setup":
                         continue
                     for seed in seeds:
                         for prediction in variant.predictions:
                             if stage == "predict":
-                                _predict_one(study, topology, variant, prediction, seed, root=root, global_overrides=global_overrides, device=args.device, force=args.force, dry_run=args.dry_run)
+                                _predict_one(
+                                    study, topology, variant, prediction, seed,
+                                    root=root, global_overrides=global_overrides,
+                                    device=args.device, force=args.force,
+                                    dry_run=args.dry_run,
+                                )
                             elif stage == "evaluate":
-                                _evaluate_one(study, topology, variant, prediction, seed, root=root, force=args.force, dry_run=args.dry_run)
+                                _evaluate_one(
+                                    study, topology, variant, prediction, seed,
+                                    root=root, force=args.force, dry_run=args.dry_run,
+                                )
                             else:
-                                _plot_one(study, topology, variant, prediction, seed, root=root, formats=formats, dry_run=args.dry_run)
+                                _plot_one(
+                                    study, topology, variant, prediction, seed,
+                                    root=root, formats=formats, dry_run=args.dry_run,
+                                )
         elif stage == "compare":
             for topology in topologies:
                 for seed in seeds:
-                    _compare(study, topology, variants, seed, root=root, formats=formats, include_diagnostics=args.include_diagnostics, dry_run=args.dry_run)
+                    _compare(
+                        study, topology, requested, seed, root=root, formats=formats,
+                        include_diagnostics=args.include_diagnostics,
+                        dry_run=args.dry_run,
+                    )
         elif stage == "summary":
-            _summary(study, topologies, variants, seeds, root=root, dry_run=args.dry_run)
+            _summary(study, topologies, requested, seeds, root=root, dry_run=args.dry_run)
 
 
 if __name__ == "__main__":
