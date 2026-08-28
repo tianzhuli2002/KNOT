@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 """File-free CPU/CUDA smoke of every maintained reconstruction formulation.
 
-This is a software/mechanism test only.  It constructs topology-consistent random
+This is a software/mechanism test only. It constructs topology-consistent random
 visible tensors and random invisible truth entirely in memory, then reuses the
-same per-mode assertions as ``smoke_all.py`` and ``smoke_flows.py``.  No metric
+same per-mode assertions as ``smoke_all.py`` and ``smoke_flows.py``. No metric
 from this script is a physics-performance result.
 """
 
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import sys
 from pathlib import Path
@@ -24,6 +25,7 @@ from omegaconf import OmegaConf
 from joint_event_reconstruction.data.invisible import InvisibleScaler
 from joint_event_reconstruction.data.structured import StructuredCollator
 from joint_event_reconstruction.m0.data.module import build_token_schema
+from joint_event_reconstruction.topology.assignments import AssignmentSpace
 from joint_event_reconstruction.topology.compiler import load_topology
 from scripts.smoke_all import MODES, run_mode as run_legacy_mode
 from scripts.smoke_flows import FLOW_MODES, run_mode as run_flow_mode
@@ -77,7 +79,6 @@ def _synthetic_items(
     items = []
     for event in range(events):
         tokens = torch.randn((cursor, schema.dim), generator=generator)
-        # Small event-dependent shifts ensure the batch is not made of clones.
         tokens += event / max(events, 1) * 0.05
         padding = torch.zeros(cursor, dtype=torch.bool)
         raw_labels = torch.full((cursor,), -100.0, dtype=torch.float32)
@@ -96,20 +97,24 @@ def _synthetic_items(
 
 
 def build_synthetic_batch(
-    experiment_path: Path, *, events: int, device: str
+    experiment, *, events: int, device: str
 ):
-    base = OmegaConf.load(experiment_path)
-    visible = OmegaConf.load(base.visible_config)
+    visible = OmegaConf.load(experiment.visible_config)
     items, schema = _synthetic_items(
-        base, visible, events=events, seed=int(base.experiment.seed)
+        experiment, visible, events=events, seed=int(experiment.experiment.seed)
     )
     collator = StructuredCollator(
-        base.topology_config, dict(schema.source_type_ids)
+        experiment.topology_config,
+        dict(schema.source_type_ids),
+        build_assignments=True,
+        max_assignment_states=int(
+            experiment.model.reconstruction.flow_matching.max_states
+        ),
     )
     batch = collator(items)
     spec = collator.spec
 
-    generator = torch.Generator().manual_seed(int(base.experiment.seed) + 17)
+    generator = torch.Generator().manual_seed(int(experiment.experiment.seed) + 17)
     invisible_truth = torch.randn(
         (events, len(spec.invisible_roles), 3), generator=generator
     )
@@ -130,7 +135,7 @@ def build_synthetic_batch(
             return {key: move(item) for key, item in value.items()}
         return value
 
-    return base, visible, move(batch), scaler
+    return visible, move(batch), scaler
 
 
 def run_synthetic_smoke(
@@ -142,8 +147,9 @@ def run_synthetic_smoke(
     flows: bool = True,
 ):
     torch.set_num_threads(1)
-    base, visible, batch, scaler = build_synthetic_batch(
-        experiment_path, events=events, device=device
+    base = OmegaConf.load(experiment_path)
+    visible, batch, scaler = build_synthetic_batch(
+        base, events=events, device=device
     )
     results = {"legacy": {}, "flows": {}}
 
@@ -168,10 +174,55 @@ def run_synthetic_smoke(
     return results
 
 
+def run_topology_contract(*, device: str = "cpu", events: int = 4):
+    """Prove that the maintained model path is not tied to ttbar topology names."""
+    base = OmegaConf.load(ROOT / "configs/experiments/ttbar1L.yaml")
+    base = copy.deepcopy(base)
+    base.experiment.name = "synthetic_topology_contract"
+    base.topology_config = str(ROOT / "configs/topology/synthetic_contract.yaml")
+    base.visible_config = str(ROOT / "configs/m0_ttbar1L.yaml")
+    visible, batch, scaler = build_synthetic_batch(base, events=events, device=device)
+    spec = load_topology(base.topology_config)
+    space = AssignmentSpace.from_structured(batch["structured"])
+
+    if len(spec.roots) < 2:
+        raise RuntimeError("Synthetic topology contract must exercise multiple roots")
+    if not any(role.multiplicity > 1 for role in spec.visible_leaf_roles):
+        raise RuntimeError("Synthetic topology contract must contain an exchangeable repeated role")
+    if not any(spec.nodes[node].composite_roles for node in spec.dag_order):
+        raise RuntimeError("Synthetic topology contract must contain a hierarchical composite")
+    if len(spec.invisible_roles) < 1:
+        raise RuntimeError("Synthetic topology contract must contain an invisible role")
+    if space.state_count <= 1 or not space.non_null_mask.any():
+        raise RuntimeError("Synthetic topology contract produced no useful complete assignments")
+
+    results = {
+        "topology": {
+            "roots": list(spec.roots),
+            "nodes": list(spec.dag_order),
+            "invisible_roles": [role.key for role in spec.invisible_roles],
+            "assignment_states": space.state_count,
+        },
+        "visible_m1": run_legacy_mode(
+            base, visible, batch, scaler, "visible_m1", device
+        ),
+        "dfm_assignment": run_flow_mode(
+            base, visible, batch, scaler, "dfm_assignment", device
+        ),
+        "joint_flow": run_flow_mode(
+            base, visible, batch, scaler, "joint_flow", device
+        ),
+    }
+    print(json.dumps({"topology_contract": results}, indent=2, sort_keys=True))
+    return results
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--topology", required=True, choices=("ttbar1L", "ttbar2L", "ttH1L")
+        "--topology",
+        required=True,
+        choices=("ttbar1L", "ttbar2L", "ttH1L", "synthetic_contract"),
     )
     parser.add_argument("--device", choices=("cpu", "cuda"), default="cpu")
     parser.add_argument("--events", type=int, default=4)
@@ -180,6 +231,11 @@ def main():
     args = parser.parse_args()
     if args.legacy_only and args.flows_only:
         raise ValueError("Choose at most one of --legacy-only and --flows-only")
+    if args.topology == "synthetic_contract":
+        if args.legacy_only or args.flows_only:
+            raise ValueError("Synthetic topology contract has its own fixed validation subset")
+        run_topology_contract(device=args.device, events=args.events)
+        return
     run_synthetic_smoke(
         Path(f"configs/experiments/{args.topology}.yaml"),
         device=args.device,
