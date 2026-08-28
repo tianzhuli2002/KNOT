@@ -10,8 +10,8 @@ from pathlib import Path
 import h5py
 import numpy as np
 import torch
-from omegaconf import OmegaConf
 
+from joint_event_reconstruction.configuration import load_experiment, load_visible_config
 from joint_event_reconstruction.topology.compiler import load_topology
 
 
@@ -24,35 +24,24 @@ def main() -> None:
     parser.add_argument("--output", required=True)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--max-events", type=int)
-    parser.add_argument("--visible-config")
     parser.add_argument("--tensor-cache")
     args = parser.parse_args()
-    experiment_path = Path(args.experiment).resolve()
-    config = OmegaConf.load(experiment_path)
-    visible_name = args.visible_config or config.visible_config
-    visible_path = (experiment_path.parent.parent.parent / visible_name).resolve()
-    visible = OmegaConf.load(visible_path)
-    topology_path = (
-        experiment_path.parent.parent.parent / config.topology_config
-    ).resolve()
-    spec = load_topology(topology_path)
+
+    config = load_experiment(args.experiment)
+    visible = load_visible_config(config)
+    spec = load_topology(config.topology_config)
     cache_name = args.tensor_cache or config.data.tensor_cache
     if cache_name is None:
-        raise ValueError(
-            "Synthetic sidecar generation requires an explicit tensor cache"
-        )
+        raise ValueError("Synthetic sidecar generation requires an explicit tensor cache")
     cache_path = Path(cache_name).expanduser().resolve()
     payload = torch.load(cache_path, map_location="cpu", weights_only=False)
     selected_cache_ids = np.asarray(payload["indices"], dtype=np.int64)
-    split_file = np.load(
-        Path(visible.dataset.split.indices_path).expanduser().resolve()
-    )
+    split_file = np.load(Path(visible.dataset.split.indices_path).expanduser().resolve())
+
     chosen = []
     for offset, split in enumerate(("train", "validation", "test")):
         split_ids = np.asarray(split_file[split], dtype=np.int64)
-        configured = config.data.max_events[
-            "val" if split == "validation" else split
-        ]
+        configured = config.data.max_events["val" if split == "validation" else split]
         count = args.max_events if args.max_events is not None else configured
         if count is not None and int(count) < len(split_ids):
             rng_split = np.random.default_rng(int(config.experiment.seed) + offset)
@@ -70,18 +59,19 @@ def main() -> None:
         raise ValueError(
             "Stable split contains EVENT_ID values absent from the configured tensor cache"
         )
+
     source_h5 = Path(visible.dataset.input_h5_path).expanduser().resolve()
     with h5py.File(source_h5, "r") as source:
         met = source["INPUTS/MET"][event_ids, 0]
-        lepton = source["INPUTS/LEPTON"][event_ids, 0]
+        lepton_source = "LEPTON" if "INPUTS/LEPTON" in source else "ELECTRON"
+        lepton = source[f"INPUTS/{lepton_source}"][event_ids, 0]
     if "phi" in met.dtype.names:
         met_cos, met_sin = np.cos(met["phi"]), np.sin(met["phi"])
     elif {"sin_phi", "cos_phi"}.issubset(met.dtype.names):
         met_cos, met_sin = met["cos_phi"], met["sin_phi"]
     else:
-        raise TypeError(
-            f"{source_h5}: INPUTS/MET has no canonical phi representation"
-        )
+        raise TypeError(f"{source_h5}: INPUTS/MET has no canonical phi representation")
+
     rng = np.random.default_rng(args.seed)
     role_names = tuple(role.key for role in spec.invisible_roles)
     role_count = len(role_names)
@@ -100,6 +90,7 @@ def main() -> None:
     order = rng.permutation(len(event_ids))
     if len(order) > 1 and np.array_equal(order, np.arange(len(order))):
         order = np.roll(order, 1)
+
     output = Path(args.output).expanduser().resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
     temporary = output.with_suffix(output.suffix + ".tmp")
