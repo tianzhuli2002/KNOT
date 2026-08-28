@@ -210,6 +210,7 @@ def predict_joint_flow_hdf5(
             node_indices = space.node_candidate_indices[flat].reshape(
                 len(states), posterior_samples, len(space.nodes)
             )
+            truth_root_indices = space.root_candidate_indices[space.truth_state]
             invisible = scaler.inverse(generated["invisible"])
             truth_hit = states == space.truth_state.unsqueeze(1)
             composites, truth_composites, observed_met = _physics_hypotheses(
@@ -251,6 +252,12 @@ def predict_joint_flow_hdf5(
                         "<f4",
                     ),
                     "truth_state": _create(truth, "assignment_state", (), "<i4"),
+                    "truth_roots": _create(
+                        truth,
+                        "root_candidate_indices",
+                        (len(space.roots),),
+                        "<i4",
+                    ),
                     "truth_hit": _create(
                         truth, "hypothesis_assignment", (posterior_samples,), "?"
                     ),
@@ -292,6 +299,10 @@ def predict_joint_flow_hdf5(
                 datasets["truth_state"],
                 space.truth_state.cpu().numpy().astype(np.int32),
             )
+            _append(
+                datasets["truth_roots"],
+                truth_root_indices.cpu().numpy().astype(np.int32),
+            )
             _append(datasets["truth_hit"], truth_hit.cpu().numpy())
             _append(
                 datasets["nu_truth"],
@@ -327,6 +338,7 @@ def validate_joint_prediction(path: str | Path) -> None:
             "HYPOTHESES/node_candidate_indices",
             "HYPOTHESES/invisible",
             "TRUTH/assignment_state",
+            "TRUTH/root_candidate_indices",
             "TRUTH/NEUTRINO",
         ):
             if len(source[name]) != count:
