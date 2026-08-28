@@ -103,7 +103,6 @@ def _runtime(
             torch.cuda.max_memory_allocated() / 2**20 if device == "cuda" else None
         )
 
-    del module
     if device == "cuda":
         torch.cuda.empty_cache()
     return {
@@ -125,7 +124,7 @@ def _control_patch(layers: int, feedforward: int) -> dict:
 
 
 def _target_patch(target: str, steps: int) -> dict:
-    recurrence = {"train_steps": [1, 2, 3, steps], "eval_steps": steps}
+    recurrence = {"train_steps": list(range(1, steps + 1)), "eval_steps": steps}
     if target == "m3":
         recurrence["feedback"] = "soft"
     return {
@@ -173,7 +172,9 @@ def match(
     base = load_experiment(experiment)
     visible, batch, _ = build_synthetic_batch(base, events=events, device=device)
     target_config = _assignment_only(base, target)
-    target_config.model.assignment.reasoning.train_steps = [1, 2, 3, recurrent_steps]
+    target_config.model.assignment.reasoning.train_steps = list(
+        range(1, recurrent_steps + 1)
+    )
     target_config.model.assignment.reasoning.eval_steps = recurrent_steps
     validate_experiment(target_config)
     target_total, target_trainable = _parameters(target_config, visible)
