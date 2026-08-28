@@ -40,7 +40,8 @@ def build_data(config, visible):
         build_assignments=build_assignments,
         max_assignment_states=(
             int(config.model.reconstruction.flow_matching.max_states)
-            if build_assignments else None
+            if build_assignments
+            else None
         ),
     )
 
@@ -55,18 +56,27 @@ def train(config) -> None:
         invisible_scaler=data.invisible_scaler,
         synthetic_data=(
             bool(data.structured_collator.invisible_store.synthetic)
-            if data.structured_collator.invisible_store is not None else False
+            if data.structured_collator.invisible_store is not None
+            else False
         ),
     )
-    callbacks = [ModelCheckpoint(
-        dirpath=Path(config.training.output) / "checkpoints",
-        monitor="val_loss", mode="min", save_top_k=1, filename="best-loss",
-    )]
+    callbacks = [
+        ModelCheckpoint(
+            dirpath=Path(config.training.output) / "checkpoints",
+            monitor="val_loss",
+            mode="min",
+            save_top_k=1,
+            filename="best-loss",
+        )
+    ]
     if config.training.early_stopping.enabled:
-        callbacks.append(EarlyStopping(
-            monitor="val_loss", mode="min",
-            patience=int(config.training.early_stopping.patience),
-        ))
+        callbacks.append(
+            EarlyStopping(
+                monitor="val_loss",
+                mode="min",
+                patience=int(config.training.early_stopping.patience),
+            )
+        )
     trainer = L.Trainer(
         max_epochs=int(config.training.epochs),
         precision=str(config.training.precision),
@@ -94,7 +104,8 @@ def load_trained(config, visible, data, checkpoint_path: str) -> JointEventModul
         invisible_scaler=scaler,
         synthetic_data=(
             bool(data.structured_collator.invisible_store.synthetic)
-            if data.structured_collator.invisible_store is not None else False
+            if data.structured_collator.invisible_store is not None
+            else False
         ),
     )
     module.validate_checkpoint_metadata(checkpoint)
@@ -103,8 +114,15 @@ def load_trained(config, visible, data, checkpoint_path: str) -> JointEventModul
 
 
 def main() -> None:
+    # Mixed precision already handles the main tensor-core path. This also permits
+    # TF32-style high-throughput float32 GEMMs for operations that remain in fp32.
+    torch.set_float32_matmul_precision("high")
+
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=("train", "smoke", "validate-data", "predict", "evaluate"))
+    parser.add_argument(
+        "command",
+        choices=("train", "smoke", "validate-data", "predict", "evaluate"),
+    )
     parser.add_argument("--experiment", required=True)
     parser.add_argument(
         "--set",
@@ -119,7 +137,11 @@ def main() -> None:
         ),
     )
     parser.add_argument("--checkpoint")
-    parser.add_argument("--split", choices=("train", "validation", "test"), default="test")
+    parser.add_argument(
+        "--split",
+        choices=("train", "validation", "test"),
+        default="test",
+    )
     parser.add_argument("--output")
     parser.add_argument("--predictions")
     parser.add_argument("--device", choices=("cpu", "cuda"), default="cpu")
@@ -133,17 +155,27 @@ def main() -> None:
     if args.command == "smoke":
         from scripts.smoke_all import run_experiment_smoke
         from scripts.smoke_flows import run_flow_smoke
+
         run_experiment_smoke(Path(args.experiment), device=args.device, events=8)
         run_flow_smoke(Path(args.experiment), device=args.device, events=8)
         return
     if args.command == "validate-data":
         from scripts.data.validate_joint_h5 import validate
-        print(json.dumps(validate(Path(config.data.invisible.path)), indent=2, sort_keys=True))
+
+        print(
+            json.dumps(
+                validate(Path(config.data.invisible.path)), indent=2, sort_keys=True
+            )
+        )
         return
     if args.command == "evaluate":
         if not args.predictions:
             raise ValueError("evaluate requires --predictions")
-        print(json.dumps(evaluate_any_predictions(args.predictions), indent=2, sort_keys=True))
+        print(
+            json.dumps(
+                evaluate_any_predictions(args.predictions), indent=2, sort_keys=True
+            )
+        )
         return
 
     if not args.checkpoint or not args.output:
@@ -164,6 +196,9 @@ def main() -> None:
             split=args.split,
             posterior_samples=int(config.inference.posterior_samples),
             steps=int(config.inference.joint_flow.steps),
+            sample_chunk_size=int(
+                config.inference.joint_flow.get("sample_chunk_size", 1)
+            ),
             device=args.device,
             checkpoint_path=args.checkpoint,
         )
@@ -196,7 +231,9 @@ def main() -> None:
             ),
             device=args.device,
             checkpoint_path=args.checkpoint,
-            compatibility_lambda=float(config.model.compatibility.get("lambda", 1.0)),
+            compatibility_lambda=float(
+                config.model.compatibility.get("lambda", 1.0)
+            ),
         )
 
 
