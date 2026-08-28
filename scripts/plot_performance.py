@@ -1,42 +1,56 @@
 #!/usr/bin/env python3
-"""Plot Transformer classification and reconstruction performance from a prediction manifest."""
+"""Plot maintained factorized, DFM and joint-flow prediction products."""
 
 from __future__ import annotations
 
 import argparse
-import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-
-from joint_event_reconstruction.m0.evaluation.performance import run_performance
+from joint_event_reconstruction.plotting import plot_comparison, plot_prediction
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Evaluate an existing Transformer prediction manifest using source-event jet multiplicity.",
-        epilog="Example: python scripts/plot_performance.py /path/to/prediction_manifest.json",
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--predictions",
+        nargs="+",
+        required=True,
+        help="One or more maintained prediction HDF5 files.",
     )
-    parser.add_argument("prediction_manifest", type=Path, help="Prediction manifest produced by the predict operation.")
-    parser.add_argument("--overwrite", action="store_true", help="Replace an existing incomplete or incompatible performance directory.")
-    parser.add_argument("--diagnostics", action="store_true", help="Write selected candidate and input-multiplicity diagnostics.")
-    parser.add_argument("--no-kinematics", action="store_true", help="Skip configured reconstructed-kinematics products.")
+    parser.add_argument("--output-dir", required=True)
+    parser.add_argument(
+        "--formats", nargs="+", default=("png", "pdf"), choices=("png", "pdf")
+    )
+    parser.add_argument(
+        "--labels",
+        nargs="+",
+        help="Optional labels for multi-file comparison plots.",
+    )
     args = parser.parse_args()
-    run_performance(
-        None,
-        None,
-        {
-            "performance": {
-                "prediction_manifest": str(args.prediction_manifest),
-                "output_dir": None,
-                "diagnostics": bool(args.diagnostics),
-                "kinematics": not args.no_kinematics,
-                "overwrite": bool(args.overwrite),
-            }
-        },
-    )
+
+    output = Path(args.output_dir).expanduser().resolve()
+    formats = tuple(args.formats)
+    if args.labels is not None and len(args.labels) != len(args.predictions):
+        parser.error("--labels must contain one label per prediction file")
+
+    for index, prediction in enumerate(args.predictions):
+        label = (
+            args.labels[index]
+            if args.labels is not None
+            else Path(prediction).stem
+        )
+        destination = output / label
+        written = plot_prediction(prediction, destination, formats=formats)
+        print(f"{prediction}: wrote {len(written)} plot/metric products to {destination}")
+
+    if len(args.predictions) > 1:
+        comparison = plot_comparison(
+            args.predictions,
+            output / "comparison",
+            labels=args.labels,
+            formats=formats,
+        )
+        print(f"comparison: wrote {len(comparison)} products")
 
 
 if __name__ == "__main__":
