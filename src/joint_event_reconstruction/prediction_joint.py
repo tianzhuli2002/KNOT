@@ -10,6 +10,11 @@ import h5py
 import numpy as np
 import torch
 
+from joint_event_reconstruction.assignment_semantics import (
+    NULL_INCLUDING_SUPPORT,
+    hdf5_support_attributes,
+    read_hdf5_support,
+)
 from joint_event_reconstruction.physics import compose_assignment_state
 from joint_event_reconstruction.topology.assignments import AssignmentSpace
 
@@ -38,7 +43,6 @@ def _move(value, device):
 
 
 def _physics_hypotheses(module, batch, space, node_indices, invisible):
-    """Compose topology nodes for every sampled joint state when raw vectors exist."""
     if "physics_vectors" not in batch:
         return None, None, None
 
@@ -145,39 +149,43 @@ def predict_joint_flow_hdf5(
     with h5py.File(temporary, "w") as destination, torch.inference_mode():
         source_path = Path(data.h5_path).expanduser().resolve()
         source_stat = source_path.stat()
-        destination.attrs.update({
-            "schema_version": JOINT_PREDICTION_SCHEMA,
-            "model_mode": "joint_flow",
-            "assignment_formulation": "flow_matching",
-            "invisible_formulation": "flow_matching",
-            "topology_signature": module.spec.signature,
-            "architecture_signature_version": int(
-                module.hparams.architecture_signature_version
-            ),
-            "architecture_signature": module.hparams.architecture_signature,
-            "checkpoint": (
-                str(Path(checkpoint_path).expanduser().resolve())
-                if checkpoint_path else "untrained"
-            ),
-            "split": split,
-            "posterior_samples": posterior_samples,
-            "flow_steps": steps,
-            "actual_nfe": steps,
-            "nfe_per_sample": steps,
-            "sample_chunk_size": sample_chunk_size,
-            "posterior_chunk_count": chunk_count,
-            "batched_network_evaluations_per_event": steps * chunk_count,
-            "sample_equivalent_nfe_per_event": steps * posterior_samples,
-            "recurrent_state": bool(module.event_model.joint_flow.recurrent_state),
-            "invisible_roles": json.dumps(
-                [role.key for role in module.spec.invisible_roles]
-            ),
-            "scaler": json.dumps(scaler.as_dict()),
-            "assignment_probabilities_are_exact_likelihoods": False,
-            "source_data": str(source_path),
-            "source_data_size_bytes": source_stat.st_size,
-            "source_data_mtime_ns": source_stat.st_mtime_ns,
-        })
+        destination.attrs.update(
+            {
+                "schema_version": JOINT_PREDICTION_SCHEMA,
+                "model_mode": "joint_flow",
+                "assignment_formulation": "flow_matching",
+                **hdf5_support_attributes(NULL_INCLUDING_SUPPORT),
+                "invisible_formulation": "flow_matching",
+                "topology_signature": module.spec.signature,
+                "architecture_signature_version": int(
+                    module.hparams.architecture_signature_version
+                ),
+                "architecture_signature": module.hparams.architecture_signature,
+                "checkpoint": (
+                    str(Path(checkpoint_path).expanduser().resolve())
+                    if checkpoint_path
+                    else "untrained"
+                ),
+                "split": split,
+                "posterior_samples": posterior_samples,
+                "flow_steps": steps,
+                "actual_nfe": steps,
+                "nfe_per_sample": steps,
+                "sample_chunk_size": sample_chunk_size,
+                "posterior_chunk_count": chunk_count,
+                "batched_network_evaluations_per_event": steps * chunk_count,
+                "sample_equivalent_nfe_per_event": steps * posterior_samples,
+                "recurrent_state": bool(module.event_model.joint_flow.recurrent_state),
+                "invisible_roles": json.dumps(
+                    [role.key for role in module.spec.invisible_roles]
+                ),
+                "scaler": json.dumps(scaler.as_dict()),
+                "assignment_probabilities_are_exact_likelihoods": False,
+                "source_data": str(source_path),
+                "source_data_size_bytes": source_stat.st_size,
+                "source_data_mtime_ns": source_stat.st_mtime_ns,
+            }
+        )
 
         for batch in loader:
             batch = _move(batch, device)
@@ -210,9 +218,7 @@ def predict_joint_flow_hdf5(
 
             jet_type = data.schema.source_type_ids.get("JET")
             if jet_type is None:
-                raise RuntimeError(
-                    "Prediction schema has no JET source for Njet diagnostics"
-                )
+                raise RuntimeError("Prediction schema has no JET source for Njet diagnostics")
             njet = (
                 (batch["type_ids"] == jet_type) & ~batch["padding_mask"]
             ).sum(dim=1)
@@ -309,11 +315,12 @@ def validate_joint_prediction(path: str | Path) -> None:
     with h5py.File(path, "r") as source:
         if source.attrs.get("schema_version") != JOINT_PREDICTION_SCHEMA:
             raise ValueError(f"Invalid joint-flow prediction schema in {path}")
+        support = read_hdf5_support(source)
+        if support["name"] != NULL_INCLUDING_SUPPORT:
+            raise ValueError("Joint-flow prediction must use NULL-including clean support")
         count = len(source["EVENT_ID"])
         if count == 0 or len(np.unique(source["EVENT_ID"][:])) != count:
-            raise ValueError(
-                f"Prediction output {path} is empty or has duplicate EVENT_ID"
-            )
+            raise ValueError(f"Prediction output {path} is empty or has duplicate EVENT_ID")
         for name in (
             "HYPOTHESES/assignment_state",
             "HYPOTHESES/root_candidate_indices",
