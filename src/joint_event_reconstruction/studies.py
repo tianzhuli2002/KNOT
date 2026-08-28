@@ -9,7 +9,7 @@ import re
 from omegaconf import OmegaConf
 
 
-_SLUG = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 _REPORTING = {"primary", "diagnostic", "oracle", "setup"}
 _STUDY_KEYS = {
     "name",
@@ -113,11 +113,11 @@ def _exact_keys(mapping: dict, expected: set[str], name: str) -> None:
         )
 
 
-def _slug(value: object, name: str) -> str:
+def _identifier(value: object, name: str) -> str:
     text = str(value)
-    if not _SLUG.fullmatch(text):
+    if not _IDENTIFIER.fullmatch(text):
         raise ValueError(
-            f"{name} must match {_SLUG.pattern!r}; found {text!r}"
+            f"{name} must match {_IDENTIFIER.pattern!r}; found {text!r}"
         )
     return text
 
@@ -146,14 +146,16 @@ def load_study(path: str | Path) -> StudySpec:
     if not isinstance(study, dict):
         raise ValueError("study must be a mapping")
     _exact_keys(study, _STUDY_KEYS, "study")
-    name = _slug(study["name"], "study.name")
+    name = _identifier(study["name"], "study.name")
     description = str(study["description"]).strip()
     if not description:
         raise ValueError("study.description must be non-empty")
     pattern = str(study["experiment_pattern"]).strip()
     if "{topology}" not in pattern:
         raise ValueError("study.experiment_pattern must contain {topology}")
-    topologies = tuple(_slug(value, "study.topologies[]") for value in study["topologies"])
+    topologies = tuple(
+        _identifier(value, "study.topologies[]") for value in study["topologies"]
+    )
     if not topologies or len(set(topologies)) != len(topologies):
         raise ValueError("study.topologies must be non-empty and unique")
     seeds = tuple(int(value) for value in study["seeds"])
@@ -168,7 +170,7 @@ def load_study(path: str | Path) -> StudySpec:
         raise ValueError("variants must be a non-empty mapping")
     variants: list[VariantSpec] = []
     for raw_name, values in raw_variants.items():
-        variant_name = _slug(raw_name, "variant name")
+        variant_name = _identifier(raw_name, "variant name")
         if not isinstance(values, dict):
             raise ValueError(f"variants.{variant_name} must be a mapping")
         _exact_keys(values, _VARIANT_KEYS, f"variants.{variant_name}")
@@ -179,7 +181,7 @@ def load_study(path: str | Path) -> StudySpec:
             )
         initialise_from = values["initialise_from"]
         if initialise_from is not None:
-            initialise_from = _slug(
+            initialise_from = _identifier(
                 initialise_from, f"variants.{variant_name}.initialise_from"
             )
             if initialise_from == variant_name:
@@ -202,7 +204,7 @@ def load_study(path: str | Path) -> StudySpec:
             raise ValueError(f"variants.{variant_name}.predictions must be a mapping")
         predictions: list[PredictionSpec] = []
         for raw_prediction_name, prediction in raw_predictions.items():
-            prediction_name = _slug(raw_prediction_name, "prediction name")
+            prediction_name = _identifier(raw_prediction_name, "prediction name")
             if not isinstance(prediction, dict):
                 raise ValueError(
                     f"variants.{variant_name}.predictions.{prediction_name} must be a mapping"
