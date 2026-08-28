@@ -1,14 +1,8 @@
 study:
   name: c2_feedback
-  description: >-
-    Test detached invisible-to-assignment C2 feedback after establishing a soft-C1 CFM
-    generator. The M3 visible/assignment reference is trained first; soft C1 then learns
-    the invisible generator with the assignment stack frozen. C2 copies both learned
-    components, freezes the invisible generator, introduces a fresh posterior-feedback
-    head and trains the assignment/C2 path only. This isolates whether generated invisible
-    information improves visible assignment.
+  description: Test whether detached posterior neutrino information improves recurrent assignment on ttbar2L.
   experiment_pattern: configs/experiments/{topology}.yaml
-  topologies: [ttbar1L, ttbar2L, ttH1L]
+  topologies: [ttbar2L]
   seeds: [42]
   split: test
 
@@ -16,86 +10,43 @@ variants:
   assignment_reference:
     label: M3 assignment reference
     reporting: setup
-    train_overrides:
-      - model.mode=factorized
-      - model.assignment.formulation=discriminative
-      - model.assignment.reasoning.enabled=true
-      - model.assignment.feedback.enabled=true
-      - model.invisible.enabled=false
-      - model.coupling.invisible_to_assignment.enabled=false
-      - model.compatibility.enabled=false
-      - training.loss_weights.assignment=1.0
-      - training.loss_weights.invisible=0.0
-      - training.loss_weights.compatibility=0.0
+    patch:
+      model:
+        assignment:
+          method: discriminative
+          recurrence: {train_steps: [1, 2, 3, 4], eval_steps: 4, feedback: soft}
+      training: {trainable: [visible, assignment]}
     initialise_from: null
     initialise_components: []
     predictions: {}
 
-  c1_soft:
-    label: soft C1
+  c1:
+    label: M3 + soft CFM C1
     reporting: primary
-    train_overrides:
-      - model.mode=factorized
-      - model.assignment.formulation=discriminative
-      - model.assignment.reasoning.enabled=true
-      - model.assignment.feedback.enabled=true
-      - model.invisible.enabled=true
-      - model.invisible.formulation=flow_matching
-      - model.invisible.flow_matching.coupling=independent
-      - model.invisible.conditioning.assignment=soft
-      - model.invisible.conditioning.allow_truth_oracle=false
-      - model.coupling.invisible_to_assignment.enabled=false
-      - model.compatibility.enabled=false
-      - training.freeze.visible=true
-      - training.freeze.assignment=true
-      - training.freeze.invisible=false
-      - training.freeze.compatibility=false
-      - training.loss_weights.assignment=0.0
-      - training.loss_weights.invisible=1.0
-      - training.loss_weights.compatibility=0.0
+    patch:
+      model:
+        assignment:
+          method: discriminative
+          recurrence: {train_steps: [1, 2, 3, 4], eval_steps: 4, feedback: soft}
+        invisible: {method: cfm, conditioning: soft}
+      training: {trainable: [invisible]}
     initialise_from: assignment_reference
     initialise_components: [visible, assignment]
     predictions:
-      default:
-        label: C1 soft
-        overrides:
-          - inference.top_k_assignments=5
-          - inference.posterior_samples=32
-          - inference.invisible.flow_matching.steps=17
-          - inference.invisible.flow_matching.solver=euler
-        recurrent_steps: 4
+      baseline: {label: C1 baseline, patch: {prediction: {samples: 32, steps: 17, solver: euler}}, recurrent_steps: 4}
 
-  c2_detached:
-    label: detached C2
+  c2:
+    label: detached C2 feedback
     reporting: primary
-    train_overrides:
-      - model.mode=factorized
-      - model.assignment.formulation=discriminative
-      - model.assignment.reasoning.enabled=true
-      - model.assignment.feedback.enabled=true
-      - model.invisible.enabled=true
-      - model.invisible.formulation=flow_matching
-      - model.invisible.flow_matching.coupling=independent
-      - model.invisible.conditioning.assignment=soft
-      - model.invisible.conditioning.allow_truth_oracle=false
-      - model.coupling.invisible_to_assignment.enabled=true
-      - model.coupling.invisible_to_assignment.posterior_samples=8
-      - model.compatibility.enabled=false
-      - training.freeze.visible=true
-      - training.freeze.assignment=false
-      - training.freeze.invisible=true
-      - training.freeze.compatibility=false
-      - training.loss_weights.assignment=1.0
-      - training.loss_weights.invisible=0.0
-      - training.loss_weights.compatibility=0.0
-    initialise_from: c1_soft
+    patch:
+      model:
+        assignment:
+          method: discriminative
+          recurrence: {train_steps: [1, 2, 3, 4], eval_steps: 4, feedback: soft}
+        invisible: {method: cfm, conditioning: soft}
+        c2: {posterior_samples: 8}
+      training: {trainable: [assignment, c2]}
+    initialise_from: c1
     initialise_components: [visible, assignment, invisible]
     predictions:
-      default:
-        label: detached C2
-        overrides:
-          - inference.top_k_assignments=5
-          - inference.posterior_samples=32
-          - inference.invisible.flow_matching.steps=17
-          - inference.invisible.flow_matching.solver=euler
-        recurrent_steps: 4
+      feedback: {label: C2 feedback, patch: {prediction: {samples: 32, steps: 17, solver: euler}}, recurrent_steps: 4}
