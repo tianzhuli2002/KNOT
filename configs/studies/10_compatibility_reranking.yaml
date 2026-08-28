@@ -1,0 +1,108 @@
+study:
+  name: compatibility_reranking
+  description: >-
+    Train the learned compatibility scorer only after a factorized hypothesis-CFM model is
+    established. Visible assignment and invisible generator weights are copied and frozen;
+    only the compatibility head is trained. Prediction scans the reranking weight while
+    preserving assignment-only scores. The compatibility output is an energy-style score,
+    not a normalized likelihood.
+  experiment_pattern: configs/experiments/{topology}.yaml
+  topologies: [ttbar1L, ttbar2L, ttH1L]
+  seeds: [42]
+  split: test
+
+variants:
+  assignment_reference:
+    label: M3 assignment reference
+    reporting: setup
+    train_overrides:
+      - model.mode=factorized
+      - model.assignment.formulation=discriminative
+      - model.assignment.reasoning.enabled=true
+      - model.assignment.feedback.enabled=true
+      - model.invisible.enabled=false
+      - model.coupling.invisible_to_assignment.enabled=false
+      - model.compatibility.enabled=false
+      - training.loss_weights.assignment=1.0
+      - training.loss_weights.invisible=0.0
+      - training.loss_weights.compatibility=0.0
+    initialise_from: null
+    initialise_components: []
+    predictions: {}
+
+  factorized:
+    label: factorized hypothesis CFM
+    reporting: setup
+    train_overrides:
+      - model.mode=factorized
+      - model.assignment.formulation=discriminative
+      - model.assignment.reasoning.enabled=true
+      - model.assignment.feedback.enabled=true
+      - model.invisible.enabled=true
+      - model.invisible.formulation=flow_matching
+      - model.invisible.flow_matching.coupling=independent
+      - model.invisible.conditioning.assignment=hypothesis
+      - model.invisible.conditioning.allow_truth_oracle=false
+      - model.coupling.invisible_to_assignment.enabled=false
+      - model.compatibility.enabled=false
+      - training.freeze.visible=true
+      - training.freeze.assignment=true
+      - training.freeze.invisible=false
+      - training.freeze.compatibility=false
+      - training.loss_weights.assignment=0.0
+      - training.loss_weights.invisible=1.0
+      - training.loss_weights.compatibility=0.0
+    initialise_from: assignment_reference
+    initialise_components: [visible, assignment]
+    predictions: {}
+
+  compatibility:
+    label: compatibility reranking
+    reporting: primary
+    train_overrides:
+      - model.mode=factorized
+      - model.assignment.formulation=discriminative
+      - model.assignment.reasoning.enabled=true
+      - model.assignment.feedback.enabled=true
+      - model.invisible.enabled=true
+      - model.invisible.formulation=flow_matching
+      - model.invisible.flow_matching.coupling=independent
+      - model.invisible.conditioning.assignment=hypothesis
+      - model.invisible.conditioning.allow_truth_oracle=false
+      - model.coupling.invisible_to_assignment.enabled=false
+      - model.compatibility.enabled=true
+      - model.compatibility.include_invisible=true
+      - training.freeze.visible=true
+      - training.freeze.assignment=true
+      - training.freeze.invisible=true
+      - training.freeze.compatibility=false
+      - training.loss_weights.assignment=0.0
+      - training.loss_weights.invisible=0.0
+      - training.loss_weights.compatibility=1.0
+    initialise_from: factorized
+    initialise_components: [visible, assignment, invisible]
+    predictions:
+      w0:
+        label: weight=0 assignment only
+        overrides: [inference.top_k_assignments=10, inference.posterior_samples=16, inference.invisible.flow_matching.steps=17, inference.invisible.flow_matching.solver=euler, inference.compatibility_weight=0.0]
+        recurrent_steps: 4
+      w025:
+        label: weight=0.25
+        overrides: [inference.top_k_assignments=10, inference.posterior_samples=16, inference.invisible.flow_matching.steps=17, inference.invisible.flow_matching.solver=euler, inference.compatibility_weight=0.25]
+        recurrent_steps: 4
+      w05:
+        label: weight=0.5
+        overrides: [inference.top_k_assignments=10, inference.posterior_samples=16, inference.invisible.flow_matching.steps=17, inference.invisible.flow_matching.solver=euler, inference.compatibility_weight=0.5]
+        recurrent_steps: 4
+      w1:
+        label: weight=1
+        overrides: [inference.top_k_assignments=10, inference.posterior_samples=16, inference.invisible.flow_matching.steps=17, inference.invisible.flow_matching.solver=euler, inference.compatibility_weight=1.0]
+        recurrent_steps: 4
+      w2:
+        label: weight=2
+        overrides: [inference.top_k_assignments=10, inference.posterior_samples=16, inference.invisible.flow_matching.steps=17, inference.invisible.flow_matching.solver=euler, inference.compatibility_weight=2.0]
+        recurrent_steps: 4
+      w4:
+        label: weight=4
+        overrides: [inference.top_k_assignments=10, inference.posterior_samples=16, inference.invisible.flow_matching.steps=17, inference.invisible.flow_matching.solver=euler, inference.compatibility_weight=4.0]
+        recurrent_steps: 4
