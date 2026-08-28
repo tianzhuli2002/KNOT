@@ -75,7 +75,7 @@ class JointEventModel(nn.Module):
         self.assignment_flow = None
         if model_mode == "factorized" and reconstruction_formulation == "flow_matching":
             self.assignment_flow = DiscreteAssignmentFlow(
-                spec, self.reconstruction, d_model=d_model, n_heads=n_heads,
+                spec, d_model=d_model, n_heads=n_heads,
                 block_layers=reasoning_block_layers, d_feedforward=d_feedforward,
                 dropout=dropout,
             )
@@ -85,8 +85,7 @@ class JointEventModel(nn.Module):
             if self.invisible is None or joint_flow_config is None:
                 raise ValueError("joint_flow requires invisible generation and joint_flow configuration")
             self.joint_flow = JointFlow(
-                spec, self.reconstruction, self.invisible,
-                d_model=d_model, n_heads=n_heads,
+                spec, d_model=d_model, n_heads=n_heads,
                 block_layers=int(joint_flow_config.block_layers),
                 d_feedforward=d_feedforward, dropout=dropout,
                 recurrent_state=bool(joint_flow_config.recurrent_state),
@@ -128,12 +127,17 @@ class JointEventModel(nn.Module):
         if self.model_mode == "joint_flow":
             if "invisible_truth_scaled" not in batch:
                 raise ValueError("joint_flow training requires scaled invisible truth")
-            result = self.joint_flow.loss(visible, batch["structured"], batch["invisible_truth_scaled"])
+            result = self.joint_flow.loss(
+                visible, batch["structured"], batch["invisible_truth_scaled"],
+                self.reconstruction, self.invisible,
+            )
             result["visible"] = visible
             return result
 
         if self.assignment_flow is not None:
-            result = self.assignment_flow.loss(visible, batch["structured"])
+            result = self.assignment_flow.loss(
+                visible, batch["structured"], self.reconstruction
+            )
             result["complete_assignment_logits"] = result.pop("assignment_logits")
             result["complete_assignment_probabilities"] = result.pop("assignment_probabilities")
             result["assignment_logits"] = result.pop("local_assignment_logits")
