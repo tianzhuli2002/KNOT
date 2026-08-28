@@ -13,7 +13,7 @@ from omegaconf import OmegaConf
 
 from joint_event_reconstruction.configuration import load_experiment
 from joint_event_reconstruction.data.structured import StructuredDataModule
-from joint_event_reconstruction.evaluation import evaluate_predictions
+from joint_event_reconstruction.evaluation_joint import evaluate_any_predictions
 from joint_event_reconstruction.prediction import predict_hdf5
 from joint_event_reconstruction.prediction_joint import predict_joint_flow_hdf5
 from joint_event_reconstruction.training.joint import JointEventModule
@@ -110,7 +110,7 @@ def main() -> None:
     if args.command == "evaluate":
         if not args.predictions:
             raise ValueError("evaluate requires --predictions")
-        print(json.dumps(evaluate_predictions(args.predictions), indent=2, sort_keys=True))
+        print(json.dumps(evaluate_any_predictions(args.predictions), indent=2, sort_keys=True))
         return
 
     if not args.checkpoint or not args.output:
