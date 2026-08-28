@@ -1,10 +1,5 @@
 #!/usr/bin/env python3
-"""Submit one study manifest as dependency-ordered Slurm arrays.
-
-Training variants are grouped by initialisation dependency depth. Predictions run only
-after every required training level succeeds; evaluation/plotting/summary run afterwards
-on CPU. The generated task files make the submitted campaign auditable and restartable.
-"""
+"""Submit one JER study as dependency-ordered Slurm arrays."""
 
 from __future__ import annotations
 
@@ -22,8 +17,18 @@ if str(ROOT) not in sys.path:
 from joint_event_reconstruction.studies import StudySpec, VariantSpec, load_study
 
 
-def _levels(study: StudySpec) -> list[tuple[VariantSpec, ...]]:
-    remaining = dict(study.variant_map)
+def _selected(value: str, allowed: tuple, label: str) -> tuple:
+    if value == "all":
+        return allowed
+    selected = tuple(part.strip() for part in value.split(",") if part.strip())
+    unknown = sorted(set(selected) - set(allowed))
+    if unknown:
+        raise ValueError(f"Unknown {label}: {unknown}; allowed={list(allowed)}")
+    return selected
+
+
+def _levels(study: StudySpec, variants: tuple[VariantSpec, ...]) -> list[tuple[VariantSpec, ...]]:
+    remaining = {variant.name: variant for variant in variants}
     complete: set[str] = set()
     levels: list[tuple[VariantSpec, ...]] = []
     while remaining:
@@ -34,10 +39,12 @@ def _levels(study: StudySpec) -> list[tuple[VariantSpec, ...]]:
             and (
                 variant.initialise_from is None
                 or variant.initialise_from in complete
+                or variant.initialise_from not in remaining
+                and variant.initialise_from not in {item.name for item in variants}
             )
         )
         if not ready:
-            raise RuntimeError("Study dependency graph has no schedulable variant")
+            raise RuntimeError("Selected study dependency graph has no schedulable variant")
         levels.append(ready)
         for variant in ready:
             complete.add(variant.name)
@@ -50,11 +57,7 @@ def _submit(command: list[str], *, dry_run: bool, fake_id: int) -> str:
     if dry_run:
         return str(900000 + fake_id)
     result = subprocess.run(
-        command,
-        cwd=ROOT,
-        check=True,
-        text=True,
-        capture_output=True,
+        command, cwd=ROOT, check=True, text=True, capture_output=True
     )
     job_id = result.stdout.strip().split(";", 1)[0]
     if not job_id.isdigit():
@@ -85,17 +88,14 @@ def _worker_script(
         str(ROOT / "scripts/run_study.py"),
         str(study_path),
         stage,
-        "--output-root",
-        str(output_root),
-        "--topologies",
-        '"$topology"',
-        "--variants",
-        '"$variant"',
-        "--seeds",
-        '"$seed"',
-        "--device",
-        device,
+        "--output-root", str(output_root),
+        "--topologies", '"$topology"',
+        "--variants", '"$variant"',
+        "--seeds", '"$seed"',
+        "--device", device,
     ]
+    if stage == "train":
+        command.append("--exact-variants")
     for override in global_overrides:
         command += ["--set", override]
     rendered = " ".join(
@@ -127,9 +127,10 @@ def _sbatch_array(
     dependency: str | None,
     extra: tuple[str, ...],
 ) -> list[str]:
+    if task_count <= 0:
+        raise ValueError("Cannot submit an empty Slurm array")
     command = [
-        "sbatch",
-        "--parsable",
+        "sbatch", "--parsable",
         f"--job-name={job_name}",
         f"--array=0-{task_count - 1}",
         f"--partition={partition}",
@@ -148,10 +149,39 @@ def _sbatch_array(
     return command
 
 
+def _post_command(
+    study_path: Path,
+    stage: str,
+    *,
+    output_root: Path,
+    topologies: tuple[str, ...],
+    variants: tuple[VariantSpec, ...],
+    seeds: tuple[int, ...],
+    overrides: tuple[str, ...],
+) -> list[str]:
+    command = [
+        sys.executable,
+        str(ROOT / "scripts/run_study.py"),
+        str(study_path),
+        stage,
+        "--output-root", str(output_root),
+        "--topologies", ",".join(topologies),
+        "--variants", ",".join(variant.name for variant in variants),
+        "--seeds", ",".join(map(str, seeds)),
+        "--device", "cpu",
+    ]
+    for override in overrides:
+        command += ["--set", override]
+    return command
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Submit a JER study to Slurm")
     parser.add_argument("study", type=Path)
     parser.add_argument("--output-root", type=Path, default=Path("results/studies"))
+    parser.add_argument("--topologies", default="all")
+    parser.add_argument("--variants", default="all")
+    parser.add_argument("--seeds", default="all")
     parser.add_argument("--gpu-partition", default="gpuL")
     parser.add_argument("--gpu-gres", default="gpu:1")
     parser.add_argument("--gpu-cpus", type=int, default=12)
@@ -173,6 +203,24 @@ def main() -> None:
     args = parser.parse_args()
 
     study = load_study(args.study)
+    topologies = _selected(args.topologies, study.topologies, "topologies")
+    variant_names = tuple(variant.name for variant in study.variants)
+    requested_names = _selected(args.variants, variant_names, "variants")
+    requested = tuple(study.variant_map[name] for name in requested_names)
+    training = (
+        study.dependency_order()
+        if args.variants == "all"
+        else study.dependency_closure(requested_names)
+    )
+    seeds = (
+        study.seeds
+        if args.seeds == "all"
+        else tuple(int(value) for value in args.seeds.split(",") if value)
+    )
+    unknown_seeds = sorted(set(seeds) - set(study.seeds))
+    if unknown_seeds:
+        raise ValueError(f"Seeds {unknown_seeds} are not declared by the study")
+
     study_path = study.path
     output_root = args.output_root.expanduser().resolve()
     slurm_root = output_root / study.name / "_slurm"
@@ -181,15 +229,22 @@ def main() -> None:
     overrides = tuple(args.global_overrides)
     extra = tuple(args.extra_sbatch)
 
-    submitted: dict[str, object] = {"study": study.name, "train_levels": []}
+    submitted: dict[str, object] = {
+        "study": study.name,
+        "topologies": list(topologies),
+        "requested_variants": [variant.name for variant in requested],
+        "training_closure": [variant.name for variant in training],
+        "seeds": list(seeds),
+        "train_levels": [],
+    }
     dependency = None
     fake_id = 0
-    for level_index, variants in enumerate(_levels(study)):
+    for level_index, variants in enumerate(_levels(study, training)):
         tasks = [
             (topology, variant.name, seed)
-            for topology in study.topologies
+            for topology in topologies
             for variant in variants
-            for seed in study.seeds
+            for seed in seeds
         ]
         task_file = slurm_root / f"train_level_{level_index}.tsv"
         worker = slurm_root / f"train_level_{level_index}.sh"
@@ -203,101 +258,108 @@ def main() -> None:
             device="cuda",
             global_overrides=overrides,
         )
-        command = _sbatch_array(
-            worker=worker,
-            task_count=len(tasks),
-            job_name=f"jer-{study.name[:18]}-tr{level_index}",
-            log_dir=log_dir,
-            partition=args.gpu_partition,
-            gres=args.gpu_gres,
-            cpus=args.gpu_cpus,
-            memory=args.gpu_mem,
-            time_limit=args.gpu_time,
-            dependency=dependency,
-            extra=extra,
+        job_id = _submit(
+            _sbatch_array(
+                worker=worker,
+                task_count=len(tasks),
+                job_name=f"jer-{study.name[:18]}-tr{level_index}",
+                log_dir=log_dir,
+                partition=args.gpu_partition,
+                gres=args.gpu_gres,
+                cpus=args.gpu_cpus,
+                memory=args.gpu_mem,
+                time_limit=args.gpu_time,
+                dependency=dependency,
+                extra=extra,
+            ),
+            dry_run=args.dry_run,
+            fake_id=fake_id,
         )
-        job_id = _submit(command, dry_run=args.dry_run, fake_id=fake_id)
         fake_id += 1
         submitted["train_levels"].append(
-            {"level": level_index, "variants": [v.name for v in variants], "job_id": job_id}
+            {
+                "level": level_index,
+                "variants": [variant.name for variant in variants],
+                "job_id": job_id,
+            }
         )
         dependency = job_id
 
     prediction_variants = tuple(
-        variant for variant in study.variants if variant.reporting != "setup"
+        variant for variant in requested if variant.reporting != "setup"
     )
-    prediction_tasks = [
-        (topology, variant.name, seed)
-        for topology in study.topologies
-        for variant in prediction_variants
-        for seed in study.seeds
-    ]
-    prediction_file = slurm_root / "predict.tsv"
-    prediction_worker = slurm_root / "predict.sh"
-    _write_task_file(prediction_file, prediction_tasks)
-    _worker_script(
-        prediction_worker,
-        task_file=prediction_file,
-        study_path=study_path,
-        stage="predict",
-        output_root=output_root,
-        device="cuda",
-        global_overrides=overrides,
-    )
-    prediction_job = _submit(
-        _sbatch_array(
-            worker=prediction_worker,
-            task_count=len(prediction_tasks),
-            job_name=f"jer-{study.name[:18]}-pred",
-            log_dir=log_dir,
-            partition=args.gpu_partition,
-            gres=args.gpu_gres,
-            cpus=args.gpu_cpus,
-            memory=args.gpu_mem,
-            time_limit=args.gpu_time,
-            dependency=dependency,
-            extra=extra,
-        ),
-        dry_run=args.dry_run,
-        fake_id=fake_id,
-    )
-    fake_id += 1
-    submitted["prediction_job"] = prediction_job
-
-    if not args.no_postprocess:
-        post = " && ".join(
-            shlex.join(
-                [
-                    sys.executable,
-                    str(ROOT / "scripts/run_study.py"),
-                    str(study_path),
-                    stage,
-                    "--output-root",
-                    str(output_root),
-                    "--device",
-                    "cpu",
-                    *sum((["--set", value] for value in overrides), []),
-                ]
-            )
-            for stage in ("evaluate", "plot", "compare", "summary")
-        )
-        command = [
-            "sbatch",
-            "--parsable",
-            f"--job-name=jer-{study.name[:18]}-post",
-            f"--partition={args.cpu_partition}",
-            f"--cpus-per-task={args.cpu_cpus}",
-            f"--mem={args.cpu_mem}",
-            f"--time={args.cpu_time}",
-            f"--dependency=afterok:{prediction_job}",
-            f"--output={log_dir}/%x-%j.out",
-            f"--error={log_dir}/%x-%j.err",
-            *extra,
-            "--wrap",
-            post,
+    if prediction_variants:
+        prediction_tasks = [
+            (topology, variant.name, seed)
+            for topology in topologies
+            for variant in prediction_variants
+            for seed in seeds
         ]
-        post_job = _submit(command, dry_run=args.dry_run, fake_id=fake_id)
-        submitted["postprocess_job"] = post_job
+        prediction_file = slurm_root / "predict.tsv"
+        prediction_worker = slurm_root / "predict.sh"
+        _write_task_file(prediction_file, prediction_tasks)
+        _worker_script(
+            prediction_worker,
+            task_file=prediction_file,
+            study_path=study_path,
+            stage="predict",
+            output_root=output_root,
+            device="cuda",
+            global_overrides=overrides,
+        )
+        prediction_job = _submit(
+            _sbatch_array(
+                worker=prediction_worker,
+                task_count=len(prediction_tasks),
+                job_name=f"jer-{study.name[:18]}-pred",
+                log_dir=log_dir,
+                partition=args.gpu_partition,
+                gres=args.gpu_gres,
+                cpus=args.gpu_cpus,
+                memory=args.gpu_mem,
+                time_limit=args.gpu_time,
+                dependency=dependency,
+                extra=extra,
+            ),
+            dry_run=args.dry_run,
+            fake_id=fake_id,
+        )
+        fake_id += 1
+        submitted["prediction_job"] = prediction_job
+
+        if not args.no_postprocess:
+            post = " && ".join(
+                shlex.join(
+                    _post_command(
+                        study_path,
+                        stage,
+                        output_root=output_root,
+                        topologies=topologies,
+                        variants=prediction_variants,
+                        seeds=seeds,
+                        overrides=overrides,
+                    )
+                )
+                for stage in ("evaluate", "plot", "compare", "summary")
+            )
+            post_job = _submit(
+                [
+                    "sbatch", "--parsable",
+                    f"--job-name=jer-{study.name[:18]}-post",
+                    f"--partition={args.cpu_partition}",
+                    f"--cpus-per-task={args.cpu_cpus}",
+                    f"--mem={args.cpu_mem}",
+                    f"--time={args.cpu_time}",
+                    f"--dependency=afterok:{prediction_job}",
+                    f"--output={log_dir}/%x-%j.out",
+                    f"--error={log_dir}/%x-%j.err",
+                    *extra,
+                    "--wrap", post,
+                ],
+                dry_run=args.dry_run,
+                fake_id=fake_id,
+            )
+            submitted["postprocess_job"] = post_job
 
     (slurm_root / "submission.json").write_text(
         json.dumps(submitted, indent=2, sort_keys=True) + "\n"
