@@ -143,7 +143,12 @@ def predict_joint_flow_hdf5(
         destination.attrs.update({
             "schema_version": JOINT_PREDICTION_SCHEMA,
             "model_mode": "joint_flow",
+            "assignment_formulation": "flow_matching",
+            "invisible_formulation": "flow_matching",
             "topology_signature": module.spec.signature,
+            "architecture_signature_version": int(
+                module.hparams.architecture_signature_version
+            ),
             "architecture_signature": module.hparams.architecture_signature,
             "checkpoint": (
                 str(Path(checkpoint_path).expanduser().resolve())
@@ -153,6 +158,8 @@ def predict_joint_flow_hdf5(
             "posterior_samples": posterior_samples,
             "flow_steps": steps,
             "actual_nfe": steps,
+            "nfe_per_sample": steps,
+            "network_calls_per_event": steps * posterior_samples,
             "recurrent_state": bool(module.event_model.joint_flow.recurrent_state),
             "invisible_roles": json.dumps(
                 [role.key for role in module.spec.invisible_roles]
