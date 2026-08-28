@@ -31,14 +31,28 @@ def validate_experiment(config: DictConfig) -> None:
     invisible = config.model.invisible
     coupling = config.model.coupling
     compatibility = config.model.compatibility
-
     reconstruction_formulation = str(reconstruction.get("formulation", "discriminative"))
+
     if reconstruction_formulation not in {"discriminative", "flow_matching"}:
-        raise ValueError(
-            "model.reconstruction.formulation must be discriminative or flow_matching"
-        )
+        raise ValueError("model.reconstruction.formulation must be discriminative or flow_matching")
     if reconstruction.feedback.enabled and not reasoning.enabled:
         raise ValueError("model.reconstruction.feedback.enabled=true requires model.reasoning.enabled=true")
+    if reconstruction_formulation == "flow_matching":
+        flow = reconstruction.get("flow_matching")
+        if flow is None or str(flow.source) != "mask":
+            raise ValueError("Discrete assignment Flow Matching currently requires source=mask")
+        if mode == "factorized":
+            if bool(reasoning.enabled) or bool(reconstruction.feedback.enabled):
+                raise ValueError(
+                    "Factorized discrete Flow Matching has its own time-conditioned topology reasoner; "
+                    "disable model.reasoning and reconstruction.feedback"
+                )
+            if bool(coupling.invisible_to_reconstruction.enabled) or int(coupling.rounds) != 1:
+                raise ValueError("Factorized discrete Flow Matching cannot use C2 posterior feedback")
+            if bool(compatibility.enabled):
+                raise ValueError(
+                    "Compatibility reranking is currently maintained for discriminative factorized reconstruction only"
+                )
 
     if invisible.formulation not in {"standard", "edm", "flow_matching"}:
         raise ValueError(
@@ -84,9 +98,7 @@ def validate_experiment(config: DictConfig) -> None:
         if not invisible.enabled or str(invisible.formulation) != "flow_matching":
             raise ValueError("joint_flow requires enabled continuous Flow Matching invisible inference")
         if bool(reasoning.enabled):
-            raise ValueError(
-                "joint_flow uses model.joint_flow.recurrent_state; disable factorized model.reasoning"
-            )
+            raise ValueError("joint_flow uses model.joint_flow.recurrent_state; disable factorized model.reasoning")
         if bool(reconstruction.feedback.enabled):
             raise ValueError("joint_flow cannot use factorized soft reconstruction feedback")
         if bool(feedback.enabled) or int(coupling.rounds) != 1:
