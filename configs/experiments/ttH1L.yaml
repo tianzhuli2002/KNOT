@@ -51,6 +51,7 @@ model:
 inference:
   top_k_assignments: 1
   posterior_samples: 1
+  assignment_flow: {steps: 8}
   joint_flow: {steps: 8, solver: euler}
 
 training:
