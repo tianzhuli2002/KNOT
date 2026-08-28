@@ -417,32 +417,66 @@ class JointEventModel(nn.Module):
         if self.compatibility is None:
             return result
 
+        valid = torch.ones(
+            len(visible["pooled"]),
+            dtype=torch.bool,
+            device=visible["pooled"].device,
+        )
         truth_summaries = []
         wrong_summaries = []
         for root in self.spec.roots:
+            pool = batch["structured"]["pools"][root]
             candidates = result["candidate_embeddings"][root]
-            truth = batch["structured"]["pools"][root]["truth_index"]
-            if (truth < 0).any():
-                raise RuntimeError(
-                    "Compatibility training requires reconstructable truth "
-                    f"root {root}"
-                )
+            truth = pool["truth_index"]
+            reconstructable = truth >= 0
+            safe_truth = truth.clamp_min(0)
             rows = torch.arange(len(candidates), device=candidates.device)
-            truth_summaries.append(candidates[rows, truth])
+
+            alternatives = pool["candidate_mask"].clone()
+            if reconstructable.any():
+                active_rows = rows[reconstructable]
+                alternatives[active_rows, truth[reconstructable]] = False
+            has_wrong = alternatives.any(dim=1)
+            valid &= reconstructable & has_wrong
+
+            truth_summaries.append(candidates[rows, safe_truth])
             candidate_probabilities = result["assignment_probabilities"][root][
                 :, 1:
             ].clone()
-            candidate_probabilities[rows, truth] = -1
+            candidate_probabilities = candidate_probabilities.masked_fill(
+                ~pool["candidate_mask"], -torch.inf
+            )
+            if reconstructable.any():
+                candidate_probabilities[
+                    rows[reconstructable], truth[reconstructable]
+                ] = -torch.inf
             wrong = candidate_probabilities.argmax(dim=1)
             wrong_summaries.append(candidates[rows, wrong])
-        truth_assignment = torch.stack(truth_summaries, dim=1).mean(dim=1)
-        wrong_assignment = torch.stack(wrong_summaries, dim=1).mean(dim=1)
-        compatibility = self.compatibility.contrastive_loss(
-            visible["pooled"],
-            truth_assignment,
-            wrong_assignment,
-            batch["invisible_truth_scaled"],
-        )
+
+        result["compatibility_training_valid_fraction"] = valid.to(
+            visible["pooled"].dtype
+        ).mean()
+        if valid.any():
+            truth_assignment = torch.stack(truth_summaries, dim=1).mean(dim=1)[valid]
+            wrong_assignment = torch.stack(wrong_summaries, dim=1).mean(dim=1)[valid]
+            compatibility = self.compatibility.contrastive_loss(
+                visible["pooled"][valid],
+                truth_assignment,
+                wrong_assignment,
+                batch["invisible_truth_scaled"][valid],
+            )
+        else:
+            zero = visible["pooled"].sum() * 0.0
+            for parameter in self.compatibility.parameters():
+                zero = zero + parameter.sum() * 0.0
+            empty = visible["pooled"].new_empty((0,))
+            compatibility = {
+                "loss": zero,
+                "positive_logit": empty,
+                "wrong_assignment_logit": empty,
+                "mismatched_invisible_logit": empty,
+            }
+
         result["compatibility_training"] = compatibility
         result["compatibility_loss"] = compatibility["loss"]
         result["loss"] = (
