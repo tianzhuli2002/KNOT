@@ -19,9 +19,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import torch
-from omegaconf import OmegaConf
 
-from joint_event_reconstruction.configuration import validate_experiment
+from joint_event_reconstruction.configuration import load_experiment, validate_experiment
 from joint_event_reconstruction.topology.assignments import AssignmentSpace
 from joint_event_reconstruction.training.joint import JointEventModule
 from scripts.smoke_synthetic import build_synthetic_batch
@@ -47,24 +46,35 @@ def _configure(base, mode: str):
     config.model.invisible.enabled = False
     config.model.coupling.invisible_to_assignment.enabled = False
     config.model.compatibility.enabled = False
-    for name in ("visible", "assignment", "invisible", "compatibility"):
-        config.training.freeze[name] = False
 
-    if mode == "cfm":
+    if mode == "visible":
+        config.training.trainable = ["visible", "assignment"]
+        config.training.loss_weights.assignment = 1.0
+        config.training.loss_weights.invisible = 0.0
+    elif mode == "cfm":
         config.model.invisible.enabled = True
         config.model.invisible.formulation = "flow_matching"
         config.model.invisible.conditioning.assignment = "none"
         config.model.invisible.conditioning.allow_truth_oracle = False
+        config.training.trainable = ["visible", "assignment", "invisible"]
+        config.training.loss_weights.assignment = 1.0
+        config.training.loss_weights.invisible = 1.0
     elif mode == "dfm":
         assignment.formulation = "flow_matching"
-    elif mode == "joint":
+        config.training.trainable = ["visible", "assignment"]
+        config.training.loss_weights.assignment = 1.0
+        config.training.loss_weights.invisible = 0.0
+    else:
         config.model.mode = "joint_flow"
         assignment.formulation = "flow_matching"
         config.model.invisible.enabled = True
         config.model.invisible.formulation = "flow_matching"
         config.model.invisible.conditioning.assignment = "none"
         config.model.invisible.conditioning.allow_truth_oracle = False
-
+        config.training.trainable = ["visible", "assignment", "invisible"]
+        config.training.loss_weights.assignment = 1.0
+        config.training.loss_weights.invisible = 1.0
+    config.training.loss_weights.compatibility = 0.0
     validate_experiment(config)
     return config
 
@@ -74,18 +84,11 @@ def _optimizer(module: JointEventModule):
     return configured["optimizer"] if isinstance(configured, dict) else configured
 
 
-def _train_benchmark(
-    module: JointEventModule,
-    batch: dict,
-    *,
-    device: str,
-    warmup: int,
-    iterations: int,
-) -> dict:
+def _train_benchmark(module, batch, *, device, warmup, iterations):
     module.train()
     optimizer = _optimizer(module)
 
-    def one_step() -> None:
+    def one_step():
         optimizer.zero_grad(set_to_none=True)
         loss = module(batch)["loss"]
         loss.backward()
@@ -108,84 +111,48 @@ def _train_benchmark(
         "seconds": elapsed,
         "seconds_per_step": elapsed / iterations,
         "events_per_second": events / elapsed,
-        "cuda_peak_memory_mib": (
-            torch.cuda.max_memory_allocated() / 2**20 if device == "cuda" else None
-        ),
+        "cuda_peak_memory_mib": torch.cuda.max_memory_allocated() / 2**20 if device == "cuda" else None,
         "optimizer": type(optimizer).__name__,
-        "fused_adamw": bool(
-            isinstance(optimizer, torch.optim.AdamW)
-            and optimizer.defaults.get("fused", False)
-        ),
+        "fused_adamw": bool(isinstance(optimizer, torch.optim.AdamW) and optimizer.defaults.get("fused", False)),
     }
 
 
-def _inference_call(
-    mode: str,
-    module: JointEventModule,
-    batch: dict,
-    *,
-    posterior_samples: int,
-    flow_steps: int,
-    joint_sample_chunk_size: int,
-):
-    visible = module.event_model.visible(
-        batch["tokens"], batch["type_ids"], batch["padding_mask"]
-    )
+def _inference_call(mode, module, batch, *, posterior_samples, flow_steps, joint_sample_chunk_size):
+    visible = module.event_model.visible(batch["tokens"], batch["type_ids"], batch["padding_mask"])
     if mode == "visible":
         return module(batch), 1
     if mode == "cfm":
         output = module(batch)
         generated, nfe = module.event_model.invisible.sample(
-            output["visible"],
-            output["invisible_parent_context"],
-            samples=posterior_samples,
-            budget=flow_steps,
+            output["visible"], output["invisible_parent_context"],
+            samples=posterior_samples, budget=flow_steps,
         )
         return generated, nfe * posterior_samples
     if mode == "dfm":
         sampled = module.event_model.assignment_flow.sample_many(
-            visible,
-            batch["structured"],
-            module.event_model.reconstruction,
-            samples=posterior_samples,
-            steps=flow_steps,
+            visible, batch["structured"], module.event_model.reconstruction,
+            samples=posterior_samples, steps=flow_steps,
         )
         return sampled["sampled_assignment_state"], flow_steps * posterior_samples
     sampled = module.event_model.joint_flow.sample(
-        visible,
-        batch["structured"],
-        module.event_model.reconstruction,
-        module.event_model.invisible,
-        samples=posterior_samples,
-        steps=flow_steps,
+        visible, batch["structured"], module.event_model.reconstruction,
+        module.event_model.invisible, samples=posterior_samples, steps=flow_steps,
         sample_chunk_size=joint_sample_chunk_size,
     )
     return sampled["invisible"], flow_steps * posterior_samples
 
 
 def _inference_benchmark(
-    mode: str,
-    module: JointEventModule,
-    batch: dict,
-    *,
-    device: str,
-    warmup: int,
-    iterations: int,
-    posterior_samples: int,
-    flow_steps: int,
-    joint_sample_chunk_size: int,
-) -> dict:
+    mode, module, batch, *, device, warmup, iterations,
+    posterior_samples, flow_steps, joint_sample_chunk_size,
+):
     module.eval()
     equivalent_nfe = None
     with torch.inference_mode():
         for _ in range(warmup):
             _, equivalent_nfe = _inference_call(
-                mode,
-                module,
-                batch,
-                posterior_samples=posterior_samples,
-                flow_steps=flow_steps,
-                joint_sample_chunk_size=joint_sample_chunk_size,
+                mode, module, batch, posterior_samples=posterior_samples,
+                flow_steps=flow_steps, joint_sample_chunk_size=joint_sample_chunk_size,
             )
         _sync(device)
         if device == "cuda":
@@ -193,12 +160,8 @@ def _inference_benchmark(
         start = time.perf_counter()
         for _ in range(iterations):
             _, equivalent_nfe = _inference_call(
-                mode,
-                module,
-                batch,
-                posterior_samples=posterior_samples,
-                flow_steps=flow_steps,
-                joint_sample_chunk_size=joint_sample_chunk_size,
+                mode, module, batch, posterior_samples=posterior_samples,
+                flow_steps=flow_steps, joint_sample_chunk_size=joint_sample_chunk_size,
             )
         _sync(device)
         elapsed = time.perf_counter() - start
@@ -209,15 +172,11 @@ def _inference_benchmark(
         "posterior_samples": posterior_samples if mode != "visible" else 0,
         "flow_steps": flow_steps if mode in {"cfm", "dfm", "joint"} else 0,
         "sample_equivalent_network_evaluations_per_event": int(equivalent_nfe),
-        "joint_sample_chunk_size": (
-            joint_sample_chunk_size if mode == "joint" else None
-        ),
+        "joint_sample_chunk_size": joint_sample_chunk_size if mode == "joint" else None,
         "seconds": elapsed,
         "seconds_per_call": elapsed / iterations,
         "events_per_second": events / elapsed,
-        "cuda_peak_memory_mib": (
-            torch.cuda.max_memory_allocated() / 2**20 if device == "cuda" else None
-        ),
+        "cuda_peak_memory_mib": torch.cuda.max_memory_allocated() / 2**20 if device == "cuda" else None,
     }
 
 
@@ -236,10 +195,8 @@ def benchmark(
     if device == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("CUDA benchmark requested but CUDA is unavailable")
     torch.set_float32_matmul_precision("high")
-    base = OmegaConf.load(experiment)
-    visible, batch, scaler = build_synthetic_batch(
-        base, events=events, device=device
-    )
+    base = load_experiment(experiment)
+    visible, batch, scaler = build_synthetic_batch(base, events=events, device=device)
     space = AssignmentSpace.from_structured(batch["structured"])
     results = {
         "purpose": "SOFTWARE_PROFILE_ONLY_NOT_PHYSICS",
@@ -256,34 +213,20 @@ def benchmark(
         module = JointEventModule(
             config,
             visible,
-            invisible_scaler=(scaler if bool(config.model.invisible.enabled) else None),
+            invisible_scaler=scaler if bool(config.model.invisible.enabled) else None,
             synthetic_data=True,
         ).to(device)
         results["modes"][mode] = {
-            "total_parameters": sum(
-                parameter.numel() for parameter in module.parameters()
-            ),
+            "total_parameters": sum(parameter.numel() for parameter in module.parameters()),
             "trainable_parameters": sum(
-                parameter.numel()
-                for parameter in module.parameters()
-                if parameter.requires_grad
+                parameter.numel() for parameter in module.parameters() if parameter.requires_grad
             ),
             "training": _train_benchmark(
-                module,
-                batch,
-                device=device,
-                warmup=warmup,
-                iterations=iterations,
+                module, batch, device=device, warmup=warmup, iterations=iterations
             ),
             "inference": _inference_benchmark(
-                mode,
-                module,
-                batch,
-                device=device,
-                warmup=warmup,
-                iterations=iterations,
-                posterior_samples=posterior_samples,
-                flow_steps=flow_steps,
+                mode, module, batch, device=device, warmup=warmup, iterations=iterations,
+                posterior_samples=posterior_samples, flow_steps=flow_steps,
                 joint_sample_chunk_size=joint_sample_chunk_size,
             ),
         }
@@ -295,11 +238,7 @@ def benchmark(
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--experiment",
-        type=Path,
-        default=Path("configs/experiments/ttbar1L.yaml"),
-    )
+    parser.add_argument("--experiment", type=Path, default=Path("configs/experiments/ttbar2L.yaml"))
     parser.add_argument("--modes", nargs="+", choices=MODES, default=list(MODES))
     parser.add_argument("--device", choices=("cpu", "cuda"), default="cpu")
     parser.add_argument("--events", type=int, default=32)
@@ -310,14 +249,7 @@ def main() -> None:
     parser.add_argument("--joint-sample-chunk-size", type=int, default=8)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
-    for name in (
-        "events",
-        "warmup",
-        "iterations",
-        "posterior_samples",
-        "flow_steps",
-        "joint_sample_chunk_size",
-    ):
+    for name in ("events", "warmup", "iterations", "posterior_samples", "flow_steps", "joint_sample_chunk_size"):
         value = getattr(args, name)
         if name == "warmup":
             if value < 0:
@@ -326,14 +258,9 @@ def main() -> None:
             raise ValueError(f"--{name.replace('_', '-')} must be positive")
 
     results = benchmark(
-        args.experiment,
-        modes=tuple(args.modes),
-        device=args.device,
-        events=args.events,
-        warmup=args.warmup,
-        iterations=args.iterations,
-        posterior_samples=args.posterior_samples,
-        flow_steps=args.flow_steps,
+        args.experiment, modes=tuple(args.modes), device=args.device, events=args.events,
+        warmup=args.warmup, iterations=args.iterations,
+        posterior_samples=args.posterior_samples, flow_steps=args.flow_steps,
         joint_sample_chunk_size=args.joint_sample_chunk_size,
     )
     payload = json.dumps(results, indent=2, sort_keys=True) + "\n"
