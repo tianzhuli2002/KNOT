@@ -1,0 +1,65 @@
+model:
+  assignment:
+    recurrence:
+      block_layers: 2
+      train_steps: [1, 2, 3, 4]
+      eval_steps: 4
+      reinject_visible: true
+      feedback:
+        start_step: 1
+        gate_initial_bias: -2.0
+  invisible:
+    network:
+      d_model: 128
+      n_heads: 4
+      layers: 4
+      d_feedforward: 512
+      dropout: 0.0
+      zero_init_output: true
+    standard:
+      training_steps: 1000
+    edm:
+      sigma_data: 1.0
+      p_mean: -0.5
+      p_std: 1.2
+    flow_matching:
+      coupling: independent
+  joint_flow:
+    block_layers: 2
+    train_steps: [1, 2, 3, 4]
+  c2:
+    posterior_samples: 4
+    gate_initial_bias: -2.0
+  compatibility:
+    include_invisible: true
+
+prediction:
+  seed: 12345
+  top_k: 1
+  samples: 1
+  steps: 8
+  solver: heun
+  sample_chunk_size: 8
+  edm:
+    sigma_min: 0.004
+    sigma_max: 160.0
+    rho: 7.0
+    nfe: 17
+  standard_steps: 50
+  compatibility_weight: 1.0
+
+training:
+  learning_rate: 0.000361545
+  weight_decay: 0.00006073529387441413
+  epochs: 20
+  precision: 16-mixed
+  gradient_clip: 1.0
+  accumulate_grad_batches: 1
+  scheduler:
+    enabled: true
+    factor: 0.8
+    patience: 8
+    min_lr: 1.0e-6
+  early_stopping:
+    enabled: true
+    patience: 20
