@@ -6,12 +6,13 @@ import argparse
 import json
 from pathlib import Path
 
+import h5py
 import lightning as L
 import torch
 from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
 from omegaconf import OmegaConf
 
-from joint_event_reconstruction.configuration import load_experiment
+from joint_event_reconstruction.configuration import load_experiment, load_visible_config
 from joint_event_reconstruction.data.invisible import InvisibleScaler
 from joint_event_reconstruction.data.structured import StructuredDataModule
 from joint_event_reconstruction.evaluation_joint import evaluate_any_predictions
@@ -22,7 +23,6 @@ from joint_event_reconstruction.prediction_joint import predict_joint_flow_hdf5
 from joint_event_reconstruction.training.joint import JointEventModule
 
 
-INFERENCE_SEED = 12345
 _COMPONENT_PREFIXES = {
     "visible": ("event_model.visible.",),
     "assignment": (
@@ -32,7 +32,7 @@ _COMPONENT_PREFIXES = {
         "event_model.assignment_flow.",
     ),
     "invisible": ("event_model.invisible.",),
-    "coupling": ("event_model.posterior_feedback.",),
+    "c2": ("event_model.posterior_feedback.",),
     "compatibility": ("event_model.compatibility.",),
 }
 
@@ -40,7 +40,7 @@ _COMPONENT_PREFIXES = {
 def build_data(config, visible):
     invisible = config.data.invisible
     if config.model.invisible.enabled and invisible.path is None:
-        raise ValueError("Invisible inference is enabled but data.invisible.path is null")
+        raise ValueError("Invisible inference is enabled but the data config has no invisible_truth")
     build_assignments = (
         str(config.model.mode) == "joint_flow"
         or str(config.model.assignment.formulation) == "flow_matching"
@@ -105,12 +105,8 @@ def _load_initial_components(
         raise ValueError("Invisible component initialisation requires identical scaler metadata")
 
     target = module.state_dict()
-    expected = {
-        key for key in target if _selected_component_key(key, components)
-    }
-    available = {
-        key for key in source if _selected_component_key(key, components)
-    }
+    expected = {key for key in target if _selected_component_key(key, components)}
+    available = {key for key in source if _selected_component_key(key, components)}
     missing = sorted(expected - available)
     unexpected = sorted(available - expected)
     mismatched = sorted(
@@ -143,7 +139,7 @@ def train(
     initial_components: tuple[str, ...] = (),
 ) -> None:
     L.seed_everything(int(config.experiment.seed), workers=True)
-    visible = OmegaConf.load(config.visible_config)
+    visible = load_visible_config(config)
     data = build_data(config, visible)
     data.setup("fit")
     module = JointEventModule(
@@ -157,9 +153,7 @@ def train(
         ),
     )
     if initial_checkpoint is not None:
-        loaded = _load_initial_components(
-            module, initial_checkpoint, initial_components
-        )
+        loaded = _load_initial_components(module, initial_checkpoint, initial_components)
         print(
             f"Initialised {loaded} state entries from {initial_checkpoint} "
             f"for components={list(initial_components)}"
@@ -226,11 +220,10 @@ def load_trained(config, visible, data, checkpoint_path: str) -> JointEventModul
 
 
 def predict(config, args) -> None:
-    # Keep posterior Monte-Carlo noise fixed across trained seeds/models so generator
-    # comparisons do not acquire an avoidable second random variation.
-    L.seed_everything(INFERENCE_SEED, workers=True)
+    prediction_seed = int(config.inference.seed)
+    L.seed_everything(prediction_seed, workers=True)
     device = _resolve_device(args.device)
-    visible = OmegaConf.load(config.visible_config)
+    visible = load_visible_config(config)
     data = build_data(config, visible)
     data.setup("predict")
     module = load_trained(config, visible, data, args.checkpoint)
@@ -283,6 +276,9 @@ def predict(config, args) -> None:
             compatibility_weight=float(config.inference.compatibility_weight),
         )
 
+    with h5py.File(Path(args.output).expanduser().resolve(), "r+") as output:
+        output.attrs["prediction_seed"] = prediction_seed
+
 
 def _plot_predictions(
     paths: list[str],
@@ -297,11 +293,7 @@ def _plot_predictions(
         written = []
         for path in paths:
             written.extend(
-                plot_prediction(
-                    path,
-                    output_dir / Path(path).stem,
-                    formats=formats,
-                )
+                plot_prediction(path, output_dir / Path(path).stem, formats=formats)
             )
         written.extend(
             plot_comparison(
@@ -322,21 +314,17 @@ def _experiment_options(parser: argparse.ArgumentParser) -> None:
         action="append",
         default=[],
         metavar="KEY=VALUE",
-        help="Override one experiment value using OmegaConf dot notation; repeat as needed.",
+        help="Override one compact public setting using OmegaConf dot notation; repeat as needed.",
     )
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="Topology-aware event reconstruction",
-    )
+    parser = argparse.ArgumentParser(description="Topology-aware event reconstruction")
     commands = parser.add_subparsers(dest="command", required=True)
 
     train_parser = commands.add_parser("train", help="train one configured experiment")
     _experiment_options(train_parser)
-    train_parser.add_argument(
-        "--device", choices=("auto", "cpu", "cuda"), default="auto"
-    )
+    train_parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
     train_parser.add_argument(
         "--initial-checkpoint",
         help="Initialise selected semantic components before training.",
@@ -358,9 +346,7 @@ def build_parser() -> argparse.ArgumentParser:
     predict_parser.add_argument(
         "--split", choices=("train", "validation", "test"), default="test"
     )
-    predict_parser.add_argument(
-        "--device", choices=("auto", "cpu", "cuda"), default="auto"
-    )
+    predict_parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
     predict_parser.add_argument("--recurrent-steps", type=int)
 
     evaluate_parser = commands.add_parser(
@@ -382,9 +368,7 @@ def build_parser() -> argparse.ArgumentParser:
         "smoke", help="run the maintained software/mechanism smoke suite"
     )
     smoke_parser.add_argument("--experiment", required=True)
-    smoke_parser.add_argument(
-        "--device", choices=("auto", "cpu", "cuda"), default="auto"
-    )
+    smoke_parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
     smoke_parser.add_argument("--events", type=int, default=8)
 
     validate_parser = commands.add_parser(
@@ -393,7 +377,7 @@ def build_parser() -> argparse.ArgumentParser:
     _experiment_options(validate_parser)
 
     show_parser = commands.add_parser(
-        "show-config", help="validate and print the fully resolved experiment YAML"
+        "show-config", help="validate and print the fully resolved internal experiment"
     )
     _experiment_options(show_parser)
     return parser
@@ -404,21 +388,12 @@ def main() -> None:
     args = build_parser().parse_args()
 
     if args.command == "evaluate":
-        print(
-            json.dumps(
-                evaluate_any_predictions(args.predictions), indent=2, sort_keys=True
-            )
-        )
+        print(json.dumps(evaluate_any_predictions(args.predictions), indent=2, sort_keys=True))
         return
     if args.command == "plot":
         if args.labels is not None and len(args.labels) != len(args.predictions):
             raise ValueError("--labels must match the number of prediction files")
-        _plot_predictions(
-            args.predictions,
-            args.output,
-            args.labels,
-            tuple(args.formats),
-        )
+        _plot_predictions(args.predictions, args.output, args.labels, tuple(args.formats))
         return
 
     overrides = getattr(args, "overrides", [])
@@ -445,24 +420,16 @@ def main() -> None:
         from scripts.data.validate_joint_h5 import validate
 
         if config.data.invisible.path is None:
-            raise ValueError("validate-data requires data.invisible.path")
-        print(
-            json.dumps(
-                validate(Path(config.data.invisible.path)), indent=2, sort_keys=True
-            )
-        )
+            raise ValueError("validate-data requires invisible_truth in the JER data config")
+        print(json.dumps(validate(Path(config.data.invisible.path)), indent=2, sort_keys=True))
         return
     if args.command == "smoke":
         from scripts.smoke_all import run_experiment_smoke
         from scripts.smoke_flows import run_flow_smoke
 
         device = _resolve_device(args.device)
-        run_experiment_smoke(
-            Path(args.experiment), device=device, events=args.events
-        )
-        run_flow_smoke(
-            Path(args.experiment), device=device, events=args.events
-        )
+        run_experiment_smoke(Path(args.experiment), device=device, events=args.events)
+        run_flow_smoke(Path(args.experiment), device=device, events=args.events)
         return
     raise RuntimeError(f"Unhandled command {args.command!r}")
 
