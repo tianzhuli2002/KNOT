@@ -100,6 +100,16 @@ class InvisibleGenerator(nn.Module):
         context, mask = self.visible_context(visible)
         return self.formulation.loss(target, context, mask, parent_context)
 
+    def flow_source(
+        self,
+        target: torch.Tensor,
+        *,
+        generator: torch.Generator | None = None,
+    ) -> torch.Tensor:
+        if self.formulation_name != "flow_matching":
+            raise RuntimeError("Flow source is only defined for Flow Matching")
+        return self.formulation.source(target, generator=generator)
+
     def velocity(
         self, state: torch.Tensor, time: torch.Tensor,
         visible: dict, parent_context: torch.Tensor,
