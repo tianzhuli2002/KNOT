@@ -8,6 +8,7 @@ from pathlib import Path
 import h5py
 import numpy as np
 
+from joint_event_reconstruction.assignment_semantics import read_hdf5_support
 from joint_event_reconstruction.prediction_joint import (
     JOINT_PREDICTION_SCHEMA,
     validate_joint_prediction,
@@ -48,11 +49,15 @@ def _empirical_entropy(states: np.ndarray) -> np.ndarray:
     return result
 
 
+def _binomial_error(value: float, count: int) -> float:
+    return float(np.sqrt(value * (1.0 - value) / count)) if count else float("nan")
+
+
 def _kinematics(vectors: np.ndarray) -> dict[str, np.ndarray]:
     momentum = vectors[..., 1:]
     pt = np.linalg.norm(momentum[..., :2], axis=-1)
     mass = np.sqrt(
-        np.maximum(vectors[..., 0] ** 2 - np.sum(momentum ** 2, axis=-1), 0)
+        np.maximum(vectors[..., 0] ** 2 - np.sum(momentum**2, axis=-1), 0)
     )
     eta = np.arcsinh(
         np.divide(momentum[..., 2], np.maximum(pt, 1.0e-12))
@@ -80,7 +85,9 @@ def _composite_metrics(predicted: np.ndarray, truth: np.ndarray) -> dict:
             float(sample_finite[truth_finite].mean()) if truth_finite.any() else None
         ),
         "false_support_frequency": (
-            float(sample_finite[~truth_finite].mean()) if (~truth_finite).any() else None
+            float(sample_finite[~truth_finite].mean())
+            if (~truth_finite).any()
+            else None
         ),
         "kinematic_events": int(eligible.sum()),
     }
@@ -101,7 +108,7 @@ def _composite_metrics(predicted: np.ndarray, truth: np.ndarray) -> dict:
         )
         result[observable] = {
             "bias": float(residual.mean()),
-            "rmse": float(np.sqrt(np.mean(residual ** 2))),
+            "rmse": float(np.sqrt(np.mean(residual**2))),
             "central_68_width": float(
                 np.quantile(residual, 0.84) - np.quantile(residual, 0.16)
             ),
@@ -140,7 +147,9 @@ def _truth_assignment_continuous_diagnostic(
     result = {
         "diagnostic_not_end_to_end": True,
         "events_with_at_least_one_truth_assignment_sample": int(eligible.sum()),
-        "mean_truth_assignment_samples_for_these_events": float(np.mean(sample_counts)),
+        "mean_truth_assignment_samples_for_these_events": float(
+            np.mean(sample_counts)
+        ),
         "energy_score_joint": float(np.mean(energy)),
         "roles": {},
     }
@@ -161,6 +170,7 @@ def evaluate_joint_predictions(path: str | Path) -> dict:
     with h5py.File(path, "r") as source:
         if source.attrs.get("schema_version") != JOINT_PREDICTION_SCHEMA:
             raise ValueError(f"Not a joint-flow prediction file: {path}")
+        support = read_hdf5_support(source)
         states = source["HYPOTHESES/assignment_state"][:]
         truth_state = source["TRUTH/assignment_state"][:]
         truth_hit = states == truth_state[:, None]
@@ -170,6 +180,18 @@ def evaluate_joint_predictions(path: str | Path) -> dict:
         samples = source["HYPOTHESES/invisible"][:]
         truth = source["TRUTH/NEUTRINO"][:]
         roles = json.loads(source.attrs["invisible_roles"])
+
+        accuracy = float((mode == truth_state).mean())
+        by_njet = {}
+        for value in np.unique(njet):
+            mask = njet == value
+            count = int(mask.sum())
+            local_accuracy = float((mode[mask] == truth_state[mask]).mean())
+            by_njet[str(int(value))] = {
+                "events": count,
+                "accuracy": local_accuracy,
+                "standard_error": _binomial_error(local_accuracy, count),
+            }
 
         result = {
             "prediction_file": str(path),
@@ -181,6 +203,7 @@ def evaluate_joint_predictions(path: str | Path) -> dict:
             "architecture_signature": str(source.attrs["architecture_signature"]),
             "model_mode": "joint_flow",
             "assignment_formulation": "flow_matching",
+            "assignment_support": support,
             "invisible_formulation": "flow_matching",
             "flow_steps": int(source.attrs["flow_steps"]),
             "nfe_per_sample": int(source.attrs["nfe_per_sample"]),
@@ -204,7 +227,10 @@ def evaluate_joint_predictions(path: str | Path) -> dict:
             "recurrent_state": bool(source.attrs["recurrent_state"]),
             "assignment_state_count": int(source.attrs["assignment_state_count"]),
             "assignment": {
-                "empirical_mode_accuracy": float((mode == truth_state).mean()),
+                "empirical_mode_accuracy": accuracy,
+                "empirical_mode_accuracy_standard_error": _binomial_error(
+                    accuracy, len(states)
+                ),
                 "truth_sample_frequency": float(truth_hit.mean()),
                 "truth_sample_coverage": float(truth_hit.any(axis=1).mean()),
                 "unique_states_mean": float(
@@ -213,15 +239,7 @@ def evaluate_joint_predictions(path: str | Path) -> dict:
                 "empirical_entropy_mean": float(entropy.mean()),
                 "effective_state_count_mean": float(np.exp(entropy).mean()),
                 "probabilities_are_monte_carlo_estimates": True,
-                "mode_accuracy_vs_njet": {
-                    str(int(value)): {
-                        "events": int((njet == value).sum()),
-                        "accuracy": float(
-                            (mode[njet == value] == truth_state[njet == value]).mean()
-                        ),
-                    }
-                    for value in np.unique(njet)
-                },
+                "mode_accuracy_vs_njet": by_njet,
             },
             "invisible": {
                 "interpretation": "native joint posterior samples p(A,nu|X)",
@@ -241,7 +259,7 @@ def evaluate_joint_predictions(path: str | Path) -> dict:
                 )
                 component_result = {
                     "bias": float(mean_residual.mean()),
-                    "rmse": float(np.sqrt(np.mean(mean_residual ** 2))),
+                    "rmse": float(np.sqrt(np.mean(mean_residual**2))),
                     "median_residual": float(np.median(mean_residual)),
                     "central_68_width": float(
                         np.quantile(mean_residual, 0.84)
@@ -287,9 +305,7 @@ def evaluate_joint_predictions(path: str | Path) -> dict:
                 result["physics"]["met_closure"] = {
                     "px_bias": float(dx.mean()),
                     "py_bias": float(dy.mean()),
-                    "transverse_rmse": float(
-                        np.sqrt(np.mean(dx ** 2 + dy ** 2))
-                    ),
+                    "transverse_rmse": float(np.sqrt(np.mean(dx**2 + dy**2))),
                 }
         return result
 
@@ -301,10 +317,17 @@ def evaluate_any_predictions(path: str | Path) -> dict:
     if schema == JOINT_PREDICTION_SCHEMA:
         return evaluate_joint_predictions(path)
 
-    from joint_event_reconstruction.prediction_discrete import DISCRETE_PREDICTION_SCHEMA
+    from joint_event_reconstruction.prediction_discrete import (
+        DISCRETE_PREDICTION_SCHEMA,
+    )
+
     if schema == DISCRETE_PREDICTION_SCHEMA:
-        from joint_event_reconstruction.evaluation_discrete import evaluate_discrete_predictions
+        from joint_event_reconstruction.evaluation_discrete import (
+            evaluate_discrete_predictions,
+        )
+
         return evaluate_discrete_predictions(path)
 
     from joint_event_reconstruction.evaluation import evaluate_predictions
+
     return evaluate_predictions(path)
