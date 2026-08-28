@@ -3,50 +3,56 @@ experiment:
   seed: 42
 topology_config: configs/topology/ttbar2L.yaml
 visible_config: configs/real_ttbar2L.yaml
+
 data:
   tensor_cache: null
   max_events: {train: 100000, val: 50000, test: 50000}
   invisible:
     path: /mnt/iusers01/fatpou01/phy01/w00238tl/scratch/JointEventReconstruction/data/real/ttbar2L_canonical.h5
-    event_id_key: EVENT_ID
-    target_key: LABELS/NEUTRINO
     allow_synthetic: false
+
 model:
   mode: factorized
   visible: {d_model: 128, n_heads: 4, layers: 4, d_feedforward: 384, dropout: 0.05}
+
   reasoning:
     enabled: false
     block_layers: 2
     train_steps: [1, 2, 3, 4]
     eval_steps: 4
     fixed_input_reinjection: true
+
   reconstruction:
-    enabled: true
     formulation: discriminative
     flow_matching: {source: mask}
-    feedback: {enabled: false, start_step: 1, include_null_probability: true, include_entropy: true, gate_initial_bias: -2.0}
+    feedback: {enabled: false, start_step: 1, gate_initial_bias: -2.0}
+
   invisible:
     enabled: false
     formulation: edm
     target: {representation: cartesian, components: [px, py, pz]}
-    conditioning: {event: true, assignment: soft, allow_truth_oracle: false}
-    denoiser: {d_model: 128, n_heads: 4, layers: 4, d_feedforward: 512, dropout: 0.0, parent_adaln: true, zero_init_output: true}
-    standard: {schedule: cosine, prediction: epsilon, training_steps: 1000, sampler: ddim, inference_steps: 50}
-    edm: {sigma_data: 1.0, p_mean: -0.5, p_std: 1.2, sigma_min: 0.004, sigma_max: 160.0, rho: 7.0, sampler: heun, inference_nfe: 17}
+    conditioning: {assignment: soft, allow_truth_oracle: false}
+    denoiser: {d_model: 128, n_heads: 4, layers: 4, d_feedforward: 512, dropout: 0.0, zero_init_output: true}
+    standard: {training_steps: 1000, inference_steps: 50}
+    edm: {sigma_data: 1.0, p_mean: -0.5, p_std: 1.2, sigma_min: 0.004, sigma_max: 160.0, rho: 7.0, inference_nfe: 17}
     flow_matching: {path: linear, coupling: independent, sampler: heun, inference_steps: 8}
+
   joint_flow:
     recurrent_state: false
     block_layers: 2
     train_steps: [1, 2, 3, 4]
+
   coupling:
     rounds: 1
-    invisible_to_reconstruction: {enabled: false, detach: true, posterior_samples: 4, summary: mean_variance, gate_initial_bias: -2.0}
+    invisible_to_reconstruction: {enabled: false, detach: true, posterior_samples: 4, gate_initial_bias: -2.0}
+
   compatibility: {enabled: false, include_invisible: true, lambda: 1.0}
+
 inference:
   top_k_assignments: 1
   posterior_samples: 1
-  denoiser_chunk_size: null
   joint_flow: {steps: 8, solver: euler}
+
 training:
   learning_rate: 0.000361545
   weight_decay: 0.00006073529387441413
