@@ -38,43 +38,25 @@ jobs:
           python - <<'PY'
           from pathlib import Path
           from joint_event_reconstruction.configuration import load_experiment, load_visible_config
+
           for path in sorted(Path("configs/experiments").glob("*.yaml")):
               config = load_experiment(path)
-              load_visible_config(config)
+              visible = load_visible_config(config)
+              assert visible.dataset.observables
               print(f"validated {path}")
           PY
-      - name: Validate structured study manifests
+      - name: Validate maintained study manifests and resolved patches
         if: matrix.topology == 'ttbar2L'
         run: |
-          python - <<'PY'
-          from pathlib import Path
-          from omegaconf import OmegaConf
-          from joint_event_reconstruction.configuration import validate_experiment
-          from joint_event_reconstruction.public_config import resolve_public_experiment
-          from joint_event_reconstruction.studies import load_study
-
-          root = Path.cwd()
-          for path in sorted(Path("configs/studies").glob("*.yaml")):
-              study = load_study(path)
-              for topology in study.topologies:
-                  experiment = study.experiment_path(root, topology)
-                  base = OmegaConf.load(experiment)
-                  for seed in study.seeds:
-                      for variant in study.variants:
-                          public = OmegaConf.merge(
-                              base,
-                              OmegaConf.create(variant.patch),
-                              {"experiment": {"seed": seed}, "training": {"output": "/tmp/jer-study-ci"}},
-                          )
-                          validate_experiment(resolve_public_experiment(public))
-                          for prediction in variant.predictions:
-                              validate_experiment(
-                                  resolve_public_experiment(
-                                      OmegaConf.merge(public, OmegaConf.create(prediction.patch))
-                                  )
-                              )
-              print(f"validated {path}")
-          PY
+          set -euo pipefail
+          for study in configs/studies/*.yaml; do
+            python scripts/run_study.py "$study" plan --device cpu --dry-run
+          done
+      - name: Validate filtered dependency closure and Slurm planning
+        if: matrix.topology == 'ttbar2L'
+        run: |
+          python scripts/submit_study_slurm.py configs/studies/04_c2_feedback.yaml \
+            --variants c2 --dry-run --no-postprocess --output-root /tmp/jer-study-slurm
       - name: Synthetic smoke
         run: python scripts/smoke_synthetic.py --topology ${{ matrix.topology }} --device cpu --events 4
       - name: Synthetic benchmark smoke
@@ -85,3 +67,12 @@ jobs:
             --modes visible cfm dfm joint \
             --device cpu --events 2 --warmup 0 --iterations 1 \
             --posterior-samples 1 --flow-steps 1 --joint-sample-chunk-size 1
+      - name: Recurrence-control generator smoke
+        if: matrix.topology == 'ttbar2L'
+        run: |
+          python scripts/match_recurrence_controls.py \
+            --experiment configs/experiments/ttbar2L.yaml \
+            --target m3 --recurrent-steps 2 --max-layers 1 \
+            --feedforward-min 128 --feedforward-max 128 --feedforward-step 32 \
+            --top 1 --benchmark-candidates 1 --device cpu \
+            --events 2 --warmup 0 --iterations 1
