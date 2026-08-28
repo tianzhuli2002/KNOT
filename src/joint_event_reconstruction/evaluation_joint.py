@@ -111,11 +111,20 @@ def evaluate_joint_predictions(path: str | Path) -> dict:
             "prediction_file": str(path),
             "events": len(states),
             "topology_signature": str(source.attrs["topology_signature"]),
+            "architecture_signature_version": int(
+                source.attrs["architecture_signature_version"]
+            ),
+            "architecture_signature": str(source.attrs["architecture_signature"]),
             "model_mode": "joint_flow",
+            "assignment_formulation": "flow_matching",
+            "invisible_formulation": "flow_matching",
             "flow_steps": int(source.attrs["flow_steps"]),
             "actual_nfe": int(source.attrs["actual_nfe"]),
+            "nfe_per_sample": int(source.attrs["nfe_per_sample"]),
+            "network_calls_per_event": int(source.attrs["network_calls_per_event"]),
             "posterior_samples": int(source.attrs["posterior_samples"]),
             "recurrent_state": bool(source.attrs["recurrent_state"]),
+            "assignment_state_count": int(source.attrs["assignment_state_count"]),
             "assignment": {
                 "empirical_mode_accuracy": float((mode == truth_state).mean()),
                 "truth_sample_frequency": float(truth_hit.mean()),
