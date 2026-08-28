@@ -40,7 +40,7 @@ variants:
     reporting: primary
     patch:
       model:
-        encoder: {d_model: 128, n_heads: 4, layers: 4, d_feedforward: 384, dropout: 0.05}
+        assignment: null
         joint_flow: {recurrent: false}
       training: {trainable: [assignment, invisible]}
     initialise_from: factorized
