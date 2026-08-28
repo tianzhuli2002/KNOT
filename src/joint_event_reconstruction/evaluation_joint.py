@@ -31,6 +31,67 @@ def _empirical_mode(states: np.ndarray) -> np.ndarray:
     return modes
 
 
+def _kinematics(vectors: np.ndarray) -> dict[str, np.ndarray]:
+    momentum = vectors[..., 1:]
+    pt = np.linalg.norm(momentum[..., :2], axis=-1)
+    mass = np.sqrt(
+        np.maximum(vectors[..., 0] ** 2 - np.sum(momentum ** 2, axis=-1), 0)
+    )
+    eta = np.arcsinh(
+        np.divide(momentum[..., 2], np.maximum(pt, 1.0e-12))
+    )
+    phi = np.arctan2(momentum[..., 1], momentum[..., 0])
+    return {"mass": mass, "pt": pt, "eta": eta, "phi": phi}
+
+
+def _wrapped_delta(first: np.ndarray, second: np.ndarray) -> np.ndarray:
+    return np.arctan2(np.sin(first - second), np.cos(first - second))
+
+
+def _composite_metrics(predicted: np.ndarray, truth: np.ndarray) -> dict:
+    """Separate reconstruction support from conditional kinematic quality."""
+    sample_finite = np.isfinite(predicted).all(axis=-1)
+    truth_finite = np.isfinite(truth).all(axis=-1)
+    any_sample = sample_finite.any(axis=1)
+    eligible = truth_finite & any_sample
+
+    result = {
+        "truth_reconstructable_events": int(truth_finite.sum()),
+        "sample_reconstructable_rate": float(sample_finite.mean()),
+        "event_any_reconstructable_rate": float(any_sample.mean()),
+        "truth_support_frequency": (
+            float(sample_finite[truth_finite].mean()) if truth_finite.any() else None
+        ),
+        "false_support_frequency": (
+            float(sample_finite[~truth_finite].mean()) if (~truth_finite).any() else None
+        ),
+        "kinematic_events": int(eligible.sum()),
+    }
+    if not eligible.any():
+        return result
+
+    safe = np.where(sample_finite[..., None], predicted, np.nan)
+    mean = np.nanmean(safe[eligible], axis=1)
+    predicted_kinematics = _kinematics(mean)
+    truth_kinematics = _kinematics(truth[eligible])
+    for observable in ("mass", "pt", "eta", "phi"):
+        residual = (
+            _wrapped_delta(
+                predicted_kinematics[observable], truth_kinematics[observable]
+            )
+            if observable == "phi"
+            else predicted_kinematics[observable] - truth_kinematics[observable]
+        )
+        result[observable] = {
+            "bias": float(residual.mean()),
+            "rmse": float(np.sqrt(np.mean(residual ** 2))),
+            "central_68_width": float(
+                np.quantile(residual, 0.84) - np.quantile(residual, 0.16)
+            ),
+        }
+    return result
+
+
 def evaluate_joint_predictions(path: str | Path) -> dict:
     path = Path(path).expanduser().resolve()
     validate_joint_prediction(path)
@@ -52,20 +113,23 @@ def evaluate_joint_predictions(path: str | Path) -> dict:
             "topology_signature": str(source.attrs["topology_signature"]),
             "model_mode": "joint_flow",
             "flow_steps": int(source.attrs["flow_steps"]),
+            "actual_nfe": int(source.attrs["actual_nfe"]),
             "posterior_samples": int(source.attrs["posterior_samples"]),
             "recurrent_state": bool(source.attrs["recurrent_state"]),
             "assignment": {
                 "empirical_mode_accuracy": float((mode == truth_state).mean()),
                 "truth_sample_frequency": float(truth_hit.mean()),
                 "truth_sample_coverage": float(truth_hit.any(axis=1).mean()),
-                "unique_states_mean": float(np.mean([
-                    len(np.unique(event)) for event in states
-                ])),
+                "unique_states_mean": float(
+                    np.mean([len(np.unique(event)) for event in states])
+                ),
                 "probabilities_are_monte_carlo_estimates": True,
                 "mode_accuracy_vs_njet": {
                     str(int(value)): {
                         "events": int((njet == value).sum()),
-                        "accuracy": float((mode[njet == value] == truth_state[njet == value]).mean()),
+                        "accuracy": float(
+                            (mode[njet == value] == truth_state[njet == value]).mean()
+                        ),
                     }
                     for value in np.unique(njet)
                 },
@@ -107,6 +171,28 @@ def evaluate_joint_predictions(path: str | Path) -> dict:
                 samples[:, :, role_index], truth[:, role_index]
             )
             result["invisible"]["roles"][role_name] = role_result
+
+        if "COMPOSITES" in source and "TRUTH/COMPOSITES" in source:
+            result["physics"] = {
+                node: _composite_metrics(
+                    source[f"COMPOSITES/{node}"][:],
+                    source[f"TRUTH/COMPOSITES/{node}"][:],
+                )
+                for node in source["COMPOSITES"]
+            }
+            if "OBSERVED/MET" in source:
+                predicted_px = samples[..., 0].sum(axis=2).mean(axis=1)
+                predicted_py = samples[..., 1].sum(axis=2).mean(axis=1)
+                met = source["OBSERVED/MET"][:]
+                dx = predicted_px - met[:, 1]
+                dy = predicted_py - met[:, 2]
+                result["physics"]["met_closure"] = {
+                    "px_bias": float(dx.mean()),
+                    "py_bias": float(dy.mean()),
+                    "transverse_rmse": float(
+                        np.sqrt(np.mean(dx ** 2 + dy ** 2))
+                    ),
+                }
         return result
 
 
