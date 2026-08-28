@@ -40,12 +40,13 @@ def move(value, device):
 
 def configure(base, mode):
     config = copy.deepcopy(base)
+    assignment = config.model.assignment
     config.model.mode = "factorized"
     config.model.visible.layers = 1
-    config.model.reasoning.enabled = False
-    config.model.reasoning.block_layers = 1
-    config.model.reconstruction.formulation = "discriminative"
-    config.model.reconstruction.feedback.enabled = False
+    assignment.reasoning.enabled = False
+    assignment.reasoning.block_layers = 1
+    assignment.formulation = "discriminative"
+    assignment.feedback.enabled = False
     config.model.invisible.enabled = True
     config.model.invisible.formulation = "flow_matching"
     config.model.invisible.conditioning.assignment = "none"
@@ -55,29 +56,26 @@ def configure(base, mode):
     config.model.invisible.denoiser.layers = 1
     config.model.invisible.denoiser.d_feedforward = 64
     config.model.invisible.denoiser.zero_init_output = False
-    config.model.invisible.flow_matching.path = "linear"
     config.model.invisible.flow_matching.coupling = "independent"
-    config.model.invisible.flow_matching.sampler = "euler"
-    config.model.invisible.flow_matching.inference_steps = 2
-    config.model.coupling.rounds = 1
-    config.model.coupling.invisible_to_reconstruction.enabled = False
+    config.inference.invisible.flow_matching.solver = "euler"
+    config.inference.invisible.flow_matching.steps = 2
+    config.model.coupling.invisible_to_assignment.enabled = False
     config.model.compatibility.enabled = False
     config.model.joint_flow.recurrent_state = False
     config.model.joint_flow.block_layers = 1
     config.model.joint_flow.train_steps = [1, 2]
     config.inference.joint_flow.steps = 2
-    config.inference.joint_flow.solver = "euler"
     config.inference.joint_flow.sample_chunk_size = 2
     config.inference.posterior_samples = 2
 
     if mode == "ot_cfm":
         config.model.invisible.flow_matching.coupling = "minibatch_ot"
     elif mode == "dfm_assignment":
-        config.model.reconstruction.formulation = "flow_matching"
+        assignment.formulation = "flow_matching"
         config.model.invisible.enabled = False
     elif mode in {"joint_flow", "joint_flow_recurrent"}:
         config.model.mode = "joint_flow"
-        config.model.reconstruction.formulation = "flow_matching"
+        assignment.formulation = "flow_matching"
         config.model.invisible.enabled = True
         config.model.joint_flow.recurrent_state = mode == "joint_flow_recurrent"
 
@@ -103,14 +101,7 @@ def _gradient_l1(values) -> float:
 
 
 def _joint_coupling_gradients(module, batch) -> tuple[float, float]:
-    """Deterministically verify both cross-modal paths in one joint-flow step.
-
-    The normal training loss samples random flow times and random DFM reveal states. On
-    a tiny smoke batch every assignment can occasionally be revealed already, making the
-    DFM training loss exactly zero. That is a valid sampled training state, but it is not
-    a valid test of whether the architectural nu->A path exists. This probe therefore
-    fixes all assignments to MASK at t=0.5 and tests the two computational paths directly.
-    """
+    """Deterministically verify both cross-modal paths in one joint-flow step."""
     model = module.event_model
     joint = model.joint_flow
     visible = model.visible(
@@ -166,8 +157,7 @@ def _joint_coupling_gradients(module, batch) -> tuple[float, float]:
         retain_graph=False,
         allow_unused=True,
     )
-    a_to_nu = _gradient_l1(assignment_to_invisible)
-    return a_to_nu, nu_to_a
+    return _gradient_l1(assignment_to_invisible), nu_to_a
 
 
 def run_mode(base, visible, batch, scaler, mode, device):
@@ -185,7 +175,6 @@ def run_mode(base, visible, batch, scaler, mode, device):
         "loss": float(output["loss"].detach()),
         "parameters": sum(parameter.numel() for parameter in module.parameters()),
     }
-
     if mode.startswith("joint_flow"):
         a_to_nu, nu_to_a = _joint_coupling_gradients(module, batch)
         if a_to_nu <= 0 or nu_to_a <= 0:
@@ -210,12 +199,13 @@ def run_mode(base, visible, batch, scaler, mode, device):
                 budget=2,
                 generator=torch.Generator(device=device).manual_seed(9),
             )
-            if generated.shape != (
+            expected = (
                 len(batch["tokens"]),
                 2,
                 len(module.spec.invisible_roles),
                 3,
-            ):
+            )
+            if generated.shape != expected:
                 raise RuntimeError(
                     f"CFM sample shape is wrong: {tuple(generated.shape)}"
                 )
@@ -268,9 +258,7 @@ def run_mode(base, visible, batch, scaler, mode, device):
                     "Joint Flow generated an event-invalid assignment state"
                 )
             if not torch.isfinite(sampled["invisible"]).all():
-                raise RuntimeError(
-                    "Joint Flow generated non-finite invisible momenta"
-                )
+                raise RuntimeError("Joint Flow generated non-finite invisible momenta")
             summary.update(
                 {
                     "nfe": sampled["nfe"],
@@ -300,7 +288,7 @@ def run_flow_smoke(
 ):
     torch.set_num_threads(1)
     base = OmegaConf.load(experiment_path)
-    if base.experiment.name == "ttbar1L_joint":
+    if base.experiment.name == "ttbar1L":
         base.visible_config = "configs/m0_ttbar1L.yaml"
         base.data.tensor_cache = (
             "/mnt/iusers01/fatpou01/phy01/w00238tl/scratch/SB_paper/results/"
@@ -351,9 +339,7 @@ def run_flow_smoke(
         max_events={"train": events, "val": events, "test": events},
         subset_seed=int(base.experiment.seed),
         build_assignments=True,
-        max_assignment_states=int(
-            data_config.model.reconstruction.flow_matching.max_states
-        ),
+        max_assignment_states=int(data_config.data.max_assignment_states),
     )
     data.setup("fit")
     batch = move(next(iter(data.train_dataloader())), torch.device(device))
@@ -374,9 +360,7 @@ def main():
     parser.add_argument("--device", choices=("cpu", "cuda"), default="cpu")
     parser.add_argument("--events", type=int, default=8)
     args = parser.parse_args()
-    run_flow_smoke(
-        Path(args.experiment), device=args.device, events=args.events
-    )
+    run_flow_smoke(Path(args.experiment), device=args.device, events=args.events)
 
 
 if __name__ == "__main__":
