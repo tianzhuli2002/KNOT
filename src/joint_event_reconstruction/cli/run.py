@@ -22,6 +22,21 @@ from joint_event_reconstruction.prediction_joint import predict_joint_flow_hdf5
 from joint_event_reconstruction.training.joint import JointEventModule
 
 
+INFERENCE_SEED = 12345
+_COMPONENT_PREFIXES = {
+    "visible": ("event_model.visible.",),
+    "assignment": (
+        "event_model.reconstruction.",
+        "event_model.reasoner.",
+        "event_model.feedback.",
+        "event_model.assignment_flow.",
+        "event_model.posterior_feedback.",
+    ),
+    "invisible": ("event_model.invisible.",),
+    "compatibility": ("event_model.compatibility.",),
+}
+
+
 def build_data(config, visible):
     invisible = config.data.invisible
     if config.model.invisible.enabled and invisible.path is None:
@@ -53,7 +68,81 @@ def _resolve_device(requested: str) -> str:
     return requested
 
 
-def train(config, *, device: str = "auto") -> None:
+def _selected_component_key(key: str, components: tuple[str, ...]) -> bool:
+    return any(
+        key.startswith(prefix)
+        for component in components
+        for prefix in _COMPONENT_PREFIXES[component]
+    )
+
+
+def _load_initial_components(
+    module: JointEventModule,
+    checkpoint_path: str | Path,
+    components: tuple[str, ...],
+) -> int:
+    """Load complete semantic components without relaxing checkpoint shape checks."""
+    if not components:
+        raise ValueError("Initial checkpoint requires at least one component")
+    unknown = sorted(set(components) - set(_COMPONENT_PREFIXES))
+    if unknown:
+        raise ValueError(f"Unknown initialisation components: {unknown}")
+
+    path = Path(checkpoint_path).expanduser().resolve()
+    checkpoint = torch.load(path, map_location="cpu", weights_only=False)
+    source = checkpoint.get("state_dict")
+    if not isinstance(source, dict):
+        raise ValueError(f"Initial checkpoint has no state_dict: {path}")
+
+    saved = checkpoint.get("hyper_parameters", {})
+    for key in ("topology_signature", "input_features", "source_type_ids"):
+        if saved.get(key) != module.hparams.get(key):
+            raise ValueError(
+                f"Initial checkpoint has incompatible {key}: "
+                f"checkpoint={saved.get(key)!r}, current={module.hparams.get(key)!r}"
+            )
+    if "invisible" in components and checkpoint.get("invisible_scaler") != module.scaler_metadata:
+        raise ValueError("Invisible component initialisation requires identical scaler metadata")
+
+    target = module.state_dict()
+    expected = {
+        key for key in target if _selected_component_key(key, components)
+    }
+    available = {
+        key for key in source if _selected_component_key(key, components)
+    }
+    missing = sorted(expected - available)
+    unexpected = sorted(available - expected)
+    mismatched = sorted(
+        key
+        for key in expected & available
+        if tuple(source[key].shape) != tuple(target[key].shape)
+    )
+    if missing or unexpected or mismatched:
+        raise ValueError(
+            "Initial checkpoint component mismatch: "
+            f"components={list(components)}, missing={missing[:20]}, "
+            f"unexpected={unexpected[:20]}, shape_mismatch={mismatched[:20]}"
+        )
+    if not expected:
+        raise ValueError(
+            f"Selected initialisation components have no parameters/buffers: {components}"
+        )
+
+    module.load_state_dict({key: source[key] for key in expected}, strict=False)
+    module.hparams["initial_checkpoint"] = str(path)
+    module.hparams["initial_components"] = list(components)
+    return len(expected)
+
+
+def train(
+    config,
+    *,
+    device: str = "auto",
+    initial_checkpoint: str | None = None,
+    initial_components: tuple[str, ...] = (),
+) -> None:
+    L.seed_everything(int(config.experiment.seed), workers=True)
     visible = OmegaConf.load(config.visible_config)
     data = build_data(config, visible)
     data.setup("fit")
@@ -67,6 +156,17 @@ def train(config, *, device: str = "auto") -> None:
             else False
         ),
     )
+    if initial_checkpoint is not None:
+        loaded = _load_initial_components(
+            module, initial_checkpoint, initial_components
+        )
+        print(
+            f"Initialised {loaded} state entries from {initial_checkpoint} "
+            f"for components={list(initial_components)}"
+        )
+    elif initial_components:
+        raise ValueError("--initial-components requires --initial-checkpoint")
+
     callbacks = [
         ModelCheckpoint(
             dirpath=Path(config.training.output) / "checkpoints",
@@ -126,6 +226,9 @@ def load_trained(config, visible, data, checkpoint_path: str) -> JointEventModul
 
 
 def predict(config, args) -> None:
+    # Keep posterior Monte-Carlo noise fixed across trained seeds/models so generator
+    # comparisons do not acquire an avoidable second random variation.
+    L.seed_everything(INFERENCE_SEED, workers=True)
     device = _resolve_device(args.device)
     visible = OmegaConf.load(config.visible_config)
     data = build_data(config, visible)
@@ -234,6 +337,17 @@ def build_parser() -> argparse.ArgumentParser:
     train_parser.add_argument(
         "--device", choices=("auto", "cpu", "cuda"), default="auto"
     )
+    train_parser.add_argument(
+        "--initial-checkpoint",
+        help="Initialise selected semantic components before training.",
+    )
+    train_parser.add_argument(
+        "--initial-components",
+        nargs="+",
+        choices=tuple(_COMPONENT_PREFIXES),
+        default=(),
+        help="Components copied exactly from --initial-checkpoint.",
+    )
 
     predict_parser = commands.add_parser(
         "predict", help="write a self-describing prediction HDF5"
@@ -313,7 +427,16 @@ def main() -> None:
         print(OmegaConf.to_yaml(config, resolve=True))
         return
     if args.command == "train":
-        train(config, device=args.device)
+        if bool(args.initial_checkpoint) != bool(args.initial_components):
+            raise ValueError(
+                "--initial-checkpoint and --initial-components must be supplied together"
+            )
+        train(
+            config,
+            device=args.device,
+            initial_checkpoint=args.initial_checkpoint,
+            initial_components=tuple(args.initial_components),
+        )
         return
     if args.command == "predict":
         predict(config, args)
