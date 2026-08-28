@@ -1,12 +1,8 @@
 study:
   name: assignment_conditioning
-  description: >-
-    C1 conditioning study for a CFM invisible generator. The visible/assignment stack is
-    copied from one M3 reference and frozen. none, soft and hypothesis are primary;
-    hard is a diagnostic and truth is an explicit oracle. hypothesis uses supervised truth
-    assignment during generator training but predicted complete hypotheses at inference.
+  description: Test how assignment information changes CFM invisible inference on one frozen M3 ttbar2L assignment model.
   experiment_pattern: configs/experiments/{topology}.yaml
-  topologies: [ttbar1L, ttbar2L, ttH1L]
+  topologies: [ttbar2L]
   seeds: [42]
   split: test
 
@@ -14,17 +10,12 @@ variants:
   assignment_reference:
     label: M3 assignment reference
     reporting: setup
-    train_overrides:
-      - model.mode=factorized
-      - model.assignment.formulation=discriminative
-      - model.assignment.reasoning.enabled=true
-      - model.assignment.feedback.enabled=true
-      - model.invisible.enabled=false
-      - model.coupling.invisible_to_assignment.enabled=false
-      - model.compatibility.enabled=false
-      - training.loss_weights.assignment=1.0
-      - training.loss_weights.invisible=0.0
-      - training.loss_weights.compatibility=0.0
+    patch:
+      model:
+        assignment:
+          method: discriminative
+          recurrence: {train_steps: [1, 2, 3, 4], eval_steps: 4, feedback: soft}
+      training: {trainable: [visible, assignment]}
     initialise_from: null
     initialise_components: []
     predictions: {}
@@ -32,164 +23,74 @@ variants:
   none:
     label: no assignment conditioning
     reporting: primary
-    train_overrides:
-      - model.mode=factorized
-      - model.assignment.formulation=discriminative
-      - model.assignment.reasoning.enabled=true
-      - model.assignment.feedback.enabled=true
-      - model.invisible.enabled=true
-      - model.invisible.formulation=flow_matching
-      - model.invisible.flow_matching.coupling=independent
-      - model.invisible.conditioning.assignment=none
-      - model.invisible.conditioning.allow_truth_oracle=false
-      - model.coupling.invisible_to_assignment.enabled=false
-      - model.compatibility.enabled=false
-      - training.freeze.visible=true
-      - training.freeze.assignment=true
-      - training.freeze.invisible=false
-      - training.loss_weights.assignment=0.0
-      - training.loss_weights.invisible=1.0
-      - training.loss_weights.compatibility=0.0
+    patch:
+      model:
+        assignment:
+          method: discriminative
+          recurrence: {train_steps: [1, 2, 3, 4], eval_steps: 4, feedback: soft}
+        invisible: {method: cfm, conditioning: none}
+      training: {trainable: [invisible]}
     initialise_from: assignment_reference
     initialise_components: [visible, assignment]
     predictions:
-      default:
-        label: none
-        overrides:
-          - inference.posterior_samples=32
-          - inference.top_k_assignments=5
-          - inference.invisible.flow_matching.steps=17
-          - inference.invisible.flow_matching.solver=euler
-        recurrent_steps: null
+      default: {label: none, patch: {prediction: {samples: 32, steps: 17, solver: euler}}, recurrent_steps: 4}
 
   soft:
-    label: soft C1
+    label: soft C1 conditioning
     reporting: primary
-    train_overrides:
-      - model.mode=factorized
-      - model.assignment.formulation=discriminative
-      - model.assignment.reasoning.enabled=true
-      - model.assignment.feedback.enabled=true
-      - model.invisible.enabled=true
-      - model.invisible.formulation=flow_matching
-      - model.invisible.flow_matching.coupling=independent
-      - model.invisible.conditioning.assignment=soft
-      - model.invisible.conditioning.allow_truth_oracle=false
-      - model.coupling.invisible_to_assignment.enabled=false
-      - model.compatibility.enabled=false
-      - training.freeze.visible=true
-      - training.freeze.assignment=true
-      - training.freeze.invisible=false
-      - training.loss_weights.assignment=0.0
-      - training.loss_weights.invisible=1.0
-      - training.loss_weights.compatibility=0.0
+    patch:
+      model:
+        assignment:
+          method: discriminative
+          recurrence: {train_steps: [1, 2, 3, 4], eval_steps: 4, feedback: soft}
+        invisible: {method: cfm, conditioning: soft}
+      training: {trainable: [invisible]}
     initialise_from: assignment_reference
     initialise_components: [visible, assignment]
     predictions:
-      default:
-        label: soft
-        overrides:
-          - inference.posterior_samples=32
-          - inference.top_k_assignments=5
-          - inference.invisible.flow_matching.steps=17
-          - inference.invisible.flow_matching.solver=euler
-        recurrent_steps: null
+      default: {label: soft, patch: {prediction: {samples: 32, steps: 17, solver: euler}}, recurrent_steps: 4}
 
   hypothesis:
-    label: hypothesis p(nu|X,A)
+    label: predicted-hypothesis factorisation
     reporting: primary
-    train_overrides:
-      - model.mode=factorized
-      - model.assignment.formulation=discriminative
-      - model.assignment.reasoning.enabled=true
-      - model.assignment.feedback.enabled=true
-      - model.invisible.enabled=true
-      - model.invisible.formulation=flow_matching
-      - model.invisible.flow_matching.coupling=independent
-      - model.invisible.conditioning.assignment=hypothesis
-      - model.invisible.conditioning.allow_truth_oracle=false
-      - model.coupling.invisible_to_assignment.enabled=false
-      - model.compatibility.enabled=false
-      - training.freeze.visible=true
-      - training.freeze.assignment=true
-      - training.freeze.invisible=false
-      - training.loss_weights.assignment=0.0
-      - training.loss_weights.invisible=1.0
-      - training.loss_weights.compatibility=0.0
+    patch:
+      model:
+        assignment:
+          method: discriminative
+          recurrence: {train_steps: [1, 2, 3, 4], eval_steps: 4, feedback: soft}
+        invisible: {method: cfm, conditioning: hypothesis}
+      training: {trainable: [invisible]}
     initialise_from: assignment_reference
     initialise_components: [visible, assignment]
     predictions:
-      k5:
-        label: predicted top-K hypotheses
-        overrides:
-          - inference.posterior_samples=32
-          - inference.top_k_assignments=5
-          - inference.invisible.flow_matching.steps=17
-          - inference.invisible.flow_matching.solver=euler
-        recurrent_steps: null
+      k5_m32: {label: hypothesis K=5 M=32, patch: {prediction: {top_k: 5, samples: 32, steps: 17, solver: euler}}, recurrent_steps: 4}
 
   hard:
-    label: hard local C1
+    label: hard local assignment diagnostic
     reporting: diagnostic
-    train_overrides:
-      - model.mode=factorized
-      - model.assignment.formulation=discriminative
-      - model.assignment.reasoning.enabled=true
-      - model.assignment.feedback.enabled=true
-      - model.invisible.enabled=true
-      - model.invisible.formulation=flow_matching
-      - model.invisible.flow_matching.coupling=independent
-      - model.invisible.conditioning.assignment=hard
-      - model.invisible.conditioning.allow_truth_oracle=false
-      - model.coupling.invisible_to_assignment.enabled=false
-      - model.compatibility.enabled=false
-      - training.freeze.visible=true
-      - training.freeze.assignment=true
-      - training.freeze.invisible=false
-      - training.loss_weights.assignment=0.0
-      - training.loss_weights.invisible=1.0
-      - training.loss_weights.compatibility=0.0
+    patch:
+      model:
+        assignment:
+          method: discriminative
+          recurrence: {train_steps: [1, 2, 3, 4], eval_steps: 4, feedback: soft}
+        invisible: {method: cfm, conditioning: hard}
+      training: {trainable: [invisible]}
     initialise_from: assignment_reference
     initialise_components: [visible, assignment]
     predictions:
-      default:
-        label: hard diagnostic
-        overrides:
-          - inference.posterior_samples=32
-          - inference.top_k_assignments=5
-          - inference.invisible.flow_matching.steps=17
-          - inference.invisible.flow_matching.solver=euler
-        recurrent_steps: null
+      default: {label: hard, patch: {prediction: {samples: 32, steps: 17, solver: euler}}, recurrent_steps: 4}
 
-  truth:
-    label: truth oracle
+  truth_oracle:
+    label: truth-assignment oracle
     reporting: oracle
-    train_overrides:
-      - model.mode=factorized
-      - model.assignment.formulation=discriminative
-      - model.assignment.reasoning.enabled=true
-      - model.assignment.feedback.enabled=true
-      - model.invisible.enabled=true
-      - model.invisible.formulation=flow_matching
-      - model.invisible.flow_matching.coupling=independent
-      - model.invisible.conditioning.assignment=truth
-      - model.invisible.conditioning.allow_truth_oracle=true
-      - model.coupling.invisible_to_assignment.enabled=false
-      - model.compatibility.enabled=false
-      - training.freeze.visible=true
-      - training.freeze.assignment=true
-      - training.freeze.invisible=false
-      - training.loss_weights.assignment=0.0
-      - training.loss_weights.invisible=1.0
-      - training.loss_weights.compatibility=0.0
+    patch:
+      model:
+        assignment:
+          method: discriminative
+          recurrence: {train_steps: [1, 2, 3, 4], eval_steps: 4, feedback: soft}
+        invisible: {method: cfm, conditioning: truth_oracle}
+      training: {trainable: [invisible]}
     initialise_from: assignment_reference
     initialise_components: [visible, assignment]
     predictions:
-      default:
-        label: ORACLE truth
-        overrides:
-          - inference.posterior_samples=32
-          - inference.top_k_assignments=5
-          - inference.invisible.flow_matching.steps=17
-          - inference.invisible.flow_matching.solver=euler
-        recurrent_steps: null
+      oracle: {label: truth oracle, patch: {prediction: {samples: 32, steps: 17, solver: euler}}, recurrent_steps: 4}
