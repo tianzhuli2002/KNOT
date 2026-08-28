@@ -70,9 +70,7 @@ def active_architecture(model) -> dict:
         elif invisible_formulation == "flow_matching":
             invisible["flow_matching"] = _resolved(model.invisible.flow_matching)
         else:
-            raise ValueError(
-                f"Unknown invisible formulation {invisible_formulation!r}"
-            )
+            raise ValueError(f"Unknown invisible formulation {invisible_formulation!r}")
         payload["invisible"] = invisible
 
     if mode == "joint_flow":
@@ -88,6 +86,36 @@ def active_architecture(model) -> dict:
 def _freeze(module) -> None:
     if module is not None:
         module.requires_grad_(False)
+
+
+def _apply_trainable_components(event_model, mode: str, components: set[str]) -> None:
+    """Freeze the complement of the positive, user-facing training component list."""
+    if "visible" not in components:
+        _freeze(event_model.visible)
+
+    if mode == "joint_flow":
+        # Joint-flow topology state is shared by the discrete and continuous dynamics.
+        # Configuration validation therefore keeps assignment/invisible trainability tied.
+        if "assignment" not in components:
+            _freeze(event_model.reconstruction)
+            _freeze(event_model.invisible)
+            _freeze(event_model.joint_flow)
+        return
+
+    if "assignment" not in components:
+        for component in (
+            event_model.reconstruction,
+            event_model.reasoner,
+            event_model.feedback,
+            event_model.assignment_flow,
+        ):
+            _freeze(component)
+    if "invisible" not in components:
+        _freeze(event_model.invisible)
+    if "c2" not in components:
+        _freeze(event_model.posterior_feedback)
+    if "compatibility" not in components:
+        _freeze(event_model.compatibility)
 
 
 class JointEventModule(L.LightningModule):
@@ -139,28 +167,14 @@ class JointEventModule(L.LightningModule):
             assignment_loss_weight=float(experiment.training.loss_weights.assignment),
             invisible_loss_weight=float(experiment.training.loss_weights.invisible),
             compatibility_config=model.compatibility,
-            compatibility_loss_weight=float(
-                experiment.training.loss_weights.compatibility
-            ),
+            compatibility_loss_weight=float(experiment.training.loss_weights.compatibility),
             joint_flow_config=model.joint_flow,
         )
 
-        freeze = experiment.training.freeze
-        if bool(freeze.visible):
-            _freeze(self.event_model.visible)
-        if bool(freeze.assignment):
-            for component in (
-                self.event_model.reconstruction,
-                self.event_model.reasoner,
-                self.event_model.feedback,
-                self.event_model.assignment_flow,
-                self.event_model.posterior_feedback,
-            ):
-                _freeze(component)
-        if bool(freeze.invisible):
-            _freeze(self.event_model.invisible)
-        if bool(freeze.compatibility):
-            _freeze(self.event_model.compatibility)
+        trainable_components = {str(value) for value in experiment.training.trainable}
+        _apply_trainable_components(
+            self.event_model, str(model.mode), trainable_components
+        )
 
         architecture = active_architecture(model)
         signature = hashlib.sha256(
@@ -193,9 +207,7 @@ class JointEventModule(L.LightningModule):
                 ),
                 "recurrent_representation": recurrent_representation,
                 "invisible_formulation": (
-                    str(model.invisible.formulation)
-                    if model.invisible.enabled
-                    else None
+                    str(model.invisible.formulation) if model.invisible.enabled else None
                 ),
                 "invisible_target": (
                     "cartesian_px_py_pz_v1" if model.invisible.enabled else None
@@ -208,6 +220,7 @@ class JointEventModule(L.LightningModule):
                     else None
                 ),
                 "synthetic_data": bool(synthetic_data),
+                "trainable_components": sorted(trainable_components),
             }
         )
         self.learning_rate = float(experiment.training.learning_rate)
@@ -263,9 +276,7 @@ class JointEventModule(L.LightningModule):
         return self._step(batch, "test")
 
     def configure_optimizers(self):
-        trainable = [
-            parameter for parameter in self.parameters() if parameter.requires_grad
-        ]
+        trainable = [parameter for parameter in self.parameters() if parameter.requires_grad]
         if not trainable:
             raise RuntimeError("Experiment freezes every trainable parameter")
         optimiser = torch.optim.AdamW(
@@ -299,9 +310,7 @@ class JointEventModule(L.LightningModule):
                     f"checkpoint={saved.get(key)!r}, current={self.hparams.get(key)!r}"
                 )
         if saved.get("architecture_signature_version") == ARCHITECTURE_SIGNATURE_VERSION:
-            if saved.get("architecture_signature") != self.hparams.get(
-                "architecture_signature"
-            ):
+            if saved.get("architecture_signature") != self.hparams.get("architecture_signature"):
                 raise ValueError(
                     "Incompatible active architecture signature: "
                     f"checkpoint={saved.get('architecture_signature')!r}, "
