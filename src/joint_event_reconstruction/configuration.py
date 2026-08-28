@@ -21,35 +21,105 @@ def validate_experiment(config: DictConfig) -> None:
     missing = required - set(config)
     if missing:
         raise ValueError(f"Experiment configuration is missing sections {sorted(missing)}")
+
+    mode = str(config.model.get("mode", "factorized"))
+    if mode not in {"factorized", "joint_flow"}:
+        raise ValueError(f"model.mode must be factorized or joint_flow, found {mode!r}")
+
     reasoning = config.model.reasoning
     reconstruction = config.model.reconstruction
     invisible = config.model.invisible
     coupling = config.model.coupling
     compatibility = config.model.compatibility
+
+    reconstruction_formulation = str(reconstruction.get("formulation", "discriminative"))
+    if reconstruction_formulation not in {"discriminative", "flow_matching"}:
+        raise ValueError(
+            "model.reconstruction.formulation must be discriminative or flow_matching"
+        )
     if reconstruction.feedback.enabled and not reasoning.enabled:
         raise ValueError("model.reconstruction.feedback.enabled=true requires model.reasoning.enabled=true")
-    if invisible.formulation not in {"standard", "edm"}:
-        raise ValueError(f"model.invisible.formulation must be standard or edm, found {invisible.formulation!r}")
+
+    if invisible.formulation not in {"standard", "edm", "flow_matching"}:
+        raise ValueError(
+            "model.invisible.formulation must be standard, edm or flow_matching, "
+            f"found {invisible.formulation!r}"
+        )
+    if invisible.formulation == "flow_matching":
+        flow = invisible.get("flow_matching")
+        if flow is None:
+            raise ValueError("Flow Matching invisible inference requires model.invisible.flow_matching")
+        if str(flow.path) != "linear":
+            raise ValueError("Only linear continuous Flow Matching is currently implemented")
+        if str(flow.coupling) not in {"independent", "minibatch_ot"}:
+            raise ValueError("Flow Matching coupling must be independent or minibatch_ot")
+        if str(flow.sampler) not in {"euler", "heun"}:
+            raise ValueError("Standalone Flow Matching sampler must be euler or heun")
+        if int(flow.inference_steps) <= 0:
+            raise ValueError("Flow Matching inference_steps must be positive")
+
     assignment = invisible.conditioning.assignment
     if assignment not in {"none", "soft", "hard", "truth"}:
-        raise ValueError(f"Invisible assignment conditioning must be none, soft, hard or truth, found {assignment!r}")
+        raise ValueError(
+            f"Invisible assignment conditioning must be none, soft, hard or truth, found {assignment!r}"
+        )
     if assignment == "truth" and not invisible.conditioning.allow_truth_oracle:
         raise ValueError("Truth assignment conditioning is an oracle and requires allow_truth_oracle=true")
+
     feedback = coupling.invisible_to_reconstruction
     if feedback.enabled and not invisible.enabled:
         raise ValueError("Invisible-to-reconstruction feedback requires model.invisible.enabled=true")
-    if feedback.enabled and not (reasoning.enabled and reconstruction.enabled):
+    if feedback.enabled and not (reasoning.enabled and reconstruction.get("enabled", True)):
         raise ValueError("Invisible-to-reconstruction feedback requires recurrent structured reconstruction")
     if feedback.enabled and not feedback.detach:
         raise ValueError("This implementation requires detached invisible posterior feedback")
     if int(coupling.rounds) not in {1, 2}:
         raise ValueError("model.coupling.rounds must be 1 or 2")
-    if compatibility.enabled and not (reconstruction.enabled and invisible.enabled):
+    if compatibility.enabled and not (reconstruction.get("enabled", True) and invisible.enabled):
         raise ValueError("Compatibility scoring requires reconstruction and invisible hypotheses")
+
+    if mode == "joint_flow":
+        if reconstruction_formulation != "flow_matching":
+            raise ValueError("joint_flow requires model.reconstruction.formulation=flow_matching")
+        if not invisible.enabled or str(invisible.formulation) != "flow_matching":
+            raise ValueError("joint_flow requires enabled continuous Flow Matching invisible inference")
+        if bool(reasoning.enabled):
+            raise ValueError(
+                "joint_flow uses model.joint_flow.recurrent_state; disable factorized model.reasoning"
+            )
+        if bool(reconstruction.feedback.enabled):
+            raise ValueError("joint_flow cannot use factorized soft reconstruction feedback")
+        if bool(feedback.enabled) or int(coupling.rounds) != 1:
+            raise ValueError("joint_flow cannot use factorized invisible-to-reconstruction coupling")
+        if bool(compatibility.enabled):
+            raise ValueError("joint_flow compatibility reranking is deliberately disabled")
+        if str(assignment) != "none":
+            raise ValueError(
+                "joint_flow assignment-neutrino coupling is internal; "
+                "set model.invisible.conditioning.assignment=none"
+            )
+        joint = config.model.get("joint_flow")
+        if joint is None:
+            raise ValueError("joint_flow mode requires model.joint_flow configuration")
+        if int(joint.block_layers) <= 0:
+            raise ValueError("model.joint_flow.block_layers must be positive")
+        train_steps = tuple(int(step) for step in joint.train_steps)
+        if not train_steps or any(step <= 0 for step in train_steps):
+            raise ValueError("model.joint_flow.train_steps must contain positive integers")
+
     if int(config.inference.top_k_assignments) <= 0:
         raise ValueError("inference.top_k_assignments must be positive")
     if int(config.inference.posterior_samples) <= 0:
         raise ValueError("inference.posterior_samples must be positive")
+    if mode == "joint_flow":
+        joint_inference = config.inference.get("joint_flow")
+        if joint_inference is None:
+            raise ValueError("joint_flow mode requires inference.joint_flow configuration")
+        if int(joint_inference.steps) <= 0:
+            raise ValueError("inference.joint_flow.steps must be positive")
+        if str(joint_inference.solver) != "euler":
+            raise ValueError("Joint discrete-continuous Flow Matching currently uses Euler integration")
+
     steps = tuple(int(step) for step in reasoning.train_steps)
     if not steps or any(step <= 0 for step in steps) or int(reasoning.eval_steps) <= 0:
         raise ValueError("Recurrent train_steps and eval_steps must be positive")
