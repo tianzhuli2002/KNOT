@@ -7,7 +7,10 @@ from pathlib import Path
 from omegaconf import DictConfig, OmegaConf
 
 
-def load_experiment(path: str | Path, overrides: list[str] | tuple[str, ...] | None = None) -> DictConfig:
+def load_experiment(
+    path: str | Path,
+    overrides: list[str] | tuple[str, ...] | None = None,
+) -> DictConfig:
     path = Path(path).expanduser().resolve()
     if not path.is_file():
         raise FileNotFoundError(f"Experiment configuration does not exist: {path}")
@@ -20,16 +23,25 @@ def load_experiment(path: str | Path, overrides: list[str] | tuple[str, ...] | N
 
 def validate_experiment(config: DictConfig) -> None:
     required = {
-        "experiment", "topology_config", "visible_config", "data",
-        "model", "inference", "training",
+        "experiment",
+        "topology_config",
+        "visible_config",
+        "data",
+        "model",
+        "inference",
+        "training",
     }
     missing = required - set(config)
     if missing:
-        raise ValueError(f"Experiment configuration is missing sections {sorted(missing)}")
+        raise ValueError(
+            f"Experiment configuration is missing sections {sorted(missing)}"
+        )
 
     mode = str(config.model.get("mode", "factorized"))
     if mode not in {"factorized", "joint_flow"}:
-        raise ValueError(f"model.mode must be factorized or joint_flow, found {mode!r}")
+        raise ValueError(
+            f"model.mode must be factorized or joint_flow, found {mode!r}"
+        )
 
     reasoning = config.model.reasoning
     reconstruction = config.model.reconstruction
@@ -46,12 +58,17 @@ def validate_experiment(config: DictConfig) -> None:
         )
     flow = reconstruction.get("flow_matching")
     if flow is None:
-        raise ValueError("model.reconstruction.flow_matching configuration is required")
+        raise ValueError(
+            "model.reconstruction.flow_matching configuration is required"
+        )
     if int(flow.get("max_states", 0)) <= 0:
-        raise ValueError("model.reconstruction.flow_matching.max_states must be positive")
+        raise ValueError(
+            "model.reconstruction.flow_matching.max_states must be positive"
+        )
     if reconstruction.feedback.enabled and not reasoning.enabled:
         raise ValueError(
-            "model.reconstruction.feedback.enabled=true requires model.reasoning.enabled=true"
+            "model.reconstruction.feedback.enabled=true requires "
+            "model.reasoning.enabled=true"
         )
     if reconstruction_formulation == "flow_matching":
         if str(flow.source) != "mask":
@@ -67,17 +84,20 @@ def validate_experiment(config: DictConfig) -> None:
             if bool(invisible.enabled):
                 raise ValueError(
                     "Factorized discrete Flow Matching is currently assignment-only. "
-                    "Use discriminative reconstruction for p(nu|X,A), or model.mode=joint_flow "
-                    "for coupled discrete-continuous inference."
+                    "Use discriminative reconstruction for p(nu|X,A), or "
+                    "model.mode=joint_flow for coupled discrete-continuous inference."
                 )
-            if bool(coupling.invisible_to_reconstruction.enabled) or int(coupling.rounds) != 1:
+            if (
+                bool(coupling.invisible_to_reconstruction.enabled)
+                or int(coupling.rounds) != 1
+            ):
                 raise ValueError(
                     "Factorized discrete Flow Matching cannot use C2 posterior feedback"
                 )
             if bool(compatibility.enabled):
                 raise ValueError(
-                    "Compatibility reranking is maintained for discriminative factorized "
-                    "reconstruction only"
+                    "Compatibility reranking is maintained for discriminative "
+                    "factorized reconstruction only"
                 )
 
     if invisible.formulation not in {"standard", "edm", "flow_matching"}:
@@ -92,7 +112,9 @@ def validate_experiment(config: DictConfig) -> None:
                 "Flow Matching invisible inference requires model.invisible.flow_matching"
             )
         if str(flow.path) != "linear":
-            raise ValueError("Only linear continuous Flow Matching is currently implemented")
+            raise ValueError(
+                "Only linear continuous Flow Matching is currently implemented"
+            )
         if str(flow.coupling) not in {"independent", "minibatch_ot"}:
             raise ValueError(
                 "Flow Matching coupling must be independent or minibatch_ot"
@@ -104,15 +126,23 @@ def validate_experiment(config: DictConfig) -> None:
         if int(flow.inference_steps) <= 0:
             raise ValueError("Flow Matching inference_steps must be positive")
 
-    assignment = invisible.conditioning.assignment
-    if assignment not in {"none", "soft", "hard", "truth"}:
+    assignment = str(invisible.conditioning.assignment)
+    if assignment not in {"none", "soft", "hard", "hypothesis", "truth"}:
         raise ValueError(
-            "Invisible assignment conditioning must be none, soft, hard or truth, "
-            f"found {assignment!r}"
+            "Invisible assignment conditioning must be none, soft, hard, "
+            f"hypothesis or truth, found {assignment!r}"
         )
     if assignment == "truth" and not invisible.conditioning.allow_truth_oracle:
         raise ValueError(
-            "Truth assignment conditioning is an oracle and requires allow_truth_oracle=true"
+            "Truth assignment conditioning is an inference oracle and requires "
+            "allow_truth_oracle=true"
+        )
+    if assignment == "hypothesis" and bool(
+        invisible.conditioning.allow_truth_oracle
+    ):
+        raise ValueError(
+            "hypothesis conditioning is not an inference oracle; set "
+            "allow_truth_oracle=false"
         )
 
     feedback = coupling.invisible_to_reconstruction
@@ -146,7 +176,8 @@ def validate_experiment(config: DictConfig) -> None:
             )
         if bool(reasoning.enabled):
             raise ValueError(
-                "joint_flow uses model.joint_flow.recurrent_state; disable factorized model.reasoning"
+                "joint_flow uses model.joint_flow.recurrent_state; disable factorized "
+                "model.reasoning"
             )
         if bool(reconstruction.feedback.enabled):
             raise ValueError(
@@ -160,10 +191,10 @@ def validate_experiment(config: DictConfig) -> None:
             raise ValueError(
                 "joint_flow compatibility reranking is deliberately disabled"
             )
-        if str(assignment) != "none":
+        if assignment != "none":
             raise ValueError(
-                "joint_flow assignment-neutrino coupling is internal; "
-                "set model.invisible.conditioning.assignment=none"
+                "joint_flow assignment-neutrino coupling is internal; set "
+                "model.invisible.conditioning.assignment=none"
             )
         joint = config.model.get("joint_flow")
         if joint is None:
@@ -191,18 +222,28 @@ def validate_experiment(config: DictConfig) -> None:
             )
         if int(joint_inference.steps) <= 0:
             raise ValueError("inference.joint_flow.steps must be positive")
+        if int(joint_inference.get("sample_chunk_size", 1)) <= 0:
+            raise ValueError(
+                "inference.joint_flow.sample_chunk_size must be positive"
+            )
         if str(joint_inference.solver) != "euler":
             raise ValueError(
                 "Joint discrete-continuous Flow Matching currently uses Euler integration"
             )
 
     steps = tuple(int(step) for step in reasoning.train_steps)
-    if not steps or any(step <= 0 for step in steps) or int(reasoning.eval_steps) <= 0:
+    if (
+        not steps
+        or any(step <= 0 for step in steps)
+        or int(reasoning.eval_steps) <= 0
+    ):
         raise ValueError("Recurrent train_steps and eval_steps must be positive")
     for split in ("train", "val", "test"):
         limit = config.data.max_events[split]
         if limit is not None and int(limit) <= 0:
-            raise ValueError(f"data.max_events.{split} must be positive or null")
+            raise ValueError(
+                f"data.max_events.{split} must be positive or null"
+            )
     train_limit = config.data.max_events.train
     if train_limit is not None and int(train_limit) > 500_000:
         raise ValueError(
