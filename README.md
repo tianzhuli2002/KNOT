@@ -1,38 +1,38 @@
 # JointEventReconstruction
 
-Topology-aware particle-physics event reconstruction with discrete visible assignments and
-probabilistic invisible-particle inference.
+Topology-aware event reconstruction with structured visible assignments and probabilistic invisible-particle inference.
 
-The repository is intentionally organised around a small number of scientific concepts:
+The repository is organised around three explicit inputs:
 
 ```text
 observed event X
     |
     v
-visible Transformer
+visible encoder
     |
     +--> topology-aware assignment A
     |
     +--> invisible posterior nu
 ```
 
-The topology YAML describes the decay graph. Neural code does not branch on process names.
-There is no separate neutrino-regression mode and no compatibility layer for obsolete
-experiment settings.
+The decay graph lives in `configs/topology/*.yaml`. Model code is topology-driven and does not branch on process names.
 
-## Scientific model
+## Maintained scientific modes
 
-Two model families are maintained.
-
-### Factorized
+### Factorized reconstruction
 
 ```text
 p(A, nu | X) = p(A | X) p(nu | X, A)
 ```
 
-The assignment term can be a discriminative structured model or assignment-only Discrete
-Flow Matching (DFM). Invisible inference can use standard diffusion, EDM, or continuous
-Flow Matching (CFM) when the assignment model is discriminative.
+The assignment model can be:
+
+- **M1**: one-pass discriminative structured assignment;
+- **M2**: M1 plus recurrent topology reasoning;
+- **M3**: M2 plus differentiable soft assignment feedback;
+- **DFM**: assignment-only Discrete Flow Matching on globally feasible complete assignments.
+
+For discriminative assignment, invisible inference can use DDIM, EDM or continuous Flow Matching (CFM). CFM can optionally use minibatch OT source-noise coupling.
 
 ### Joint flow
 
@@ -40,83 +40,40 @@ Flow Matching (CFM) when the assignment model is discriminative.
 (A_t, nu_t [, H_t]) -> ... -> (A, nu)
 ```
 
-A shared discrete-continuous Flow-Matching step updates complete assignment state `A_t`
-and invisible momentum state `nu_t`. `H_t` is an optional persistent topology-shaped
-latent state. The visible detector event is encoded once and reused throughout inference.
+Joint flow couples complete-assignment DFM and invisible CFM in one model. `H_t` is an optional persistent topology-shaped latent state. The visible detector event is encoded once and reused throughout inference.
 
-For every topology,
+For every topology:
 
 ```text
 nu shape = [B, Rnu, 3] = [px, py, pz]
 ```
 
-where `Rnu` is the number of ordered invisible roles compiled from the topology.
+where `Rnu` is compiled from the ordered invisible roles in the topology.
 
-## Architecture
+## Configuration philosophy
 
-### Visible event encoder
+Files edited by users are deliberately compact. Fixed implementation details and inactive model families do not appear in public experiment YAMLs.
 
-Jets, leptons, MET and configured global features are encoded by one Transformer. The
-resulting event/token representation is reused by structured assignment, recurrent
-reasoning and generative invisible inference rather than re-encoding detector inputs at
-each iterative step.
-
-### Hierarchical structured assignment
-
-`configs/topology/*.yaml` defines visible leaves, repeated exchangeable roles, composite
-references and invisible roles. The compiler derives the decay DAG, candidate pools,
-visible-object ownership, globally feasible complete assignments, recurrent topology
-tokens and a stable topology signature.
-
-Composite candidates are hierarchical: a learned child such as a W is reused inside its
-parent top. Repeated daughters within one role have exact exchange symmetry.
-
-### M1 / M2 / M3 discriminative baselines
-
-- **M1**: one-pass structured assignment.
-- **M2**: M1 plus shared recurrent topology reasoning.
-- **M3**: M2 plus differentiable soft assignment feedback into later recurrent steps.
-
-M2/M3 train with recurrent depths sampled from
-`model.assignment.reasoning.train_steps`; evaluation depth is independently selectable.
-
-### Invisible generators
-
-All invisible formulations share the same role-aware Transformer denoiser/velocity model.
-
-- `standard`: VP Gaussian diffusion with deterministic DDIM inference.
-- `edm`: EDM preconditioning with log-normal training noise and Heun sampling.
-- `flow_matching`: linear CFM with Euler or Heun inference.
-- `flow_matching` + `coupling: minibatch_ot`: minibatch Hungarian source-noise coupling.
-
-OT changes source-noise pairing only; event/truth pairs are never shuffled.
-
-### Assignment-only DFM
-
-Factorized DFM evolves from a transient MASK state to a clean complete assignment. The
-clean categorical state space is compiled from globally feasible root tuples, so
-incompatible visible-object reuse has zero support by construction.
-
-Factorized DFM is deliberately assignment-only. Use discriminative factorized assignment
-for `p(nu|X,A)` or joint flow for coupled discrete-continuous inference.
-
-### Joint DFM + CFM
-
-One joint step implements both directions of coupling:
+A public config is resolved once into the explicit internal contract consumed by model and training code:
 
 ```text
-nu_t -> topology reasoner -> assignment posterior
-assignment posterior -> expected parent context -> invisible velocity
+compact experiment YAML
+        |
+        v
+public_config.py
+        |
+        v
+strict resolved config
+        |
+        v
+training / prediction / model code
 ```
 
-The discrete side uses the fixed MASK absorbing path; the continuous side uses linear
-CFM. Joint inference uses one Euler update per shared network evaluation. With
-`model.joint_flow.recurrent_state=true`, topology state persists between flow steps while
-the observed-event encoding stays fixed.
+Use `show-config` when the full resolved representation is useful for debugging or provenance.
 
-## Maintained experiment configuration
+## Public experiment config
 
-The production experiment files are:
+Maintained experiments are:
 
 ```text
 configs/experiments/ttbar1L.yaml
@@ -124,406 +81,281 @@ configs/experiments/ttbar2L.yaml
 configs/experiments/ttH1L.yaml
 ```
 
-The public structure is:
+A normal assignment-only experiment is intentionally small:
 
 ```yaml
-experiment: ...
-topology_config: ...
-visible_config: ...
+experiment:
+  name: ttbar2L
+  seed: 42
+
+topology: configs/topology/ttbar2L.yaml
 
 data:
-  tensor_cache: ...
-  max_events: {train: ..., val: ..., test: ...}
+  config: configs/data/ttbar2L.yaml
+  events: {train: 100000, validation: 50000, test: 50000}
   max_assignment_states: 100000
-  invisible: {path: ..., allow_synthetic: false}
 
 model:
-  mode: factorized
-  visible: ...
+  encoder:
+    d_model: 128
+    n_heads: 4
+    layers: 4
+    d_feedforward: 384
+    dropout: 0.05
   assignment:
-    formulation: discriminative
-    reasoning: ...
-    feedback: ...
-  invisible:
-    enabled: false
-    formulation: edm
-    conditioning: {assignment: none, allow_truth_oracle: false}
-    denoiser: ...
-    standard: ...
-    edm: ...
-    flow_matching: ...
-  joint_flow: ...
-  coupling:
-    invisible_to_assignment: ...
-  compatibility: ...
+    method: discriminative
 
-inference:
-  top_k_assignments: 1
-  posterior_samples: 1
-  invisible: ...
-  assignment_flow: ...
-  joint_flow: ...
-  compatibility_weight: 1.0
+prediction: {}
 
 training:
-  learning_rate: ...
-  weight_decay: ...
-  epochs: ...
-  precision: ...
-  gradient_clip: ...
-  accumulate_grad_batches: ...
-  loss_weights: {assignment: 1.0, invisible: 1.0, compatibility: 1.0}
-  freeze: {visible: false, assignment: false, invisible: false, compatibility: false}
-  scheduler: ...
-  early_stopping: ...
-  output: ...
+  learning_rate: 3.61545e-4
+  weight_decay: 6.0735e-5
+  epochs: 20
+  precision: 16-mixed
+  output: results/ttbar2L
 ```
 
-Validation uses exact key sets. Misspelled, obsolete or duplicate settings fail instead of
-being ignored or translated.
+Inactive EDM/CFM/DFM/C2/joint-flow/compatibility settings are absent. Hidden defaults are in `configs/defaults.yaml` and are expanded by the resolver.
 
-Fixed implementation facts are not exposed as fake choices. In particular, MASK-source
-DFM, the linear CFM path, detached C2 feedback and joint-flow Euler integration are fixed
-by the maintained implementation.
+## JER data configs
 
-## Assignment conditioning for invisible inference
-
-`model.invisible.conditioning.assignment` has five explicit meanings.
-
-| value | training semantics | prediction semantics | status |
-|---|---|---|---|
-| `none` | no assignment summary | one event-level posterior | baseline |
-| `soft` | probability-weighted candidate summary | one posterior conditioned on predicted soft assignments | differentiable C1 |
-| `hard` | local argmax candidate summary | one posterior conditioned on predicted hard local assignments | diagnostic |
-| `hypothesis` | truth assignment is used to train `p(nu|X,A)` on reconstructable events | each decoded **predicted** complete assignment gets its own hard conditioning branch | production factorization |
-| `truth` | truth assignment | truth assignment | explicit oracle only |
-
-### `hypothesis` is not an oracle at inference
-
-This distinction is important.
-
-During training, `hypothesis` uses the truth candidate for each invisible parent so that
-the generator learns the conditional distribution
+Input definitions live separately in:
 
 ```text
-p(nu | X, A)
+configs/data/ttbar1L.yaml
+configs/data/ttbar2L.yaml
+configs/data/ttH1L.yaml
 ```
 
-for physically reconstructable truth assignments. Events for which the required truth
-assignment is not reconstructable are masked out of the invisible loss.
+A data config owns only data semantics and loading choices:
 
-At prediction time, truth assignment information is not used. The assignment model first
-decodes the top `K` predicted complete hypotheses. The invisible generator then receives
-each predicted hypothesis separately and draws `M` samples:
+```yaml
+source: data/real/ttbar2L_canonical.h5
+invisible_truth: data/real/ttbar2L_canonical.h5
+split: data/real/splits/ttbar2L/split_indices.npz
+tensor_cache: null
+
+loader:
+  batch_size: 512
+  workers: 8
+  pin_memory: true
+  persistent_workers: true
+  prefetch_factor: 2
+
+objects:
+  JET:
+    count: 8
+    variables: [e, eta, phi, pt, btag, charge]
+    scalers: [Log, "minmax:min=-2.5,max=2.5", SinCos, Log, "minmax:min=0,max=6", "minmax:min=-1,max=1"]
+  ELECTRON: ...
+  MUON: ...
+  MET: ...
+  GLOBAL: ...
+```
+
+The mature fixed-token visible-loader configuration is generated in memory from this file and the topology. There is no maintained public `visible_config` YAML.
+
+## Compact model choices
+
+### M1
+
+```yaml
+model:
+  assignment:
+    method: discriminative
+```
+
+### M2
+
+```yaml
+model:
+  assignment:
+    method: discriminative
+    recurrence:
+      train_steps: [1, 2, 3, 4]
+      eval_steps: 4
+```
+
+### M3
+
+```yaml
+model:
+  assignment:
+    method: discriminative
+    recurrence:
+      train_steps: [1, 2, 3, 4]
+      eval_steps: 4
+      feedback: soft
+```
+
+`feedback: soft` is a public shorthand. The resolver expands it into the complete internal feedback configuration.
+
+### Invisible DDIM / EDM / CFM
+
+```yaml
+model:
+  assignment:
+    method: discriminative
+  invisible:
+    method: edm       # ddim | edm | cfm
+    conditioning: hypothesis
+```
+
+For OT-CFM:
+
+```yaml
+model:
+  invisible:
+    method: cfm
+    conditioning: hypothesis
+    coupling: minibatch_ot
+```
+
+### Assignment-only DFM
+
+```yaml
+model:
+  assignment:
+    method: dfm
+```
+
+### Joint DFM + CFM
+
+```yaml
+model:
+  joint_flow:
+    recurrent: false
+```
+
+Persistent topology state is enabled with:
+
+```yaml
+model:
+  joint_flow:
+    recurrent: true
+```
+
+`joint_flow` is one scientific model choice. Users do not separately enable DFM, CFM and their coupling.
+
+## C1, C2 and compatibility
+
+Assignment conditioning is configured through `model.invisible.conditioning`:
+
+| value | meaning |
+|---|---|
+| `none` | no assignment context |
+| `soft` | probability-weighted assignment context |
+| `hard` | predicted local argmax context; diagnostic |
+| `hypothesis` | train `p(nu|X,A)` with truth assignment, predict from each decoded predicted assignment |
+| `truth_oracle` | truth assignment at training and inference; oracle diagnostic |
+
+`hypothesis` is not an oracle at prediction time. The assignment model first decodes predicted complete hypotheses and the generator samples each hypothesis separately.
+
+C2 feeds sampled invisible-posterior information back into recurrent assignment:
+
+```yaml
+model:
+  assignment:
+    method: discriminative
+    recurrence:
+      train_steps: [1, 2, 3, 4]
+      eval_steps: 4
+      feedback: soft
+  invisible:
+    method: cfm
+    conditioning: soft
+  c2:
+    posterior_samples: 8
+```
+
+Compatibility is an optional factorized reranker:
+
+```yaml
+model:
+  compatibility: {}
+```
+
+Its score is not interpreted as a normalised likelihood.
+
+## Positive trainability semantics
+
+Training specifies what is trainable, not what must be frozen:
+
+```yaml
+training:
+  trainable: [visible, assignment]
+```
+
+or, when fitting only a generator from a frozen assignment checkpoint:
+
+```yaml
+training:
+  trainable: [invisible]
+```
+
+Available semantic components are:
 
 ```text
-[B, K, M, Rnu, 3]
+visible
+assignment
+invisible
+c2
+compatibility
 ```
 
-Evaluation can therefore form the truncated assignment-weighted mixture using the retained
-`p(A|X)` mass.
+The complement is frozen and excluded from AdamW. Loss weights default consistently with the trainable components. Joint-flow assignment and invisible dynamics are tied because they share the joint topology-state machinery.
 
-By contrast, `truth` uses truth assignment information at inference and requires
-`allow_truth_oracle=true`. It is an oracle diagnostic and must not be reported as an
-end-to-end reconstruction result.
+## Prediction config and reproducibility
+
+Prediction settings have their own compact public section:
+
+```yaml
+prediction:
+  seed: 12345
+  top_k: 5
+  samples: 16
+  steps: 16
+  solver: heun
+```
+
+The training seed and prediction seed have different meanings:
+
+```text
+experiment.seed -> training/data stochasticity
+prediction.seed -> posterior Monte-Carlo stochasticity
+```
+
+The prediction seed is stored in every prediction HDF5. Numerical inference budgets do not redefine checkpoint identity.
 
 ## Assignment support semantics
 
-Complete assignment accuracy is only meaningful when its support is stated.
+Complete assignment accuracy is only meaningful together with its support.
 
-### Discriminative complete decoder
+Discriminative complete decoding uses:
 
 ```text
 assignment_support = complete_non_null
 ```
 
-Every decoded root selects a physical candidate. Local node models still contain NULL,
-but physical NULL is excluded from the exact complete top-K decoder.
+Every decoded root selects a physical candidate. Local node models can still predict NULL, but NULL is not part of the final exact complete top-K support.
 
-### DFM and joint flow
+DFM and joint flow use:
 
 ```text
 assignment_support = complete_null_including
 ```
 
-The clean categorical state space includes physical NULL choices. The additional MASK
-state is transient and is not part of the final physical support.
+Their clean categorical state space includes physical NULL choices. The transient MASK state is not a final physical state.
 
-Prediction HDF5 files store:
+Prediction HDF5 and evaluation output record support metadata explicitly. Cross-family studies also report a common truth-non-NULL event subset so discriminative and flow assignment results are not compared on silently different supports.
 
-```text
-assignment_support
-assignment_support_includes_null
-assignment_null_semantics
-assignment_mask_semantics
-assignment_support_description
-```
+## Data scaling
 
-Evaluators reproduce this information in `metrics.json`. Multi-model assignment plots are
-grouped by support, so `complete_non_null` and `complete_null_including` accuracies are
-never drawn on one comparison axis.
+Invisible scaling is fitted on the full stable TRAIN split before bounded `data.events.train` subsampling. A 10k and 500k training study therefore uses the same invisible coordinate system.
 
-Old prediction files without explicit support metadata must be regenerated rather than
-silently assigned guessed semantics.
+The scaler is saved in checkpoints and restored for prediction rather than silently refitted.
 
-## One maintained CLI
-
-Use:
-
-```bash
-python -m joint_event_reconstruction.cli.run <command> ...
-```
-
-The commands are `show-config`, `train`, `predict`, `evaluate`, `plot`, `smoke`, and
-`validate-data`.
-
-### Inspect the exact resolved experiment
-
-```bash
-python -m joint_event_reconstruction.cli.run show-config \
-  --experiment configs/experiments/ttbar1L.yaml \
-  --set model.invisible.enabled=true \
-  --set model.invisible.formulation=edm
-```
-
-Use this before long campaigns when several overrides are applied.
-
-### Train
-
-```bash
-python -m joint_event_reconstruction.cli.run train \
-  --experiment configs/experiments/ttbar1L.yaml \
-  --device auto
-```
-
-`--device` is `auto`, `cpu` or `cuda`.
-
-### Predict
-
-```bash
-python -m joint_event_reconstruction.cli.run predict \
-  --experiment configs/experiments/ttbar1L.yaml \
-  --checkpoint results/ttbar1L/checkpoints/best-loss.ckpt \
-  --split test \
-  --output results/ttbar1L/test_predictions.h5 \
-  --device cuda
-```
-
-For discriminative recurrent assignment, `--recurrent-steps R` overrides the configured
-evaluation depth without changing checkpoint identity.
-
-### Evaluate
-
-Prediction HDF5 is self-describing, so evaluation does not require an experiment YAML:
-
-```bash
-python -m joint_event_reconstruction.cli.run evaluate \
-  --predictions results/ttbar1L/test_predictions.h5
-```
-
-### Plot
-
-One prediction:
-
-```bash
-python -m joint_event_reconstruction.cli.run plot \
-  --predictions results/ttbar1L/test_predictions.h5 \
-  --output results/ttbar1L/plots
-```
-
-Several predictions:
-
-```bash
-python -m joint_event_reconstruction.cli.run plot \
-  --predictions results/m1/test.h5 results/edm/test.h5 results/joint/test.h5 \
-  --labels M1 EDM Joint \
-  --output results/comparison \
-  --formats png pdf
-```
-
-Comparison plotting requires one topology signature. Assignment accuracy is split into
-separate figures for each assignment support. Energy score and inference-cost summaries
-can still be compared across compatible model families.
-
-Individual plotting writes `metrics.json` plus assignment, invisible, calibration/PIT,
-composite-mass and MET diagnostics when available. Efficiency/coverage plots include
-finite-event statistical errors; residual plots include zero references and compact
-bias/RMSE summaries.
-
-## Common study overrides
-
-The repository deliberately avoids a Cartesian product of nearly identical YAML files.
-Use repeatable `--set KEY=VALUE` overrides.
-
-### M2 recurrent assignment
-
-```bash
---set model.assignment.reasoning.enabled=true
-```
-
-### M3 recurrent + soft feedback
-
-```bash
---set model.assignment.reasoning.enabled=true \
---set model.assignment.feedback.enabled=true
-```
-
-### EDM with no assignment conditioning
-
-```bash
---set model.invisible.enabled=true \
---set model.invisible.formulation=edm \
---set model.invisible.conditioning.assignment=none
-```
-
-### Conditional EDM with predicted assignment hypotheses
-
-```bash
---set model.invisible.enabled=true \
---set model.invisible.formulation=edm \
---set model.invisible.conditioning.assignment=hypothesis \
---set inference.top_k_assignments=5 \
---set inference.posterior_samples=16
-```
-
-### Continuous Flow Matching
-
-```bash
---set model.invisible.enabled=true \
---set model.invisible.formulation=flow_matching \
---set model.invisible.conditioning.assignment=none
-```
-
-For minibatch OT training add:
-
-```bash
---set model.invisible.flow_matching.coupling=minibatch_ot
-```
-
-### Assignment-only DFM
-
-```bash
---set model.assignment.formulation=flow_matching \
---set model.invisible.enabled=false
-```
-
-### Joint DFM + CFM
-
-```bash
---set model.mode=joint_flow \
---set model.assignment.formulation=flow_matching \
---set model.invisible.enabled=true \
---set model.invisible.formulation=flow_matching \
---set model.invisible.conditioning.assignment=none
-```
-
-Persistent topology state:
-
-```bash
---set model.joint_flow.recurrent_state=true
-```
-
-## C1, C2 and compatibility
-
-C1 is the assignment-to-invisible conditioning path. `none`, `soft`, `hard`,
-`hypothesis`, and truth-oracle controls are described above.
-
-Detached C2 feeds sampled invisible-posterior information back into recurrent assignment:
-
-```bash
---set model.assignment.reasoning.enabled=true \
---set model.invisible.enabled=true \
---set model.coupling.invisible_to_assignment.enabled=true
-```
-
-C2 is deliberately detached from the generator. There is no `detach` setting because the
-opposite behaviour is not maintained.
-
-Compatibility is an optional factorized reranker:
-
-```bash
---set model.invisible.enabled=true \
---set model.compatibility.enabled=true \
---set inference.compatibility_weight=1.0
-```
-
-Its score is not a normalised likelihood and prediction metadata says so explicitly.
-
-## Freeze semantics and optimiser
-
-The only freeze keys are:
-
-```yaml
-training:
-  freeze:
-    visible: false
-    assignment: false
-    invisible: false
-    compatibility: false
-```
-
-Frozen parameters are excluded from AdamW entirely. CUDA training uses fused AdamW when
-available through PyTorch. Joint flow has shared assignment/invisible dynamics, so only
-`training.freeze.visible` is supported in joint-flow mode.
-
-## Inference budgets
-
-Training/model choices and numerical inference budgets are intentionally separated.
-
-```yaml
-inference:
-  top_k_assignments: 1
-  posterior_samples: 1
-  invisible:
-    standard: {steps: 50}
-    edm: {sigma_min: 0.004, sigma_max: 160.0, rho: 7.0, nfe: 17}
-    flow_matching: {steps: 8, solver: heun}
-  assignment_flow: {steps: 8}
-  joint_flow: {steps: 8, sample_chunk_size: 8}
-```
-
-Changing recurrent evaluation depth, NFE, solver, top-K, posterior sample count,
-compatibility weight or joint sampling chunk size does not redefine the trained checkpoint.
-
-### Joint posterior chunking
-
-`inference.joint_flow.sample_chunk_size` controls how many posterior trajectories are
-vectorised together. For `S` posterior samples and chunk size `C`, joint flow executes
-approximately
-
-```text
-ceil(S / C)
-```
-
-sample chunks. The physical posterior semantics are unchanged; the setting is purely a
-memory/throughput tradeoff.
-
-Prediction records both:
-
-```text
-batched_network_evaluations_per_event = steps * ceil(S / C)
-sample_equivalent_nfe_per_event       = steps * S
-```
-
-so throughput comparisons do not confuse batching with a different numerical budget.
-
-## Data and scaling
-
-Canonical real-data products are event-aligned HDF5 files. Current production examples
-use one invisible role for semileptonic events and two ordered roles for dileptonic events:
-
-```text
-(top_e.nu, top_mu.nu) = (nu_e, nu_mu)
-```
-
-Electron and muon branches remain distinct and are never exchange-symmetrised.
-
-For real data, invisible mean/std statistics are fitted from the full stable TRAIN split
-before `max_events` subsampling. Bounded studies therefore use one stable coordinate
-system. The scaler is saved in checkpoints and restored for prediction rather than being
-silently refit.
-
-Canonical conversion:
+Canonical conversion examples:
 
 ```bash
 python scripts/data/convert_vyper_joint.py --topology ttbar1L \
@@ -533,182 +365,189 @@ python scripts/data/convert_vyper_joint.py --topology ttbar2L \
   --output data/real/ttbar2L_canonical.h5
 ```
 
-Validate the configured product with:
+Validate a configured canonical product with:
 
 ```bash
 python -m joint_event_reconstruction.cli.run validate-data \
   --experiment configs/experiments/ttbar2L.yaml
 ```
 
-Synthetic invisible truth requires explicit `allow_synthetic: true` and is never silently
-substituted for missing real data.
-
-## Topology and `Rnu` genericity
-
-The model should depend on topology data, not on names such as `ttbar1L` or `ttbar2L`.
-See `docs/topology.md` for the grammar.
-
-Two synthetic CI fixtures enforce genericity:
-
-- `synthetic_contract`: hierarchy, multiple roots, repeated-role exchange symmetry and an
-  invisible role;
-- `synthetic_multinu`: three ordered invisible roles (`Rnu=3`), a three-member
-  exchangeable visible role, hierarchy and multiple roots.
-
-The `Rnu=3` test exists specifically to catch hidden assumptions that invisible inference
-has one or two neutrinos. It is a software contract, not a physics result.
-
-## Portable synthetic validation
-
-The complete synthetic validation is file-free and runs on CPU or CUDA. It exercises
-forward/backward, gradients, all maintained formulations, HDF5 prediction, evaluation and
-plot rendering.
-
-Run the same four topologies used by CI:
+## One maintained CLI
 
 ```bash
-python scripts/smoke_synthetic.py --topology ttbar1L --device cpu --events 4
-python scripts/smoke_synthetic.py --topology ttbar2L --device cpu --events 4
-python scripts/smoke_synthetic.py --topology synthetic_contract --device cpu --events 4
-python scripts/smoke_synthetic.py --topology synthetic_multinu --device cpu --events 4
+python -m joint_event_reconstruction.cli.run <command> ...
 ```
 
-For production topologies the suite covers, among other things:
+Commands are `show-config`, `train`, `predict`, `evaluate`, `plot`, `smoke`, and `validate-data`.
 
-- M1/M2/M3 assignment paths;
-- recurrent-depth execution;
-- C1 and detached C2;
-- standard diffusion and EDM;
-- factorized CFM with `none` and `hypothesis` prediction/evaluation round trips;
-- OT-CFM;
-- assignment-only DFM;
-- joint DFM+CFM and persistent joint state;
-- deterministic bidirectional `A <-> nu` gradient probes;
-- assignment-support metadata;
-- prediction HDF5 validation;
-- actual PNG diagnostic rendering and comparison plotting.
-
-All synthetic losses and metrics are mechanism checks only, not physics-performance
-results.
-
-## Synthetic throughput/memory benchmark
-
-Use:
+Inspect a resolved experiment:
 
 ```bash
-python scripts/benchmark_synthetic.py \
-  --experiment configs/experiments/ttbar1L.yaml \
-  --modes visible cfm dfm joint \
+python -m joint_event_reconstruction.cli.run show-config \
+  --experiment configs/experiments/ttbar2L.yaml
+```
+
+Train:
+
+```bash
+python -m joint_event_reconstruction.cli.run train \
+  --experiment configs/experiments/ttbar2L.yaml \
+  --device cuda
+```
+
+Predict:
+
+```bash
+python -m joint_event_reconstruction.cli.run predict \
+  --experiment configs/experiments/ttbar2L.yaml \
+  --checkpoint results/ttbar2L/checkpoints/best-loss.ckpt \
+  --split test \
+  --output results/ttbar2L/test.h5 \
+  --device cuda
+```
+
+For discriminative recurrence, `--recurrent-steps R` changes evaluation depth without changing checkpoint identity.
+
+Evaluate and plot directly from self-describing HDF5:
+
+```bash
+python -m joint_event_reconstruction.cli.run evaluate \
+  --predictions results/ttbar2L/test.h5
+
+python -m joint_event_reconstruction.cli.run plot \
+  --predictions results/ttbar2L/test.h5 \
+  --output results/ttbar2L/plots
+```
+
+## Study manifests
+
+Controlled studies live in `configs/studies/`. Variants use structured YAML patches rather than lists of dot-notation command-line overrides.
+
+Example:
+
+```yaml
+variants:
+  c2:
+    label: detached C2 feedback
+    reporting: primary
+    patch:
+      model:
+        assignment:
+          method: discriminative
+          recurrence:
+            train_steps: [1, 2, 3, 4]
+            eval_steps: 4
+            feedback: soft
+        invisible:
+          method: cfm
+          conditioning: soft
+        c2:
+          posterior_samples: 8
+      training:
+        trainable: [assignment, c2]
+    initialise_from: c1
+    initialise_components: [visible, assignment, invisible]
+    predictions: ...
+```
+
+Each run writes both the compact merged experiment and the fully resolved internal YAML beside its outputs.
+
+### Dependency closure
+
+Requesting a downstream variant automatically includes its training prerequisites. For example:
+
+```bash
+python scripts/run_study.py configs/studies/04_c2_feedback.yaml train \
+  --variants c2 --device cuda
+```
+
+can schedule:
+
+```text
+assignment_reference -> c1 -> c2
+```
+
+without requiring the caller to list those precursor checkpoints manually. Predictions and summaries still report only the requested variant.
+
+Plan a study without running it:
+
+```bash
+python scripts/run_study.py configs/studies/04_c2_feedback.yaml plan \
+  --variants c2 --dry-run
+```
+
+Submit the same filtered dependency graph to Slurm:
+
+```bash
+python scripts/submit_study_slurm.py configs/studies/04_c2_feedback.yaml \
+  --variants c2
+```
+
+Slurm workers run one exact variant per dependency level, avoiding recursive resubmission of precursor variants.
+
+## Maintained study sequence
+
+The initial controlled campaign is intentionally ttbar2L-first:
+
+```text
+01_visible_recurrence
+02_generator_formulations
+03_assignment_conditioning
+04_c2_feedback
+05_discrete_assignment
+06_joint_vs_factorized
+07_joint_recurrence
+08_generator_inference
+09_posterior_size
+10_compatibility_reranking
+11_data_scaling
+```
+
+This keeps topology fixed while individual modelling effects are isolated. A `ttH2L` topology is not currently defined and is deliberately not fabricated; it can be added to the same study infrastructure once its real topology and canonical data mapping exist.
+
+## Data-scaling study
+
+`configs/studies/11_data_scaling.yaml` scans:
+
+```text
+10k, 25k, 50k, 100k, 250k, 500k training events
+```
+
+with fixed validation/test samples.
+
+## Recurrence controls
+
+Generate both a parameter-matched and an empirical compute-matched non-recurrent control for M2/M3:
+
+```bash
+python scripts/match_recurrence_controls.py \
+  --experiment configs/experiments/ttbar2L.yaml \
+  --target m3 \
+  --recurrent-steps 4 \
   --device cuda \
-  --events 32 \
-  --warmup 2 \
-  --iterations 5 \
-  --posterior-samples 8 \
-  --flow-steps 8 \
-  --joint-sample-chunk-size 8 \
-  --output results/synthetic_benchmark.json
+  --output results/recurrence_controls_m3.json
 ```
 
-The benchmark reports training and inference events/s, step/call timing, CUDA peak
-allocated memory, trainable/total parameter counts, assignment-state count, `Rnu`, AdamW
-fusion status and sample-equivalent inference work.
+The script first searches non-recurrent encoder depth/feed-forward width by parameter count, then benchmarks shortlisted candidates and the recurrent target on the same synthetic batch. It records separate parameter- and compute-matched controls. These measurements are software controls, not physics results.
 
-It uses a fixed in-memory synthetic batch and excludes HDF5 I/O. It is a relative software
-profile, not a production throughput measurement or physics benchmark.
+## Validation
 
-## Real-data/cache smoke
+The synthetic smoke suite is explicitly a mechanism/software test, not a physics benchmark. CI checks:
 
-Where the Manchester data/cache products are available:
+- Python compilation and fatal Ruff errors;
+- compact experiment resolution and generated visible-loader configs;
+- every maintained structured study patch;
+- filtered dependency closure and Slurm planning;
+- topology-generic synthetic smokes for 1L, 2L and synthetic stress topologies;
+- synthetic throughput smoke;
+- recurrence-control generation.
+
+Run locally with:
 
 ```bash
-python scripts/smoke_all.py --topology ttbar1L --device cpu --events 8
-python scripts/smoke_all.py --topology ttbar2L --real --device cpu --events 8
-
-python scripts/smoke_flows.py \
-  --experiment configs/experiments/ttbar1L.yaml --device cpu --events 8
+python scripts/smoke_synthetic.py --topology ttbar2L --device cpu --events 4
 ```
 
-Repeat relevant campaign configurations on CUDA before expensive training.
+## Development rule
 
-## Evaluation principles
-
-Prediction products distinguish exact probabilities from Monte-Carlo frequencies.
-
-- Discriminative factorized top-K assignment probabilities are exact constrained
-  probabilities **within `complete_non_null` support**.
-- DFM and joint assignment sample frequencies are Monte-Carlo estimates, not exact
-  likelihoods.
-- `hypothesis` factorized invisible evaluation reports the truncated
-  assignment-weighted mixture and its retained assignment probability mass.
-- Truth-conditioned and truth-selected diagnostics are explicitly labelled as oracle or
-  selection-biased where appropriate.
-- Physical NULL composites remain unsupported/NaN rather than being assigned invented
-  four-vectors.
-
-Physics conclusions should come from trained held-out real-data checkpoints using common
-external observables such as assignment efficiency, energy score, coverage/PIT,
-component residuals, composite kinematics, MET closure and measured inference cost.
-
-## Controlled study order
-
-A clean comparison programme is:
-
-1. M1 vs M2 vs M3 assignment.
-2. Recurrent vs parameter-matched and compute-matched non-recurrent controls.
-3. Standard diffusion vs EDM vs CFM; then OT-CFM.
-4. C1 `none` vs `soft` vs `hypothesis`; hard and truth only as diagnostics/controls.
-5. Detached C2.
-6. Discriminative assignment vs assignment-only DFM, respecting support semantics.
-7. Best factorized `p(A|X)p(nu|X,A)` vs joint DFM+CFM.
-8. Stateless vs persistent-recurrent joint flow.
-9. Only after those baselines are stable, test larger architectural hypotheses one at a
-   time.
-
-Recurrence studies should include wrong->correct and correct->wrong transitions as a
-function of depth rather than only aggregate final accuracy.
-
-## Repository maintenance principles
-
-The maintained code follows a few deliberate rules:
-
-- topology data are authoritative;
-- public names map to scientific concepts (`assignment`, `invisible`, `compatibility`);
-- no process-name model branches;
-- no silent compatibility aliases for deleted config names;
-- no fake options for fixed implementation details;
-- no fallback to synthetic data when real data were requested;
-- prediction schemas record scientific support and provenance explicitly;
-- frozen parameters do not enter the optimiser;
-- bounded Python loops are acceptable for detailed offline physics composition/evaluation,
-  while training and iterative model paths stay tensorised;
-- Git history is the archive for removed entry points rather than a live `legacy/` tree.
-
-The frozen M0 implementation under `joint_event_reconstruction.m0` is retained solely for
-controlled reference/equivalence checks. Historical standalone M0 evaluation and Hydra
-split-preparation commands are not part of the maintained interface.
-
-## M0 reference equivalence
-
-```bash
-python scripts/validate_m0_equivalence.py \
-  --reference-root /path/to/ReconstructionAndSB_ref \
-  --checkpoint /path/to/best_reconstruction.ckpt \
-  --events 32
-```
-
-See `PROVENANCE.md` for source revisions and reference-state decisions.
-
-## Environment
-
-```bash
-conda env create -f requirements.yaml
-conda activate joint-event-reconstruction
-python -m pip install -e .
-```
-
-For a minimal CI-like check after installation:
-
-```bash
-python -m compileall -q src scripts
-python scripts/smoke_synthetic.py --topology synthetic_multinu --device cpu --events 4
-```
+The maintained interface is strict. Misspelled or obsolete public settings fail rather than being silently ignored. Fixed implementation facts are not exposed as fake switches. New scientific mechanisms should only be added after the existing controlled study gates have established which current components are useful.
