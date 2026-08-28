@@ -26,10 +26,14 @@ from omegaconf import OmegaConf
 
 from joint_event_reconstruction.data.invisible import InvisibleScaler
 from joint_event_reconstruction.data.structured import StructuredCollator
-from joint_event_reconstruction.evaluation_discrete import evaluate_discrete_predictions
+from joint_event_reconstruction.evaluation_discrete import (
+    evaluate_discrete_predictions,
+)
 from joint_event_reconstruction.evaluation_joint import evaluate_joint_predictions
 from joint_event_reconstruction.m0.data.module import build_token_schema
-from joint_event_reconstruction.prediction_discrete import predict_discrete_flow_hdf5
+from joint_event_reconstruction.prediction_discrete import (
+    predict_discrete_flow_hdf5,
+)
 from joint_event_reconstruction.prediction_joint import predict_joint_flow_hdf5
 from joint_event_reconstruction.topology.assignments import AssignmentSpace
 from joint_event_reconstruction.topology.compiler import load_topology
@@ -39,11 +43,19 @@ from scripts.smoke_flows import FLOW_MODES, configure as configure_flow
 from scripts.smoke_flows import run_mode as run_flow_mode
 
 
+CONTRACTS = {
+    "synthetic_contract": {"minimum_invisible": 1, "minimum_repeat": 2},
+    "synthetic_multinu": {"minimum_invisible": 3, "minimum_repeat": 3},
+}
+
+
 def _synthetic_items(
     experiment, visible, *, events: int, seed: int
 ) -> tuple[list[dict], object]:
     if events < 2:
-        raise ValueError("Synthetic smoke needs at least two events for finite scaling")
+        raise ValueError(
+            "Synthetic smoke needs at least two events for finite scaling"
+        )
     schema = build_token_schema(visible.dataset)
     spec = load_topology(experiment.topology_config)
     generator = torch.Generator().manual_seed(seed)
@@ -76,8 +88,8 @@ def _synthetic_items(
         positions = source_positions[source]
         if len(labels) > len(positions):
             raise RuntimeError(
-                f"Synthetic schema has {len(positions)} {source} slots but topology needs "
-                f"{len(labels)} distinct truth objects"
+                f"Synthetic schema has {len(positions)} {source} slots but topology "
+                f"needs {len(labels)} distinct truth objects"
             )
         for local, label in enumerate(sorted(labels)):
             label_slots[(source, label)] = int(positions[local])
@@ -91,22 +103,27 @@ def _synthetic_items(
         raw_labels = torch.full((cursor,), -100.0, dtype=torch.float32)
         for (_, label), position in label_slots.items():
             raw_labels[position] = float(label)
-        items.append({
-            "tokens": tokens,
-            "type_ids": common_type_ids.clone(),
-            "padding_mask": padding,
-            "labels": torch.tensor(0.0, dtype=torch.float32),
-            "event_index": torch.tensor(event, dtype=torch.long),
-            "reco_raw_labels": raw_labels,
-            "reco_source_ids": common_type_ids.to(torch.int8).clone(),
-        })
+        items.append(
+            {
+                "tokens": tokens,
+                "type_ids": common_type_ids.clone(),
+                "padding_mask": padding,
+                "labels": torch.tensor(0.0, dtype=torch.float32),
+                "event_index": torch.tensor(event, dtype=torch.long),
+                "reco_raw_labels": raw_labels,
+                "reco_source_ids": common_type_ids.to(torch.int8).clone(),
+            }
+        )
     return items, schema
 
 
 def build_synthetic_batch(experiment, *, events: int, device: str):
     visible = OmegaConf.load(experiment.visible_config)
     items, schema = _synthetic_items(
-        experiment, visible, events=events, seed=int(experiment.experiment.seed)
+        experiment,
+        visible,
+        events=events,
+        seed=int(experiment.experiment.seed),
     )
     collator = StructuredCollator(
         experiment.topology_config,
@@ -168,14 +185,16 @@ def _prediction_roundtrip(base, visible, batch, scaler, device):
         source_path = directory / "source.h5"
         with h5py.File(source_path, "w") as source:
             source.create_dataset(
-                "EVENT_ID",
-                data=batch["event_index"].detach().cpu().numpy(),
+                "EVENT_ID", data=batch["event_index"].detach().cpu().numpy()
             )
         data = _SyntheticPredictionData(batch, visible, source_path)
 
         dfm_config = configure_flow(base, "dfm_assignment")
         dfm = JointEventModule(
-            dfm_config, visible, invisible_scaler=None, synthetic_data=True
+            dfm_config,
+            visible,
+            invisible_scaler=None,
+            synthetic_data=True,
         ).to(device)
         dfm_path = directory / "dfm.h5"
         predict_discrete_flow_hdf5(
@@ -193,7 +212,10 @@ def _prediction_roundtrip(base, visible, batch, scaler, device):
 
         joint_config = configure_flow(base, "joint_flow")
         joint = JointEventModule(
-            joint_config, visible, invisible_scaler=scaler, synthetic_data=True
+            joint_config,
+            visible,
+            invisible_scaler=scaler,
+            synthetic_data=True,
         ).to(device)
         joint_path = directory / "joint.h5"
         predict_joint_flow_hdf5(
@@ -260,29 +282,47 @@ def run_synthetic_smoke(
     return results
 
 
-def run_topology_contract(*, device: str = "cpu", events: int = 4):
-    """Prove that the maintained model path is not tied to ttbar topology names."""
+def run_topology_contract(
+    topology_name: str, *, device: str = "cpu", events: int = 4
+):
+    """Prove topology and Rnu genericity without any process-name model branch."""
+    requirements = CONTRACTS[topology_name]
     base = OmegaConf.load(ROOT / "configs/experiments/ttbar1L.yaml")
     base = copy.deepcopy(base)
-    base.experiment.name = "synthetic_topology_contract"
-    base.topology_config = str(ROOT / "configs/topology/synthetic_contract.yaml")
+    base.experiment.name = topology_name
+    base.topology_config = str(
+        ROOT / "configs/topology" / f"{topology_name}.yaml"
+    )
     base.visible_config = str(ROOT / "configs/m0_ttbar1L.yaml")
-    visible, batch, scaler = build_synthetic_batch(base, events=events, device=device)
+    visible, batch, scaler = build_synthetic_batch(
+        base, events=events, device=device
+    )
     spec = load_topology(base.topology_config)
     space = AssignmentSpace.from_structured(batch["structured"])
 
     if len(spec.roots) < 2:
         raise RuntimeError("Synthetic topology contract must exercise multiple roots")
-    if not any(role.multiplicity > 1 for role in spec.visible_leaf_roles):
+    if max(role.multiplicity for role in spec.visible_leaf_roles) < int(
+        requirements["minimum_repeat"]
+    ):
         raise RuntimeError(
-            "Synthetic topology contract must contain an exchangeable repeated role"
+            "Synthetic topology contract does not exercise the requested repeated-role "
+            "multiplicity"
         )
     if not any(spec.nodes[node].composite_roles for node in spec.dag_order):
         raise RuntimeError(
             "Synthetic topology contract must contain a hierarchical composite"
         )
-    if len(spec.invisible_roles) < 1:
-        raise RuntimeError("Synthetic topology contract must contain an invisible role")
+    if len(spec.invisible_roles) < int(requirements["minimum_invisible"]):
+        raise RuntimeError(
+            "Synthetic topology contract does not exercise enough invisible roles"
+        )
+    if batch["invisible_truth"].shape != (
+        events,
+        len(spec.invisible_roles),
+        3,
+    ):
+        raise RuntimeError("Synthetic invisible truth violates [B,Rnu,3]")
     if space.state_count <= 1 or not space.non_null_mask.any():
         raise RuntimeError(
             "Synthetic topology contract produced no useful complete assignments"
@@ -293,10 +333,20 @@ def run_topology_contract(*, device: str = "cpu", events: int = 4):
             "roots": list(spec.roots),
             "nodes": list(spec.dag_order),
             "invisible_roles": [role.key for role in spec.invisible_roles],
+            "invisible_count": len(spec.invisible_roles),
+            "maximum_visible_role_multiplicity": max(
+                role.multiplicity for role in spec.visible_leaf_roles
+            ),
             "assignment_states": space.state_count,
         },
         "visible_m1": run_legacy_mode(
             base, visible, batch, scaler, "visible_m1", device
+        ),
+        "edm_no_assignment": run_legacy_mode(
+            base, visible, batch, scaler, "edm_no_assignment", device
+        ),
+        "cfm_no_assignment": run_flow_mode(
+            base, visible, batch, scaler, "cfm_no_assignment", device
         ),
         "dfm_assignment": run_flow_mode(
             base, visible, batch, scaler, "dfm_assignment", device
@@ -308,7 +358,11 @@ def run_topology_contract(*, device: str = "cpu", events: int = 4):
             base, visible, batch, scaler, device
         ),
     }
-    print(json.dumps({"topology_contract": results}, indent=2, sort_keys=True))
+    print(
+        json.dumps(
+            {"topology_contract": results}, indent=2, sort_keys=True
+        )
+    )
     return results
 
 
@@ -317,7 +371,12 @@ def main():
     parser.add_argument(
         "--topology",
         required=True,
-        choices=("ttbar1L", "ttbar2L", "ttH1L", "synthetic_contract"),
+        choices=(
+            "ttbar1L",
+            "ttbar2L",
+            "ttH1L",
+            *CONTRACTS,
+        ),
     )
     parser.add_argument("--device", choices=("cpu", "cuda"), default="cpu")
     parser.add_argument("--events", type=int, default=4)
@@ -326,12 +385,14 @@ def main():
     args = parser.parse_args()
     if args.legacy_only and args.flows_only:
         raise ValueError("Choose at most one of --legacy-only and --flows-only")
-    if args.topology == "synthetic_contract":
+    if args.topology in CONTRACTS:
         if args.legacy_only or args.flows_only:
             raise ValueError(
-                "Synthetic topology contract has its own fixed validation subset"
+                "Synthetic topology contracts have their own fixed validation subset"
             )
-        run_topology_contract(device=args.device, events=args.events)
+        run_topology_contract(
+            args.topology, device=args.device, events=args.events
+        )
         return
     run_synthetic_smoke(
         Path(f"configs/experiments/{args.topology}.yaml"),
