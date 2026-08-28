@@ -101,7 +101,9 @@ def main() -> None:
         return
     if args.command == "smoke":
         from scripts.smoke_all import run_experiment_smoke
-        run_experiment_smoke(Path(args.experiment), device="cpu", events=8)
+        from scripts.smoke_flows import run_flow_smoke
+        run_experiment_smoke(Path(args.experiment), device=args.device, events=8)
+        run_flow_smoke(Path(args.experiment), device=args.device, events=8)
         return
     if args.command == "validate-data":
         from scripts.data.validate_joint_h5 import validate
