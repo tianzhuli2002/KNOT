@@ -44,11 +44,6 @@ prediction:
   sigma_max: 160.0
   rho: 7.0
   nfe: 17
-  edm:
-    sigma_min: 0.004
-    sigma_max: 160.0
-    rho: 7.0
-    nfe: 17
   standard_steps: 50
   compatibility_weight: 1.0
 
