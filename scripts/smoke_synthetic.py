@@ -13,22 +13,30 @@ import argparse
 import copy
 import json
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+import h5py
 import torch
 from omegaconf import OmegaConf
 
 from joint_event_reconstruction.data.invisible import InvisibleScaler
 from joint_event_reconstruction.data.structured import StructuredCollator
+from joint_event_reconstruction.evaluation_discrete import evaluate_discrete_predictions
+from joint_event_reconstruction.evaluation_joint import evaluate_joint_predictions
 from joint_event_reconstruction.m0.data.module import build_token_schema
+from joint_event_reconstruction.prediction_discrete import predict_discrete_flow_hdf5
+from joint_event_reconstruction.prediction_joint import predict_joint_flow_hdf5
 from joint_event_reconstruction.topology.assignments import AssignmentSpace
 from joint_event_reconstruction.topology.compiler import load_topology
+from joint_event_reconstruction.training.joint import JointEventModule
 from scripts.smoke_all import MODES, run_mode as run_legacy_mode
-from scripts.smoke_flows import FLOW_MODES, run_mode as run_flow_mode
+from scripts.smoke_flows import FLOW_MODES, configure as configure_flow
+from scripts.smoke_flows import run_mode as run_flow_mode
 
 
 def _synthetic_items(
@@ -54,7 +62,6 @@ def _synthetic_items(
     if cursor == 0:
         raise RuntimeError("Visible schema produced no synthetic token slots")
 
-    # Assign each distinct truth label to one deterministic slot of its source.
     label_slots: dict[tuple[str, int], int] = {}
     by_source: dict[str, set[int]] = {}
     for role in spec.visible_leaf_roles:
@@ -96,9 +103,7 @@ def _synthetic_items(
     return items, schema
 
 
-def build_synthetic_batch(
-    experiment, *, events: int, device: str
-):
+def build_synthetic_batch(experiment, *, events: int, device: str):
     visible = OmegaConf.load(experiment.visible_config)
     items, schema = _synthetic_items(
         experiment, visible, events=events, seed=int(experiment.experiment.seed)
@@ -138,6 +143,87 @@ def build_synthetic_batch(
     return visible, move(batch), scaler
 
 
+class _SyntheticPredictionData:
+    """Small data facade needed by the maintained HDF5 prediction writers."""
+
+    def __init__(self, batch, visible, source_path: Path):
+        self._batch = batch
+        self.schema = build_token_schema(visible.dataset)
+        self.h5_path = source_path
+
+    def train_dataloader(self):
+        return [self._batch]
+
+    def val_dataloader(self):
+        return [self._batch]
+
+    def test_dataloader(self):
+        return [self._batch]
+
+
+def _prediction_roundtrip(base, visible, batch, scaler, device):
+    """Exercise native DFM and joint-flow prediction/evaluation schemas."""
+    with tempfile.TemporaryDirectory(prefix="jer-smoke-") as directory:
+        directory = Path(directory)
+        source_path = directory / "source.h5"
+        with h5py.File(source_path, "w") as source:
+            source.create_dataset(
+                "EVENT_ID",
+                data=batch["event_index"].detach().cpu().numpy(),
+            )
+        data = _SyntheticPredictionData(batch, visible, source_path)
+
+        dfm_config = configure_flow(base, "dfm_assignment")
+        dfm = JointEventModule(
+            dfm_config, visible, invisible_scaler=None, synthetic_data=True
+        ).to(device)
+        dfm_path = directory / "dfm.h5"
+        predict_discrete_flow_hdf5(
+            dfm,
+            data,
+            dfm_path,
+            split="test",
+            posterior_samples=2,
+            steps=2,
+            device=device,
+        )
+        dfm_metrics = evaluate_discrete_predictions(dfm_path)
+        if dfm_metrics["events"] != len(batch["tokens"]):
+            raise RuntimeError("DFM prediction round-trip changed event count")
+
+        joint_config = configure_flow(base, "joint_flow")
+        joint = JointEventModule(
+            joint_config, visible, invisible_scaler=scaler, synthetic_data=True
+        ).to(device)
+        joint_path = directory / "joint.h5"
+        predict_joint_flow_hdf5(
+            joint,
+            data,
+            scaler,
+            joint_path,
+            split="test",
+            posterior_samples=2,
+            steps=2,
+            device=device,
+        )
+        joint_metrics = evaluate_joint_predictions(joint_path)
+        if joint_metrics["events"] != len(batch["tokens"]):
+            raise RuntimeError("Joint prediction round-trip changed event count")
+
+        return {
+            "dfm": {
+                "events": dfm_metrics["events"],
+                "samples": dfm_metrics["posterior_samples"],
+                "steps": dfm_metrics["flow_steps"],
+            },
+            "joint": {
+                "events": joint_metrics["events"],
+                "samples": joint_metrics["posterior_samples"],
+                "steps": joint_metrics["flow_steps"],
+            },
+        }
+
+
 def run_synthetic_smoke(
     experiment_path: Path,
     *,
@@ -157,18 +243,18 @@ def run_synthetic_smoke(
         for mode in MODES:
             results["legacy"][mode] = {
                 "status": "PASS",
-                **run_legacy_mode(
-                    base, visible, batch, scaler, mode, device
-                ),
+                **run_legacy_mode(base, visible, batch, scaler, mode, device),
             }
     if flows:
         for mode in FLOW_MODES:
             results["flows"][mode] = {
                 "status": "PASS",
-                **run_flow_mode(
-                    base, visible, batch, scaler, mode, device
-                ),
+                **run_flow_mode(base, visible, batch, scaler, mode, device),
             }
+        results["prediction_roundtrip"] = {
+            "status": "PASS",
+            **_prediction_roundtrip(base, visible, batch, scaler, device),
+        }
 
     print(json.dumps(results, indent=2, sort_keys=True))
     return results
@@ -188,13 +274,19 @@ def run_topology_contract(*, device: str = "cpu", events: int = 4):
     if len(spec.roots) < 2:
         raise RuntimeError("Synthetic topology contract must exercise multiple roots")
     if not any(role.multiplicity > 1 for role in spec.visible_leaf_roles):
-        raise RuntimeError("Synthetic topology contract must contain an exchangeable repeated role")
+        raise RuntimeError(
+            "Synthetic topology contract must contain an exchangeable repeated role"
+        )
     if not any(spec.nodes[node].composite_roles for node in spec.dag_order):
-        raise RuntimeError("Synthetic topology contract must contain a hierarchical composite")
+        raise RuntimeError(
+            "Synthetic topology contract must contain a hierarchical composite"
+        )
     if len(spec.invisible_roles) < 1:
         raise RuntimeError("Synthetic topology contract must contain an invisible role")
     if space.state_count <= 1 or not space.non_null_mask.any():
-        raise RuntimeError("Synthetic topology contract produced no useful complete assignments")
+        raise RuntimeError(
+            "Synthetic topology contract produced no useful complete assignments"
+        )
 
     results = {
         "topology": {
@@ -211,6 +303,9 @@ def run_topology_contract(*, device: str = "cpu", events: int = 4):
         ),
         "joint_flow": run_flow_mode(
             base, visible, batch, scaler, "joint_flow", device
+        ),
+        "prediction_roundtrip": _prediction_roundtrip(
+            base, visible, batch, scaler, device
         ),
     }
     print(json.dumps({"topology_contract": results}, indent=2, sort_keys=True))
@@ -233,7 +328,9 @@ def main():
         raise ValueError("Choose at most one of --legacy-only and --flows-only")
     if args.topology == "synthetic_contract":
         if args.legacy_only or args.flows_only:
-            raise ValueError("Synthetic topology contract has its own fixed validation subset")
+            raise ValueError(
+                "Synthetic topology contract has its own fixed validation subset"
+            )
         run_topology_contract(device=args.device, events=args.events)
         return
     run_synthetic_smoke(
