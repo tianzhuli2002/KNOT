@@ -288,8 +288,8 @@ def _resolve_model(public, defaults) -> dict:
             },
             "joint_flow": {
                 "recurrent_state": bool(joint.get("recurrent", False)),
-                "block_layers": int(joint.block_layers),
-                "train_steps": list(joint.train_steps),
+                "block_layers": int(joint["block_layers"]),
+                "train_steps": list(joint["train_steps"]),
             },
             "coupling": {
                 "invisible_to_assignment": {
