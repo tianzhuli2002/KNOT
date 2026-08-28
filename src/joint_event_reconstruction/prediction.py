@@ -246,7 +246,7 @@ def predict_hdf5(
     recurrent_steps: int | None = None,
     device: str = "cpu",
     checkpoint_path: str = "",
-    compatibility_lambda: float = 1.0,
+    compatibility_weight: float = 1.0,
 ) -> None:
     if top_k <= 0 or posterior_samples <= 0:
         raise ValueError("Prediction K and M must be positive")
@@ -400,7 +400,7 @@ def predict_hdf5(
                         .numpy()
                         .astype(np.float32)
                     )
-                    final_score = log_scores + compatibility_lambda * compatibility
+                    final_score = log_scores + compatibility_weight * compatibility
                     final_rank = np.argsort(
                         -final_score, axis=1, kind="stable"
                     ).astype(np.int32)
@@ -499,7 +499,7 @@ def predict_hdf5(
                     datasets["final_rank"] = _create(
                         joint_group, "rank_indices", (top_k,), "<i4"
                     )
-                    joint_group.attrs["compatibility_weight"] = compatibility_lambda
+                    joint_group.attrs["compatibility_weight"] = compatibility_weight
 
             _append(
                 datasets["event"],
