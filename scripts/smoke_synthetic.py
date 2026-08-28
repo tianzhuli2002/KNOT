@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """File-free CPU/CUDA smoke of every maintained reconstruction formulation.
 
-This is a software/mechanism test only. It constructs topology-consistent random
-visible tensors and random invisible truth entirely in memory, then reuses the
-same per-mode assertions as ``smoke_all.py`` and ``smoke_flows.py``. No metric
-from this script is a physics-performance result.
+This is a software/mechanism test only. It constructs topology-consistent random visible
+objects and invisible truth in memory, then exercises forward/backward, prediction HDF5,
+evaluation and plotting. No metric from this script is a physics-performance result.
 """
 
 from __future__ import annotations
@@ -21,10 +20,13 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import h5py
-import numpy as np
 import torch
 from omegaconf import OmegaConf
 
+from joint_event_reconstruction.assignment_semantics import (
+    NON_NULL_SUPPORT,
+    NULL_INCLUDING_SUPPORT,
+)
 from joint_event_reconstruction.configuration import validate_experiment
 from joint_event_reconstruction.data.invisible import InvisibleScaler
 from joint_event_reconstruction.data.structured import StructuredCollator
@@ -39,7 +41,7 @@ from joint_event_reconstruction.prediction_joint import predict_joint_flow_hdf5
 from joint_event_reconstruction.topology.assignments import AssignmentSpace
 from joint_event_reconstruction.topology.compiler import load_topology
 from joint_event_reconstruction.training.joint import JointEventModule
-from scripts.smoke_all import MODES, run_mode as run_legacy_mode
+from scripts.smoke_all import MODES, run_mode as run_factorized_mode
 from scripts.smoke_flows import FLOW_MODES, configure as configure_flow
 from scripts.smoke_flows import run_mode as run_flow_mode
 
@@ -77,7 +79,7 @@ def _synthetic_items(
     by_source: dict[str, set[int]] = {}
     for role in spec.visible_leaf_roles:
         by_source.setdefault(role.source, set()).update(
-            int(x) for x in role.truth_indices
+            int(index) for index in role.truth_indices
         )
     for source, labels in by_source.items():
         if source not in source_positions:
@@ -98,7 +100,6 @@ def _synthetic_items(
     for event in range(events):
         tokens = torch.randn((cursor, schema.dim), generator=generator)
         tokens += event / max(events, 1) * 0.05
-        padding = torch.zeros(cursor, dtype=torch.bool)
         raw_labels = torch.full((cursor,), -100.0, dtype=torch.float32)
         for (_, label), position in label_slots.items():
             raw_labels[position] = float(label)
@@ -106,7 +107,7 @@ def _synthetic_items(
             {
                 "tokens": tokens,
                 "type_ids": common_type_ids.clone(),
-                "padding_mask": padding,
+                "padding_mask": torch.zeros(cursor, dtype=torch.bool),
                 "labels": torch.tensor(0.0, dtype=torch.float32),
                 "event_index": torch.tensor(event, dtype=torch.long),
                 "reco_raw_labels": raw_labels,
@@ -116,9 +117,7 @@ def _synthetic_items(
     return items, schema
 
 
-def _synthetic_physics_vectors(
-    batch: dict, schema, *, seed: int
-) -> torch.Tensor:
+def _synthetic_physics_vectors(batch: dict, schema, *, seed: int) -> torch.Tensor:
     """Build finite `(E,px,py,pz)` tokens solely to exercise physics I/O paths."""
     generator = torch.Generator().manual_seed(seed)
     batch_size, token_count = batch["type_ids"].shape
@@ -149,9 +148,7 @@ def build_synthetic_batch(experiment, *, events: int, device: str):
         experiment.topology_config,
         dict(schema.source_type_ids),
         build_assignments=True,
-        max_assignment_states=int(
-            experiment.model.reconstruction.flow_matching.max_states
-        ),
+        max_assignment_states=int(experiment.data.max_assignment_states),
     )
     batch = collator(items)
     spec = collator.spec
@@ -184,7 +181,7 @@ def build_synthetic_batch(experiment, *, events: int, device: str):
 
 
 class _SyntheticPredictionData:
-    """Small data facade needed by the maintained HDF5 prediction writers."""
+    """Minimal data facade used by the maintained HDF5 prediction writers."""
 
     def __init__(self, batch, visible, source_path: Path):
         self._batch = batch
@@ -201,9 +198,9 @@ class _SyntheticPredictionData:
         return [self._batch]
 
 
-def _factorized_cfm_config(base, assignment: str):
+def _factorized_cfm_config(base, conditioning: str):
     config = configure_flow(base, "cfm_no_assignment")
-    config.model.invisible.conditioning.assignment = assignment
+    config.model.invisible.conditioning.assignment = conditioning
     config.model.invisible.conditioning.allow_truth_oracle = False
     config.inference.top_k_assignments = 2
     config.inference.posterior_samples = 2
@@ -212,12 +209,22 @@ def _factorized_cfm_config(base, assignment: str):
 
 
 def _assert_plot_outputs(paths: list[Path], *, name: str) -> None:
-    if not paths or not all(path.is_file() and path.stat().st_size > 0 for path in paths):
+    if not paths or not all(
+        path.is_file() and path.stat().st_size > 0 for path in paths
+    ):
         raise RuntimeError(f"{name} plotting did not produce non-empty outputs")
     if not any(path.name == "metrics.json" for path in paths):
         raise RuntimeError(f"{name} plotting did not write metrics.json")
     if not any(path.suffix == ".png" for path in paths):
         raise RuntimeError(f"{name} plotting did not write a PNG diagnostic")
+
+
+def _assert_support(metrics: dict, expected: str, name: str) -> None:
+    observed = metrics["assignment_support"]["name"]
+    if observed != expected:
+        raise RuntimeError(
+            f"{name} assignment support changed: expected={expected}, observed={observed}"
+        )
 
 
 def _prediction_roundtrip(base, visible, batch, scaler, device):
@@ -233,15 +240,15 @@ def _prediction_roundtrip(base, visible, batch, scaler, device):
         prediction_paths = {}
         summaries = {}
 
-        for assignment in ("none", "hypothesis"):
-            config = _factorized_cfm_config(base, assignment)
+        for conditioning in ("none", "hypothesis"):
+            config = _factorized_cfm_config(base, conditioning)
             module = JointEventModule(
                 config,
                 visible,
                 invisible_scaler=scaler,
                 synthetic_data=True,
             ).to(device)
-            path = directory / f"cfm_{assignment}.h5"
+            path = directory / f"cfm_{conditioning}.h5"
             predict_hdf5(
                 module,
                 data,
@@ -255,18 +262,20 @@ def _prediction_roundtrip(base, visible, batch, scaler, device):
             metrics = evaluate_predictions(path)
             if metrics["events"] != len(batch["tokens"]):
                 raise RuntimeError(
-                    f"CFM {assignment} prediction round-trip changed event count"
+                    f"CFM {conditioning} prediction round-trip changed event count"
                 )
-            if metrics["invisible_assignment_conditioning"] != assignment:
+            if metrics["invisible_assignment_conditioning"] != conditioning:
                 raise RuntimeError(
-                    f"CFM {assignment} evaluation lost conditioning semantics"
+                    f"CFM {conditioning} evaluation lost conditioning semantics"
                 )
-            prediction_paths[f"cfm_{assignment}"] = path
-            summaries[f"cfm_{assignment}"] = {
+            _assert_support(metrics, NON_NULL_SUPPORT, f"CFM {conditioning}")
+            prediction_paths[f"cfm_{conditioning}"] = path
+            summaries[f"cfm_{conditioning}"] = {
                 "events": metrics["events"],
                 "samples": metrics["posterior_samples"],
                 "top_k": metrics["top_k_assignments"],
                 "conditioning": metrics["invisible_assignment_conditioning"],
+                "assignment_support": metrics["assignment_support"]["name"],
             }
 
         dfm_config = configure_flow(base, "dfm_assignment")
@@ -289,11 +298,13 @@ def _prediction_roundtrip(base, visible, batch, scaler, device):
         dfm_metrics = evaluate_discrete_predictions(dfm_path)
         if dfm_metrics["events"] != len(batch["tokens"]):
             raise RuntimeError("DFM prediction round-trip changed event count")
+        _assert_support(dfm_metrics, NULL_INCLUDING_SUPPORT, "DFM")
         prediction_paths["dfm"] = dfm_path
         summaries["dfm"] = {
             "events": dfm_metrics["events"],
             "samples": dfm_metrics["posterior_samples"],
             "steps": dfm_metrics["flow_steps"],
+            "assignment_support": dfm_metrics["assignment_support"]["name"],
         }
 
         joint_config = configure_flow(base, "joint_flow")
@@ -318,11 +329,13 @@ def _prediction_roundtrip(base, visible, batch, scaler, device):
         joint_metrics = evaluate_joint_predictions(joint_path)
         if joint_metrics["events"] != len(batch["tokens"]):
             raise RuntimeError("Joint prediction round-trip changed event count")
+        _assert_support(joint_metrics, NULL_INCLUDING_SUPPORT, "joint flow")
         prediction_paths["joint"] = joint_path
         summaries["joint"] = {
             "events": joint_metrics["events"],
             "samples": joint_metrics["posterior_samples"],
             "steps": joint_metrics["flow_steps"],
+            "assignment_support": joint_metrics["assignment_support"]["name"],
         }
 
         for name, path in prediction_paths.items():
@@ -357,7 +370,7 @@ def run_synthetic_smoke(
     *,
     device: str = "cpu",
     events: int = 4,
-    legacy: bool = True,
+    factorized: bool = True,
     flows: bool = True,
 ):
     torch.set_num_threads(1)
@@ -365,13 +378,13 @@ def run_synthetic_smoke(
     visible, batch, scaler = build_synthetic_batch(
         base, events=events, device=device
     )
-    results = {"legacy": {}, "flows": {}}
+    results = {"factorized": {}, "flows": {}}
 
-    if legacy:
+    if factorized:
         for mode in MODES:
-            results["legacy"][mode] = {
+            results["factorized"][mode] = {
                 "status": "PASS",
-                **run_legacy_mode(base, visible, batch, scaler, mode, device),
+                **run_factorized_mode(base, visible, batch, scaler, mode, device),
             }
     if flows:
         for mode in FLOW_MODES:
@@ -391,14 +404,11 @@ def run_synthetic_smoke(
 def run_topology_contract(
     topology_name: str, *, device: str = "cpu", events: int = 4
 ):
-    """Prove topology and Rnu genericity without any process-name model branch."""
+    """Prove topology and Rnu genericity without a process-name model branch."""
     requirements = CONTRACTS[topology_name]
-    base = OmegaConf.load(ROOT / "configs/experiments/ttbar1L.yaml")
-    base = copy.deepcopy(base)
+    base = copy.deepcopy(OmegaConf.load(ROOT / "configs/experiments/ttbar1L.yaml"))
     base.experiment.name = topology_name
-    base.topology_config = str(
-        ROOT / "configs/topology" / f"{topology_name}.yaml"
-    )
+    base.topology_config = str(ROOT / "configs/topology" / f"{topology_name}.yaml")
     base.visible_config = str(ROOT / "configs/m0_ttbar1L.yaml")
     visible, batch, scaler = build_synthetic_batch(
         base, events=events, device=device
@@ -416,9 +426,7 @@ def run_topology_contract(
             "multiplicity"
         )
     if not any(spec.nodes[node].composite_roles for node in spec.dag_order):
-        raise RuntimeError(
-            "Synthetic topology contract must contain a hierarchical composite"
-        )
+        raise RuntimeError("Synthetic topology contract must contain a hierarchy")
     if len(spec.invisible_roles) < int(requirements["minimum_invisible"]):
         raise RuntimeError(
             "Synthetic topology contract does not exercise enough invisible roles"
@@ -445,10 +453,10 @@ def run_topology_contract(
             ),
             "assignment_states": space.state_count,
         },
-        "visible_m1": run_legacy_mode(
+        "visible_m1": run_factorized_mode(
             base, visible, batch, scaler, "visible_m1", device
         ),
-        "edm_no_assignment": run_legacy_mode(
+        "edm_no_assignment": run_factorized_mode(
             base, visible, batch, scaler, "edm_no_assignment", device
         ),
         "cfm_no_assignment": run_flow_mode(
@@ -477,26 +485,24 @@ def main():
     )
     parser.add_argument("--device", choices=("cpu", "cuda"), default="cpu")
     parser.add_argument("--events", type=int, default=4)
-    parser.add_argument("--legacy-only", action="store_true")
+    parser.add_argument("--factorized-only", action="store_true")
     parser.add_argument("--flows-only", action="store_true")
     args = parser.parse_args()
-    if args.legacy_only and args.flows_only:
-        raise ValueError("Choose at most one of --legacy-only and --flows-only")
+    if args.factorized_only and args.flows_only:
+        raise ValueError("Choose at most one of --factorized-only and --flows-only")
     if args.topology in CONTRACTS:
-        if args.legacy_only or args.flows_only:
+        if args.factorized_only or args.flows_only:
             raise ValueError(
                 "Synthetic topology contracts have their own fixed validation subset"
             )
-        run_topology_contract(
-            args.topology, device=args.device, events=args.events
-        )
+        run_topology_contract(args.topology, device=args.device, events=args.events)
         return
     run_synthetic_smoke(
         Path(f"configs/experiments/{args.topology}.yaml"),
         device=args.device,
         events=args.events,
-        legacy=not args.flows_only,
-        flows=not args.legacy_only,
+        factorized=not args.flows_only,
+        flows=not args.factorized_only,
     )
 
 
