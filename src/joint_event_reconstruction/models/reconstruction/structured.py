@@ -1,4 +1,4 @@
-"""Hierarchical candidates with exact within-role exchange symmetry."""
+"""Hierarchical visible assignments with exact within-role exchange symmetry."""
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ def _gather(values: torch.Tensor, indices: torch.Tensor) -> torch.Tensor:
 
 
 class SymmetricPairEncoder(nn.Module):
-    """Preserve the original exact two-object representation for old checkpoints."""
+    """Exact permutation-invariant representation for a two-object role."""
 
     def __init__(self, d_model: int, dropout: float):
         super().__init__()
@@ -72,8 +72,6 @@ class SymmetricSetEncoder(nn.Module):
                 f"found {tuple(members.shape)}"
             )
         encoded = self.member(members)
-        # Sum retains the fixed role multiplicity; max adds a complementary
-        # nonlinear summary. Both are exactly invariant to member ordering.
         summary = torch.cat(
             (encoded.sum(dim=2), encoded.amax(dim=2)), dim=-1
         )
@@ -81,6 +79,8 @@ class SymmetricSetEncoder(nn.Module):
 
 
 class StructuredReconstruction(nn.Module):
+    """Encode topology candidates and score a candidate-or-NULL assignment per node."""
+
     def __init__(self, spec: TopologySpec, d_model: int, dropout: float):
         super().__init__()
         self.spec = spec
@@ -219,7 +219,7 @@ class StructuredReconstruction(nn.Module):
                 logits[node_name], target
             )
         return {
-            "reconstruction_loss": torch.stack(tuple(node_losses.values())).mean(),
+            "assignment_loss": torch.stack(tuple(node_losses.values())).mean(),
             "node_losses": node_losses,
         }
 
