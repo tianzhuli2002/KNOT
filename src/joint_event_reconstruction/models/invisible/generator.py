@@ -19,50 +19,84 @@ class InvisibleGenerator(nn.Module):
         self.assignment_mode = str(config.conditioning.assignment)
         denoiser_config = config.denoiser
         denoiser = InvisibleDenoiser(
-            len(spec.invisible_roles), visible_dim=visible_dim, parent_dim=visible_dim,
-            d_model=int(denoiser_config.d_model), n_heads=int(denoiser_config.n_heads),
-            layers=int(denoiser_config.layers), d_feedforward=int(denoiser_config.d_feedforward),
-            dropout=float(denoiser_config.dropout), zero_init_output=bool(denoiser_config.zero_init_output),
+            len(spec.invisible_roles),
+            visible_dim=visible_dim,
+            parent_dim=visible_dim,
+            d_model=int(denoiser_config.d_model),
+            n_heads=int(denoiser_config.n_heads),
+            layers=int(denoiser_config.layers),
+            d_feedforward=int(denoiser_config.d_feedforward),
+            dropout=float(denoiser_config.dropout),
+            zero_init_output=bool(denoiser_config.zero_init_output),
         )
         self.formulation_name = str(config.formulation)
         if self.formulation_name == "standard":
-            self.formulation = StandardDiffusion(denoiser, int(config.standard.training_steps))
+            self.formulation = StandardDiffusion(
+                denoiser, int(config.standard.training_steps)
+            )
             self.inference_budget = int(config.standard.inference_steps)
             self.sampler = "ddim"
         elif self.formulation_name == "edm":
             edm = config.edm
             self.formulation = EDMDiffusion(
-                denoiser, sigma_data=float(edm.sigma_data), p_mean=float(edm.p_mean),
-                p_std=float(edm.p_std), sigma_min=float(edm.sigma_min),
-                sigma_max=float(edm.sigma_max), rho=float(edm.rho),
+                denoiser,
+                sigma_data=float(edm.sigma_data),
+                p_mean=float(edm.p_mean),
+                p_std=float(edm.p_std),
+                sigma_min=float(edm.sigma_min),
+                sigma_max=float(edm.sigma_max),
+                rho=float(edm.rho),
             )
             self.inference_budget = int(edm.inference_nfe)
             self.sampler = "heun"
         elif self.formulation_name == "flow_matching":
             flow = config.flow_matching
             if str(flow.path) != "linear":
-                raise ValueError(f"Only linear Flow Matching is implemented, found path={flow.path!r}")
+                raise ValueError(
+                    f"Only linear Flow Matching is implemented, found path={flow.path!r}"
+                )
             self.formulation = ContinuousFlowMatching(
-                denoiser, coupling=str(flow.coupling),
+                denoiser, coupling=str(flow.coupling)
             )
             self.inference_budget = int(flow.inference_steps)
             self.sampler = str(flow.sampler)
         else:
-            raise ValueError(f"Unknown invisible formulation {self.formulation_name!r}")
+            raise ValueError(
+                f"Unknown invisible formulation {self.formulation_name!r}"
+            )
 
     @property
     def denoiser(self) -> nn.Module:
         return self.formulation.denoiser
 
-    def visible_context(self, visible: dict) -> tuple[torch.Tensor, torch.Tensor]:
-        context = torch.cat((visible["pooled"].unsqueeze(1), visible["tokens"]), dim=1)
-        cls_mask = torch.zeros((len(context), 1), dtype=torch.bool, device=context.device)
-        return context, torch.cat((cls_mask, visible["padding_mask"]), dim=1)
+    def visible_context(
+        self, visible: dict
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        context = torch.cat(
+            (visible["pooled"].unsqueeze(1), visible["tokens"]), dim=1
+        )
+        cls_mask = torch.zeros(
+            (len(context), 1), dtype=torch.bool, device=context.device
+        )
+        return context, torch.cat(
+            (cls_mask, visible["padding_mask"]), dim=1
+        )
 
     def parent_context(
-        self, reconstruction: dict, structured: dict, pooled: torch.Tensor,
-        node_context: dict[str, torch.Tensor] | None = None, *, mode: str | None = None,
+        self,
+        reconstruction: dict,
+        structured: dict,
+        pooled: torch.Tensor,
+        node_context: dict[str, torch.Tensor] | None = None,
+        *,
+        mode: str | None = None,
     ) -> torch.Tensor:
+        """Build the training/inference context for non-hypothesis posterior modes.
+
+        ``hypothesis`` uses truth assignments during training to learn p(nu|X,A),
+        but predicted complete hypotheses at inference through
+        :meth:`assignment_parent_context`.
+        """
         mode = self.assignment_mode if mode is None else mode
         contexts = []
         for role in self.spec.invisible_roles:
@@ -74,31 +108,58 @@ class InvisibleGenerator(nn.Module):
                 candidates = reconstruction["candidate_embeddings"][node]
                 probabilities = reconstruction["assignment_probabilities"][node]
                 if mode == "soft":
-                    summary = torch.sum(probabilities[:, 1:].unsqueeze(-1) * candidates, dim=1)
+                    summary = torch.sum(
+                        probabilities[:, 1:].unsqueeze(-1) * candidates,
+                        dim=1,
+                    )
                 elif mode == "hard":
                     selected = probabilities.argmax(dim=1) - 1
                     safe = selected.clamp_min(0)
-                    summary = candidates[torch.arange(len(candidates), device=candidates.device), safe]
+                    summary = candidates[
+                        torch.arange(len(candidates), device=candidates.device),
+                        safe,
+                    ]
                     summary = summary * (selected >= 0).unsqueeze(1)
-                elif mode == "truth":
+                elif mode in {"hypothesis", "truth"}:
                     pool = structured["pools"][node]
                     selected = pool["truth_index"]
                     if (selected < 0).any():
-                        events = (selected < 0).nonzero(as_tuple=False).flatten()[:10].tolist()
+                        events = (
+                            (selected < 0)
+                            .nonzero(as_tuple=False)
+                            .flatten()[:10]
+                            .tolist()
+                        )
+                        label = (
+                            "Hypothesis-conditioned training"
+                            if mode == "hypothesis"
+                            else "Truth-oracle conditioning"
+                        )
                         raise RuntimeError(
-                            f"Truth-oracle conditioning requested for unreconstructable node {node}; rows={events}"
+                            f"{label} requested for unreconstructable node {node}; "
+                            f"rows={events}"
                         )
                     summary = candidates[
-                        torch.arange(len(candidates), device=candidates.device), selected
+                        torch.arange(len(candidates), device=candidates.device),
+                        selected,
                     ]
                 else:
-                    raise ValueError(f"Unknown assignment conditioning mode {mode!r}")
+                    raise ValueError(
+                        f"Unknown assignment conditioning mode {mode!r}"
+                    )
             contexts.append(base + summary)
         return torch.stack(contexts, dim=1)
 
-    def loss(self, target: torch.Tensor, visible: dict, parent_context: torch.Tensor) -> dict:
+    def loss(
+        self,
+        target: torch.Tensor,
+        visible: dict,
+        parent_context: torch.Tensor,
+    ) -> dict:
         context, mask = self.visible_context(visible)
-        return self.formulation.loss(target, context, mask, parent_context)
+        return self.formulation.loss(
+            target, context, mask, parent_context
+        )
 
     def flow_source(
         self,
@@ -107,21 +168,35 @@ class InvisibleGenerator(nn.Module):
         generator: torch.Generator | None = None,
     ) -> torch.Tensor:
         if self.formulation_name != "flow_matching":
-            raise RuntimeError("Flow source is only defined for Flow Matching")
+            raise RuntimeError(
+                "Flow source is only defined for Flow Matching"
+            )
         return self.formulation.source(target, generator=generator)
 
     def velocity(
-        self, state: torch.Tensor, time: torch.Tensor,
-        visible: dict, parent_context: torch.Tensor,
+        self,
+        state: torch.Tensor,
+        time: torch.Tensor,
+        visible: dict,
+        parent_context: torch.Tensor,
     ) -> torch.Tensor:
         if self.formulation_name != "flow_matching":
-            raise RuntimeError("Invisible velocity is only defined for Flow Matching")
+            raise RuntimeError(
+                "Invisible velocity is only defined for Flow Matching"
+            )
         context, mask = self.visible_context(visible)
-        return self.formulation.velocity(state, time, context, mask, parent_context)
+        return self.formulation.velocity(
+            state, time, context, mask, parent_context
+        )
 
     def sample(
-        self, visible: dict, parent_context: torch.Tensor, *, samples: int,
-        budget: int | None = None, generator: torch.Generator | None = None,
+        self,
+        visible: dict,
+        parent_context: torch.Tensor,
+        *,
+        samples: int,
+        budget: int | None = None,
+        generator: torch.Generator | None = None,
     ) -> tuple[torch.Tensor, int]:
         if samples <= 0:
             raise ValueError("Posterior sample count must be positive")
@@ -131,31 +206,54 @@ class InvisibleGenerator(nn.Module):
         mask = mask.repeat_interleave(samples, dim=0)
         parent = parent_context.repeat_interleave(samples, dim=0)
         shape = (batch * samples, roles, 3)
-        selected_budget = self.inference_budget if budget is None else budget
+        selected_budget = (
+            self.inference_budget if budget is None else budget
+        )
         if self.formulation_name == "standard":
             values, nfe = self.formulation.sample(
-                shape, context, mask, parent,
-                inference_steps=selected_budget, generator=generator,
+                shape,
+                context,
+                mask,
+                parent,
+                inference_steps=selected_budget,
+                generator=generator,
             )
         elif self.formulation_name == "edm":
             values, nfe = self.formulation.sample(
-                shape, context, mask, parent,
-                nfe=selected_budget, generator=generator,
+                shape,
+                context,
+                mask,
+                parent,
+                nfe=selected_budget,
+                generator=generator,
             )
         else:
             values, nfe = self.formulation.sample(
-                shape, context, mask, parent,
-                steps=selected_budget, solver=self.sampler, generator=generator,
+                shape,
+                context,
+                mask,
+                parent,
+                steps=selected_budget,
+                solver=self.sampler,
+                generator=generator,
             )
         return values.reshape(batch, samples, roles, 3), nfe
 
     def assignment_parent_context(
-        self, reconstruction: dict, structured: dict, pooled: torch.Tensor,
-        assignments: list[tuple], node_context: dict[str, torch.Tensor] | None = None,
+        self,
+        reconstruction: dict,
+        structured: dict,
+        pooled: torch.Tensor,
+        assignments: list[tuple],
+        node_context: dict[str, torch.Tensor] | None = None,
     ) -> torch.Tensor:
-        """Build exact hard parent contexts for complete decoded hypotheses."""
-        if not assignments or any(len(items) != len(assignments[0]) for items in assignments):
-            raise ValueError("Every event must provide the same non-zero number of assignments")
+        """Build exact hard contexts for complete predicted assignment hypotheses."""
+        if not assignments or any(
+            len(items) != len(assignments[0]) for items in assignments
+        ):
+            raise ValueError(
+                "Every event must provide the same non-zero number of assignments"
+            )
         per_event = []
         for event, hypotheses in enumerate(assignments):
             per_hypothesis = []
@@ -167,41 +265,70 @@ class InvisibleGenerator(nn.Module):
                     candidate_index = selected[node]
                     for role in self.spec.nodes[node].composite_roles:
                         child_index = int(
-                            structured["pools"][node]["child_indices"][role.key][candidate_index]
+                            structured["pools"][node]["child_indices"][
+                                role.key
+                            ][candidate_index]
                         )
-                        previous = selected.setdefault(role.child, child_index)
+                        previous = selected.setdefault(
+                            role.child, child_index
+                        )
                         if previous != child_index:
-                            raise RuntimeError(f"Decoded hypothesis has inconsistent child {role.child}")
+                            raise RuntimeError(
+                                "Decoded hypothesis has inconsistent child "
+                                f"{role.child}"
+                            )
                 contexts = []
                 for role in self.spec.invisible_roles:
                     if role.node not in selected:
                         raise RuntimeError(
-                            f"Complete hypothesis does not determine invisible parent {role.node}"
+                            "Complete hypothesis does not determine invisible "
+                            f"parent {role.node}"
                         )
-                    base = pooled[event] if node_context is None else node_context[role.node][event]
-                    candidate = reconstruction["candidate_embeddings"][role.node][
-                        event, selected[role.node]
-                    ]
+                    base = (
+                        pooled[event]
+                        if node_context is None
+                        else node_context[role.node][event]
+                    )
+                    candidate = reconstruction["candidate_embeddings"][
+                        role.node
+                    ][event, selected[role.node]]
                     contexts.append(base + candidate)
                 per_hypothesis.append(torch.stack(contexts, dim=0))
             per_event.append(torch.stack(per_hypothesis, dim=0))
         return torch.stack(per_event, dim=0)
 
     def sample_hypotheses(
-        self, visible: dict, parent_context: torch.Tensor, *, samples: int,
-        budget: int | None = None, generator: torch.Generator | None = None,
+        self,
+        visible: dict,
+        parent_context: torch.Tensor,
+        *,
+        samples: int,
+        budget: int | None = None,
+        generator: torch.Generator | None = None,
     ) -> tuple[torch.Tensor, int]:
         if parent_context.ndim != 4:
-            raise ValueError("Hypothesis parent context must be [B,K,Rnu,D]")
+            raise ValueError(
+                "Hypothesis parent context must be [B,K,Rnu,D]"
+            )
         batch, hypotheses, roles, width = parent_context.shape
         repeated_visible = {
-            "pooled": visible["pooled"].repeat_interleave(hypotheses, dim=0),
-            "tokens": visible["tokens"].repeat_interleave(hypotheses, dim=0),
-            "padding_mask": visible["padding_mask"].repeat_interleave(hypotheses, dim=0),
+            "pooled": visible["pooled"].repeat_interleave(
+                hypotheses, dim=0
+            ),
+            "tokens": visible["tokens"].repeat_interleave(
+                hypotheses, dim=0
+            ),
+            "padding_mask": visible["padding_mask"].repeat_interleave(
+                hypotheses, dim=0
+            ),
         }
         generated, nfe = self.sample(
             repeated_visible,
             parent_context.reshape(batch * hypotheses, roles, width),
-            samples=samples, budget=budget, generator=generator,
+            samples=samples,
+            budget=budget,
+            generator=generator,
         )
-        return generated.reshape(batch, hypotheses, samples, roles, 3), nfe
+        return generated.reshape(
+            batch, hypotheses, samples, roles, 3
+        ), nfe
