@@ -5,7 +5,7 @@ on:
     branches: [main]
     paths:
       - "src/**"
-      - "scripts/smoke_*.py"
+      - "scripts/**"
       - "configs/**"
       - "pyproject.toml"
       - "requirements.yaml"
@@ -27,7 +27,28 @@ jobs:
           cache: pip
       - name: Install CPU PyTorch
         run: python -m pip install --index-url https://download.pytorch.org/whl/cpu torch
-      - name: Install project
-        run: python -m pip install -e . tensorboard
+      - name: Install project and static checker
+        run: python -m pip install -e . tensorboard ruff
+      - name: Compile maintained Python
+        run: python -m compileall -q src scripts
+      - name: Check fatal static errors
+        run: ruff check src scripts --select E9,F63,F7,F82
+      - name: Validate maintained experiment configs
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from joint_event_reconstruction.configuration import load_experiment
+          for path in sorted(Path("configs/experiments").glob("*.yaml")):
+              load_experiment(path)
+              print(f"validated {path}")
+          PY
       - name: Synthetic smoke
         run: python scripts/smoke_synthetic.py --topology ${{ matrix.topology }} --device cpu --events 4
+      - name: Synthetic benchmark smoke
+        if: matrix.topology == 'ttbar1L'
+        run: |
+          python scripts/benchmark_synthetic.py \
+            --experiment configs/experiments/ttbar1L.yaml \
+            --modes visible cfm dfm joint \
+            --device cpu --events 2 --warmup 0 --iterations 1 \
+            --posterior-samples 1 --flow-steps 1 --joint-sample-chunk-size 1
