@@ -21,10 +21,8 @@ from sklearn.metrics import roc_auc_score, roc_curve
 from joint_event_reconstruction.m0.evaluation.plot_style import (
     BACKGROUND_COLOUR,
     CORRECT_COLOUR,
-    INCORRECT_COLOUR,
     RANDOM_COLOUR,
     SIGNAL_COLOUR,
-    TRUTH_COLOUR,
     decorate_axis,
     efficiency_axis,
 )

@@ -14,7 +14,6 @@ from joint_event_reconstruction.m0.data.module import (
     build_token_schema,
     infer_candidate_pools,
     parse_reconstruction_targets,
-    token_feature_dim_from_dataset_cfg,
     validate_transformer_task_config,
 )
 
