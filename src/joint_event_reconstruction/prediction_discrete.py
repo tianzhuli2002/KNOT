@@ -13,14 +13,12 @@ import torch
 from joint_event_reconstruction.assignment_semantics import (
     NULL_INCLUDING_SUPPORT,
     hdf5_support_attributes,
-    read_hdf5_support,
+)
+from joint_event_reconstruction.prediction_schema import (
+    DISCRETE_PREDICTION_SCHEMA,
+    validate_discrete_prediction,
 )
 from joint_event_reconstruction.topology.assignments import AssignmentSpace
-
-
-DISCRETE_PREDICTION_SCHEMA = (
-    "joint_event_reconstruction_discrete_flow_predictions_v1"
-)
 
 
 def _create(
@@ -218,30 +216,3 @@ def predict_discrete_flow_hdf5(
 
     validate_discrete_prediction(temporary)
     os.replace(temporary, target)
-
-
-def validate_discrete_prediction(path: str | Path) -> None:
-    with h5py.File(path, "r") as source:
-        if source.attrs.get("schema_version") != DISCRETE_PREDICTION_SCHEMA:
-            raise ValueError(f"Invalid discrete-flow prediction schema in {path}")
-        support = read_hdf5_support(source)
-        if support["name"] != NULL_INCLUDING_SUPPORT:
-            raise ValueError("DFM prediction must use NULL-including clean support")
-        count = len(source["EVENT_ID"])
-        if count == 0 or len(np.unique(source["EVENT_ID"][:])) != count:
-            raise ValueError(f"Prediction output {path} is empty or has duplicate EVENT_ID")
-        for name in (
-            "HYPOTHESES/assignment_state",
-            "HYPOTHESES/root_candidate_indices",
-            "HYPOTHESES/node_candidate_indices",
-            "TRUTH/assignment_state",
-            "TRUTH/root_candidate_indices",
-            "TRUTH/node_candidate_indices",
-            "OBSERVED/njet",
-        ):
-            if len(source[name]) != count:
-                raise ValueError(f"Prediction output has inconsistent {name} length")
-        states = source["HYPOTHESES/assignment_state"][:]
-        state_count = int(source.attrs["assignment_state_count"])
-        if ((states < 0) | (states >= state_count)).any():
-            raise ValueError("Discrete-flow prediction contains invalid clean state indices")

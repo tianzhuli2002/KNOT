@@ -13,13 +13,13 @@ import torch
 from joint_event_reconstruction.assignment_semantics import (
     NULL_INCLUDING_SUPPORT,
     hdf5_support_attributes,
-    read_hdf5_support,
 )
 from joint_event_reconstruction.physics import compose_assignment_state
+from joint_event_reconstruction.prediction_schema import (
+    JOINT_PREDICTION_SCHEMA,
+    validate_joint_prediction,
+)
 from joint_event_reconstruction.topology.assignments import AssignmentSpace
-
-
-JOINT_PREDICTION_SCHEMA = "joint_event_reconstruction_joint_flow_predictions_v1"
 
 
 def _create(group: h5py.Group, name: str, tail: tuple[int, ...], dtype) -> h5py.Dataset:
@@ -320,34 +320,3 @@ def predict_joint_flow_hdf5(
 
     validate_joint_prediction(temporary)
     os.replace(temporary, target)
-
-
-def validate_joint_prediction(path: str | Path) -> None:
-    with h5py.File(path, "r") as source:
-        if source.attrs.get("schema_version") != JOINT_PREDICTION_SCHEMA:
-            raise ValueError(f"Invalid joint-flow prediction schema in {path}")
-        support = read_hdf5_support(source)
-        if support["name"] != NULL_INCLUDING_SUPPORT:
-            raise ValueError("Joint-flow prediction must use NULL-including clean support")
-        count = len(source["EVENT_ID"])
-        if count == 0 or len(np.unique(source["EVENT_ID"][:])) != count:
-            raise ValueError(f"Prediction output {path} is empty or has duplicate EVENT_ID")
-        for name in (
-            "HYPOTHESES/assignment_state",
-            "HYPOTHESES/root_candidate_indices",
-            "HYPOTHESES/node_candidate_indices",
-            "HYPOTHESES/invisible",
-            "TRUTH/assignment_state",
-            "TRUTH/root_candidate_indices",
-            "TRUTH/NEUTRINO",
-        ):
-            if len(source[name]) != count:
-                raise ValueError(f"Prediction output has inconsistent {name} length")
-        if not np.isfinite(source["HYPOTHESES/invisible"][:]).all():
-            raise ValueError("Joint-flow invisible hypotheses contain non-finite values")
-        if "COMPOSITES" in source:
-            for node in source["COMPOSITES"]:
-                if len(source[f"COMPOSITES/{node}"]) != count:
-                    raise ValueError(
-                        f"Prediction output has inconsistent COMPOSITES/{node} length"
-                    )

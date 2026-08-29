@@ -9,7 +9,7 @@ import h5py
 import numpy as np
 
 from joint_event_reconstruction.assignment_semantics import read_hdf5_support
-from joint_event_reconstruction.prediction import validate_prediction
+from joint_event_reconstruction.prediction_schema import validate_prediction
 
 
 COVERAGE_LEVELS = (0.50, 0.68, 0.90, 0.95)

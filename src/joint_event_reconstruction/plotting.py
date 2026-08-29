@@ -15,9 +15,11 @@ import numpy as np
 
 from joint_event_reconstruction.assignment_semantics import read_hdf5_support
 from joint_event_reconstruction.evaluation_joint import evaluate_any_predictions
-from joint_event_reconstruction.prediction import PREDICTION_SCHEMA
-from joint_event_reconstruction.prediction_discrete import DISCRETE_PREDICTION_SCHEMA
-from joint_event_reconstruction.prediction_joint import JOINT_PREDICTION_SCHEMA
+from joint_event_reconstruction.prediction_schema import (
+    DISCRETE_PREDICTION_SCHEMA,
+    JOINT_PREDICTION_SCHEMA,
+    PREDICTION_SCHEMA,
+)
 
 
 COMPONENTS = ("px", "py", "pz")

@@ -13,14 +13,14 @@ import torch
 from joint_event_reconstruction.assignment_semantics import (
     NON_NULL_SUPPORT,
     hdf5_support_attributes,
-    read_hdf5_support,
 )
 from joint_event_reconstruction.physics import compose_assignment_state
+from joint_event_reconstruction.prediction_schema import (
+    PREDICTION_SCHEMA,
+    validate_prediction,
+)
 from joint_event_reconstruction.topology.candidates import CandidateRecord
 from joint_event_reconstruction.topology.decoder import ScoredCandidate, decode_complete
-
-
-PREDICTION_SCHEMA = "joint_event_reconstruction_predictions_v1"
 
 
 def _append(dataset: h5py.Dataset, values: np.ndarray) -> None:
@@ -578,38 +578,6 @@ def predict_hdf5(
 
     validate_prediction(temporary)
     os.replace(temporary, target)
-
-
-def validate_prediction(path: str | Path) -> None:
-    with h5py.File(path, "r") as source:
-        if source.attrs.get("schema_version") != PREDICTION_SCHEMA:
-            raise ValueError(f"Invalid prediction schema in {path}")
-        support = read_hdf5_support(source)
-        if support["name"] != NON_NULL_SUPPORT:
-            raise ValueError(
-                "Discriminative complete prediction must use non-null support"
-            )
-        count = len(source["EVENT_ID"])
-        if count == 0 or len(np.unique(source["EVENT_ID"][:])) != count:
-            raise ValueError(f"Prediction output {path} is empty or has duplicate EVENT_ID")
-        for name in (
-            "VISIBLE/assignment_log_scores",
-            "VISIBLE/exact_logZ",
-            "VISIBLE/constrained_probabilities",
-        ):
-            if len(source[name]) != count or not np.isfinite(source[name][:]).all():
-                raise ValueError(f"Prediction output has invalid {name}")
-        if "INVISIBLE/samples" in source:
-            samples = source["INVISIBLE/samples"]
-            if len(samples) != count or not np.isfinite(samples[:]).all():
-                raise ValueError("Prediction output has invalid invisible samples")
-            branches = int(
-                source["INVISIBLE"].attrs[
-                    "unique_assignment_conditioning_branches"
-                ]
-            )
-            if branches not in {1, int(source.attrs["K"])}:
-                raise ValueError("Factorized invisible branch count must be 1 or K")
 
 
 def _to_device(value, device):

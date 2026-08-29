@@ -9,7 +9,7 @@ import h5py
 import numpy as np
 
 from joint_event_reconstruction.assignment_semantics import read_hdf5_support
-from joint_event_reconstruction.prediction_joint import (
+from joint_event_reconstruction.prediction_schema import (
     JOINT_PREDICTION_SCHEMA,
     validate_joint_prediction,
 )
