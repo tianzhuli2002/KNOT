@@ -15,6 +15,15 @@ import numpy as np
 SCHEMA_VERSION = "joint_event_reconstruction_canonical_v1"
 
 
+def splitmix64(values: np.ndarray) -> np.ndarray:
+    """Reproduce the converter's deterministic even-partition split hash."""
+    with np.errstate(over="ignore"):
+        values = values.astype(np.uint64, copy=True) + np.uint64(0x9E3779B97F4A7C15)
+        values = (values ^ (values >> np.uint64(30))) * np.uint64(0xBF58476D1CE4E5B9)
+        values = (values ^ (values >> np.uint64(27))) * np.uint64(0x94D049BB133111EB)
+    return values ^ (values >> np.uint64(31))
+
+
 def finite_labels(values: np.ndarray) -> Counter:
     selected = values[np.isfinite(values)].astype(np.int64, copy=False)
     unique, counts = np.unique(selected, return_counts=True)
@@ -53,6 +62,11 @@ def validate(path: Path, *, chunk_size: int = 100_000) -> dict:
             event_id = source["EVENT_ID"][start:stop]
             partition = source["SOURCE/partition"][start:stop]
             row = source["SOURCE/row"][start:stop]
+            split = source["SPLIT"][start:stop]
+            if not np.isin(partition, (0, 1)).all():
+                raise ValueError(f"{path}: invalid source partition at row {start}")
+            if not np.isin(split, (0, 1, 2)).all():
+                raise ValueError(f"{path}: invalid split value at row {start}")
             if not np.array_equal(event_id, partition.astype(np.uint64) * np.uint64(1 << 32) + row):
                 raise ValueError(f"{path}: EVENT_ID provenance closure failed at row {start}")
             if previous is not None and event_id[0] <= previous:
@@ -60,7 +74,16 @@ def validate(path: Path, *, chunk_size: int = 100_000) -> dict:
             if len(event_id) > 1 and not np.all(event_id[1:] > event_id[:-1]):
                 raise ValueError(f"{path}: EVENT_ID duplicates within chunk starting {start}")
             previous = event_id[-1]
-            split_counts += np.bincount(source["SPLIT"][start:stop], minlength=3)
+            expected_split = np.full(len(event_id), 2, dtype=np.uint8)
+            even = partition == 0
+            expected_split[even] = np.where(
+                splitmix64(event_id[even] ^ np.uint64(42)) % np.uint64(20) == 0,
+                1,
+                0,
+            ).astype(np.uint8)
+            if not np.array_equal(split, expected_split):
+                raise ValueError(f"{path}: split policy mismatch at row {start}")
+            split_counts += np.bincount(split, minlength=3)
             partition_counts += np.bincount(partition, minlength=2)
             truth = neutrino[start:stop]
             for role in range(expected_roles):
@@ -83,8 +106,6 @@ def validate(path: Path, *, chunk_size: int = 100_000) -> dict:
             raise ValueError(f"{path}: invalid split counts {split_counts.tolist()}")
         if topology == "ttbar2L" and emu_presence != count:
             raise ValueError(f"{path}: {count - emu_presence} events lack canonical e-mu support")
-        if np.any(source["SPLIT"][: min(count, chunk_size)] == 2):
-            raise ValueError(f"{path}: even partition unexpectedly begins with test events")
 
         result = {
             "path": str(path), "schema_version": SCHEMA_VERSION, "topology": topology,
