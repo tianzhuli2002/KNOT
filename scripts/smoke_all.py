@@ -21,6 +21,7 @@ from joint_event_reconstruction.data.structured import StructuredDataModule
 from joint_event_reconstruction.topology.candidates import CandidateRecord
 from joint_event_reconstruction.topology.decoder import ScoredCandidate, decode_complete
 from joint_event_reconstruction.training.joint import JointEventModule
+from scripts.smoke_rng import seed_smoke
 
 
 MODES = (
@@ -37,6 +38,21 @@ MODES = (
     "topk_edm",
     "joint_compatibility",
 )
+
+_MODE_SEED_OFFSETS = {
+    "visible_m1": 101,
+    "visible_recurrent_m2": 102,
+    "visible_feedback_m3": 103,
+    "standard_no_assignment": 104,
+    "edm_no_assignment": 105,
+    "standard_soft_c1": 106,
+    "edm_soft_c1": 107,
+    "edm_hard_diagnostic": 108,
+    "edm_truth_oracle": 109,
+    "edm_c2_detached": 110,
+    "topk_edm": 111,
+    "joint_compatibility": 112,
+}
 
 
 def move(value, device):
@@ -182,6 +198,7 @@ def decode_batch(module, batch, output, k):
 
 
 def run_mode(base, visible, batch, scaler, mode, device):
+    seed_smoke(int(base.experiment.seed) + _MODE_SEED_OFFSETS[mode])
     config = configure(base, mode)
     if mode == "edm_truth_oracle":
         probe = JointEventModule(config, visible, invisible_scaler=scaler, synthetic_data=True)
@@ -338,7 +355,8 @@ def run_experiment_smoke(
 ):
     torch.set_num_threads(1)
     base = load_experiment(experiment_path)
-    if base.experiment.name == "ttbar1L" and base.data.tensor_cache is None:
+    seed_smoke(int(base.experiment.seed) + 10_000)
+    if not real_data and base.experiment.name == "ttbar1L" and base.data.tensor_cache is None:
         base.data.tensor_cache = (
             "/mnt/iusers01/fatpou01/phy01/w00238tl/scratch/SB_paper/results/"
             "transformer_full_campaign_joint_first_v2/cache/"
@@ -368,6 +386,7 @@ def run_experiment_smoke(
         base.data.invisible.allow_synthetic = True
 
     visible = load_visible_config(base)
+    visible.train.n_epochs = 1
     for split in ("train", "val", "test"):
         visible.dataset[f"{split}_batch_size"] = events
         visible.dataset[f"{split}_num_workers"] = 0

@@ -40,6 +40,7 @@ from joint_event_reconstruction.training.joint import JointEventModule
 from scripts.smoke_all import MODES, run_mode as run_factorized_mode
 from scripts.smoke_flows import FLOW_MODES, configure as configure_flow
 from scripts.smoke_flows import run_mode as run_flow_mode
+from scripts.smoke_rng import seed_smoke
 
 
 CONTRACTS = {
@@ -208,7 +209,8 @@ def _prediction_roundtrip(base, visible, batch, scaler, device):
         data = _SyntheticPredictionData(batch, visible, source_path)
         paths, summaries = {}, {}
 
-        for conditioning in ("none", "hypothesis"):
+        for index, conditioning in enumerate(("none", "hypothesis")):
+            seed_smoke(int(base.experiment.seed) + 30_000 + index)
             config = _factorized_cfm_config(base, conditioning)
             module = JointEventModule(config, visible, invisible_scaler=scaler, synthetic_data=True).to(device)
             path = directory / f"cfm_{conditioning}.h5"
@@ -228,6 +230,7 @@ def _prediction_roundtrip(base, visible, batch, scaler, device):
             }
 
         dfm_config = configure_flow(base, "dfm_assignment")
+        seed_smoke(int(base.experiment.seed) + 30_010)
         dfm = JointEventModule(dfm_config, visible, invisible_scaler=None, synthetic_data=True).to(device)
         dfm_path = directory / "dfm.h5"
         predict_discrete_flow_hdf5(dfm, data, dfm_path, split="test", posterior_samples=2, steps=2, device=device)
@@ -237,6 +240,7 @@ def _prediction_roundtrip(base, visible, batch, scaler, device):
         summaries["dfm"] = {"events": dfm_metrics["events"], "samples": dfm_metrics["posterior_samples"], "assignment_support": dfm_metrics["assignment_support"]["name"]}
 
         joint_config = configure_flow(base, "joint_flow")
+        seed_smoke(int(base.experiment.seed) + 30_011)
         joint = JointEventModule(joint_config, visible, invisible_scaler=scaler, synthetic_data=True).to(device)
         joint_path = directory / "joint.h5"
         predict_joint_flow_hdf5(joint, data, scaler, joint_path, split="test", posterior_samples=2, steps=2, sample_chunk_size=2, device=device)
@@ -264,6 +268,7 @@ def _prediction_roundtrip(base, visible, batch, scaler, device):
 def run_synthetic_smoke(experiment_path: Path, *, device="cpu", events=4, factorized=True, flows=True):
     torch.set_num_threads(1)
     base = load_experiment(experiment_path)
+    seed_smoke(int(base.experiment.seed) + 40_000)
     visible, batch, scaler = build_synthetic_batch(base, events=events, device=device)
     results = {"factorized": {}, "flows": {}}
     if factorized:
@@ -291,6 +296,7 @@ def run_topology_contract(topology_name: str, *, device="cpu", events=4):
     base = copy.deepcopy(load_experiment(ROOT / "configs/experiments/ttbar1L.yaml"))
     base.experiment.name = topology_name
     base.topology_config = str(ROOT / "configs/topology" / f"{topology_name}.yaml")
+    seed_smoke(int(base.experiment.seed) + 40_001)
     visible, batch, scaler = build_synthetic_batch(base, events=events, device=device)
     spec = load_topology(base.topology_config)
     space = AssignmentSpace.from_structured(batch["structured"])

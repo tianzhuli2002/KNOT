@@ -22,6 +22,7 @@ from joint_event_reconstruction.data.structured import StructuredDataModule
 from joint_event_reconstruction.models.joint_flow import JointFlowState
 from joint_event_reconstruction.topology.assignments import AssignmentSpace
 from joint_event_reconstruction.training.joint import JointEventModule
+from scripts.smoke_rng import seed_smoke
 
 
 FLOW_MODES = (
@@ -31,6 +32,14 @@ FLOW_MODES = (
     "joint_flow",
     "joint_flow_recurrent",
 )
+
+_MODE_SEED_OFFSETS = {
+    "cfm_no_assignment": 201,
+    "ot_cfm": 202,
+    "dfm_assignment": 203,
+    "joint_flow": 204,
+    "joint_flow_recurrent": 205,
+}
 
 
 def move(value, device):
@@ -151,6 +160,7 @@ def _joint_coupling_gradients(module, batch) -> tuple[float, float]:
 
 
 def run_mode(base, visible, batch, scaler, mode, device):
+    seed_smoke(int(base.experiment.seed) + _MODE_SEED_OFFSETS[mode])
     config = configure(base, mode)
     module = JointEventModule(
         config, visible, invisible_scaler=scaler, synthetic_data=True
@@ -255,10 +265,12 @@ def run_flow_smoke(
     device: str = "cpu",
     events: int = 8,
     modes=None,
+    real_data: bool = False,
 ):
     torch.set_num_threads(1)
     base = load_experiment(experiment_path)
-    if base.experiment.name == "ttbar1L" and base.data.tensor_cache is None:
+    seed_smoke(int(base.experiment.seed) + 20_000)
+    if not real_data and base.experiment.name == "ttbar1L" and base.data.tensor_cache is None:
         base.data.tensor_cache = (
             "/mnt/iusers01/fatpou01/phy01/w00238tl/scratch/SB_paper/results/"
             "transformer_full_campaign_joint_first_v2/cache/"
@@ -268,26 +280,30 @@ def run_flow_smoke(
     for split in ("train", "val", "test"):
         base.data.max_events[split] = events
 
-    sidecar = Path("data/synthetic") / f"{base.experiment.name}_flow_{events}.h5"
-    command = [
-        sys.executable,
-        "scripts/data/make_synthetic_invisible.py",
-        "--experiment",
-        str(experiment_path),
-        "--output",
-        str(sidecar),
-        "--max-events",
-        str(events),
-        "--seed",
-        str(base.experiment.seed),
-    ]
-    if base.data.tensor_cache is not None:
-        command += ["--tensor-cache", str(base.data.tensor_cache)]
-    subprocess.run(command, check=True)
-    base.data.invisible.path = str(sidecar.resolve())
-    base.data.invisible.allow_synthetic = True
+    if not real_data:
+        sidecar = Path("data/synthetic") / f"{base.experiment.name}_flow_{events}.h5"
+        command = [
+            sys.executable,
+            "scripts/data/make_synthetic_invisible.py",
+            "--experiment",
+            str(experiment_path),
+            "--output",
+            str(sidecar),
+            "--max-events",
+            str(events),
+            "--seed",
+            str(base.experiment.seed),
+        ]
+        if base.data.tensor_cache is not None:
+            command += ["--tensor-cache", str(base.data.tensor_cache)]
+        subprocess.run(command, check=True)
+        base.data.invisible.path = str(sidecar.resolve())
+        base.data.invisible.allow_synthetic = True
+    elif base.data.invisible.path is None:
+        raise ValueError("Real-data flow smoke requires invisible_truth in the experiment")
 
     visible = load_visible_config(base)
+    visible.train.n_epochs = 1
     for split in ("train", "val", "test"):
         visible.dataset[f"{split}_batch_size"] = events
         visible.dataset[f"{split}_num_workers"] = 0
@@ -300,7 +316,7 @@ def run_flow_smoke(
         data_config.topology_config,
         tensor_cache=data_config.data.tensor_cache,
         invisible_path=data_config.data.invisible.path,
-        allow_synthetic=True,
+        allow_synthetic=bool(base.data.invisible.allow_synthetic),
         max_events={"train": events, "val": events, "test": events},
         subset_seed=int(base.experiment.seed),
         build_assignments=True,
