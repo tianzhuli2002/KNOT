@@ -5,22 +5,14 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-import h5py
-import lightning as L
-import torch
-from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
 from omegaconf import OmegaConf
 
 from joint_event_reconstruction.configuration import load_experiment, load_visible_config
-from joint_event_reconstruction.data.invisible import InvisibleScaler
-from joint_event_reconstruction.data.structured import StructuredDataModule
-from joint_event_reconstruction.evaluation_joint import evaluate_any_predictions
-from joint_event_reconstruction.plotting import plot_comparison, plot_prediction
-from joint_event_reconstruction.prediction import predict_hdf5
-from joint_event_reconstruction.prediction_discrete import predict_discrete_flow_hdf5
-from joint_event_reconstruction.prediction_joint import predict_joint_flow_hdf5
-from joint_event_reconstruction.training.joint import JointEventModule
+
+if TYPE_CHECKING:
+    from joint_event_reconstruction.training.joint import JointEventModule
 
 
 _COMPONENT_PREFIXES = {
@@ -37,7 +29,22 @@ _COMPONENT_PREFIXES = {
 }
 
 
+def _load_repo_script(relative_path: str, module_name: str):
+    """Load an executable repository script without depending on a package named scripts."""
+    import importlib.util
+
+    path = Path(__file__).resolve().parents[3] / "scripts" / relative_path
+    spec = importlib.util.spec_from_file_location(module_name, path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Cannot load repository script: {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def build_data(config, visible):
+    from joint_event_reconstruction.data.structured import StructuredDataModule
+
     invisible = config.data.invisible
     if config.model.invisible.enabled and invisible.path is None:
         raise ValueError("Invisible inference is enabled but the data config has no invisible_truth")
@@ -61,6 +68,10 @@ def build_data(config, visible):
 
 
 def _resolve_device(requested: str) -> str:
+    if requested == "cpu":
+        return "cpu"
+    import torch
+
     if requested == "auto":
         return "cuda" if torch.cuda.is_available() else "cpu"
     if requested == "cuda" and not torch.cuda.is_available():
@@ -82,6 +93,8 @@ def _load_initial_components(
     components: tuple[str, ...],
 ) -> int:
     """Load complete semantic components without relaxing checkpoint shape checks."""
+    import torch
+
     if not components:
         raise ValueError("Initial checkpoint requires at least one component")
     unknown = sorted(set(components) - set(_COMPONENT_PREFIXES))
@@ -138,6 +151,13 @@ def train(
     initial_checkpoint: str | None = None,
     initial_components: tuple[str, ...] = (),
 ) -> None:
+    import lightning as L
+    import torch
+    from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
+
+    from joint_event_reconstruction.training.joint import JointEventModule
+
+    torch.set_float32_matmul_precision("high")
     L.seed_everything(int(config.experiment.seed), workers=True)
     visible = load_visible_config(config)
     data = build_data(config, visible)
@@ -195,6 +215,11 @@ def train(
 
 
 def load_trained(config, visible, data, checkpoint_path: str) -> JointEventModule:
+    import torch
+
+    from joint_event_reconstruction.data.invisible import InvisibleScaler
+    from joint_event_reconstruction.training.joint import JointEventModule
+
     checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     checkpoint_scaler = checkpoint.get("invisible_scaler")
     if checkpoint_scaler is not None:
@@ -220,6 +245,15 @@ def load_trained(config, visible, data, checkpoint_path: str) -> JointEventModul
 
 
 def predict(config, args) -> None:
+    import h5py
+    import lightning as L
+    import torch
+
+    from joint_event_reconstruction.prediction import predict_hdf5
+    from joint_event_reconstruction.prediction_discrete import predict_discrete_flow_hdf5
+    from joint_event_reconstruction.prediction_joint import predict_joint_flow_hdf5
+
+    torch.set_float32_matmul_precision("high")
     prediction_seed = int(config.inference.seed)
     L.seed_everything(prediction_seed, workers=True)
     device = _resolve_device(args.device)
@@ -286,6 +320,8 @@ def _plot_predictions(
     labels: list[str] | None,
     formats: tuple[str, ...],
 ) -> None:
+    from joint_event_reconstruction.plotting import plot_comparison, plot_prediction
+
     output_dir = Path(output).expanduser().resolve()
     if len(paths) == 1:
         written = plot_prediction(paths[0], output_dir, formats=formats)
@@ -384,10 +420,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
-    torch.set_float32_matmul_precision("high")
     args = build_parser().parse_args()
 
     if args.command == "evaluate":
+        from joint_event_reconstruction.evaluation_joint import evaluate_any_predictions
+
         print(json.dumps(evaluate_any_predictions(args.predictions), indent=2, sort_keys=True))
         return
     if args.command == "plot":
@@ -417,19 +454,27 @@ def main() -> None:
         predict(config, args)
         return
     if args.command == "validate-data":
-        from scripts.data.validate_joint_h5 import validate
+        validator = _load_repo_script("data/validate_joint_h5.py", "jer_validate_joint_h5")
 
         if config.data.invisible.path is None:
             raise ValueError("validate-data requires invisible_truth in the JER data config")
-        print(json.dumps(validate(Path(config.data.invisible.path)), indent=2, sort_keys=True))
+        print(json.dumps(validator.validate(Path(config.data.invisible.path)), indent=2, sort_keys=True))
         return
     if args.command == "smoke":
-        from scripts.smoke_all import run_experiment_smoke
-        from scripts.smoke_flows import run_flow_smoke
+        smoke_all = _load_repo_script("smoke_all.py", "jer_smoke_all")
+        smoke_flows = _load_repo_script("smoke_flows.py", "jer_smoke_flows")
 
         device = _resolve_device(args.device)
-        run_experiment_smoke(Path(args.experiment), device=device, events=args.events)
-        run_flow_smoke(Path(args.experiment), device=device, events=args.events)
+        import torch
+
+        torch.set_float32_matmul_precision("high")
+        real_data = config.data.tensor_cache is None
+        smoke_all.run_experiment_smoke(
+            Path(args.experiment), device=device, events=args.events, real_data=real_data
+        )
+        smoke_flows.run_flow_smoke(
+            Path(args.experiment), device=device, events=args.events, real_data=real_data
+        )
         return
     raise RuntimeError(f"Unhandled command {args.command!r}")
 
