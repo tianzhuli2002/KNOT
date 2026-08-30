@@ -131,7 +131,7 @@ def build_visible_loader_config(experiment: DictConfig) -> DictConfig:
         "cache": {"enabled": False},
         "observables": observables,
     }
-    return OmegaConf.create(
+    visible = OmegaConf.create(
         {
             "general": {
                 "model": "transformer",
@@ -151,8 +151,12 @@ def build_visible_loader_config(experiment: DictConfig) -> DictConfig:
                 },
             },
             "dataset": dataset,
+            "trainer": {
+                "check_val_every_n_epoch": 1,
+            },
             "train": {
                 "compute_val_auc": False,
+                "n_epochs": int(experiment.training.epochs),
                 "checkpoint": {
                     "monitor": "val_loss",
                     "mode": "min",
@@ -162,6 +166,13 @@ def build_visible_loader_config(experiment: DictConfig) -> DictConfig:
             },
         }
     )
+    expected_epochs = int(experiment.training.epochs)
+    if int(visible.train.n_epochs) != expected_epochs:
+        raise ValueError(
+            "Visible-loader train.n_epochs must mirror JER training.epochs: "
+            f"found {visible.train.n_epochs}, expected {expected_epochs}."
+        )
+    return visible
 
 
 def _resolve_recurrence(public, defaults) -> tuple[dict, bool, bool]:
