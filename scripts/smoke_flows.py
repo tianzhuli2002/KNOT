@@ -318,7 +318,7 @@ def run_flow_smoke(
         invisible_path=data_config.data.invisible.path,
         allow_synthetic=bool(base.data.invisible.allow_synthetic),
         max_events={"train": events, "val": events, "test": events},
-        subset_seed=int(base.experiment.seed),
+        subset_seed=int(base.data.subset_seed),
         build_assignments=True,
         max_assignment_states=int(data_config.data.max_assignment_states),
     )

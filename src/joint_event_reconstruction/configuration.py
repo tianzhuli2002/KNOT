@@ -113,7 +113,12 @@ def validate_experiment(config: DictConfig) -> None:
         raise ValueError("resolved topology_config and data_config must be non-empty")
 
     data = config.data
-    _exact_keys(data, {"tensor_cache", "max_events", "max_assignment_states", "invisible"}, "data")
+    _exact_keys(
+        data,
+        {"tensor_cache", "subset_seed", "max_events", "max_assignment_states", "invisible"},
+        "data",
+    )
+    int(data.subset_seed)
     _exact_keys(data.max_events, {"train", "val", "test"}, "data.max_events")
     _exact_keys(data.invisible, {"path", "allow_synthetic"}, "data.invisible")
     _positive_int(data.max_assignment_states, "data.max_assignment_states")

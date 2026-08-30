@@ -401,7 +401,7 @@ def run_experiment_smoke(
         invisible_path=data_config.data.invisible.path,
         allow_synthetic=bool(data_config.data.invisible.allow_synthetic),
         max_events={"train": events, "val": events, "test": events},
-        subset_seed=int(base.experiment.seed),
+        subset_seed=int(base.data.subset_seed),
     )
     data.setup("fit")
     batch = move(next(iter(data.train_dataloader())), torch.device(device))

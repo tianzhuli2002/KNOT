@@ -407,8 +407,9 @@ def resolve_public_experiment(public: DictConfig, *, source_path: str | Path | N
         raise FileNotFoundError(f"Topology config does not exist: {topology_path}")
     data_public = public.data
     _mapping(data_public, "data")
-    _unknown(data_public, {"config", "events", "max_assignment_states"}, "data")
-    _required(data_public, {"config", "events", "max_assignment_states"}, "data")
+    data_keys = {"config", "events", "subset_seed", "max_assignment_states"}
+    _unknown(data_public, data_keys, "data")
+    _required(data_public, data_keys, "data")
     _unknown(data_public.events, {"train", "validation", "test"}, "data.events")
     _required(data_public.events, {"train", "validation", "test"}, "data.events")
     data_path = _path(data_public.config)
@@ -481,6 +482,7 @@ def resolve_public_experiment(public: DictConfig, *, source_path: str | Path | N
             "data_config": str(data_path),
             "data": {
                 "tensor_cache": None if data_config.tensor_cache is None else str(_path(data_config.tensor_cache)),
+                "subset_seed": int(data_public.subset_seed),
                 "max_events": {
                     "train": data_public.events.train,
                     "val": data_public.events.validation,

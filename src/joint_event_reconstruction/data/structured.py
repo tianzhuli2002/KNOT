@@ -12,6 +12,7 @@ from omegaconf import OmegaConf
 from torch.utils.data import DataLoader, Dataset, Subset
 
 from joint_event_reconstruction.data.invisible import InvisibleScaler, InvisibleTruthStore
+from joint_event_reconstruction.data.subsets import deterministic_subset_positions
 from joint_event_reconstruction.m0.data.module import TransformerDataModule, _collate_transformer
 from joint_event_reconstruction.topology.assignments import build_assignment_template
 from joint_event_reconstruction.topology.candidates import build_event_candidates
@@ -386,14 +387,16 @@ class StructuredDataModule(TransformerDataModule):
             "test": "test",
         }
         selected_positions = {}
-        for offset, (loader_name, split_name) in enumerate(split_names.items()):
+        for loader_name, split_name in split_names.items():
             dataset = getattr(self, f"{loader_name}_dataset")
             count = None if self.max_events is None else self.max_events.get(loader_name)
             positions = np.arange(len(dataset), dtype=np.int64)
             if count is not None and int(count) < len(positions):
-                rng = np.random.default_rng(self.subset_seed + offset)
-                positions = np.sort(
-                    rng.choice(positions, size=int(count), replace=False)
+                event_ids = self._selected_ids(split_name, positions)
+                positions = deterministic_subset_positions(
+                    event_ids,
+                    int(count),
+                    self.subset_seed,
                 )
                 setattr(
                     self,

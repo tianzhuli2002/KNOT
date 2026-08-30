@@ -6,6 +6,7 @@ topology: configs/topology/ttbar1L.yaml
 
 data:
   config: configs/data/ttbar1L.yaml
+  subset_seed: 42
   events: {train: 100000, validation: 50000, test: 50000}
   max_assignment_states: 100000
 

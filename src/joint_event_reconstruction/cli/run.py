@@ -59,7 +59,7 @@ def build_data(config, visible):
         invisible_path=invisible.path if config.model.invisible.enabled else None,
         allow_synthetic=bool(invisible.allow_synthetic),
         max_events=OmegaConf.to_container(config.data.max_events, resolve=True),
-        subset_seed=int(config.experiment.seed),
+        subset_seed=int(config.data.subset_seed),
         build_assignments=build_assignments,
         max_assignment_states=(
             int(config.data.max_assignment_states) if build_assignments else None
