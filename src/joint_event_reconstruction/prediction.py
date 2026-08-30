@@ -255,6 +255,7 @@ def predict_hdf5(
         "validation": data.val_dataloader,
         "test": data.test_dataloader,
     }[split]()
+    iterator = iter(loader)
     target = Path(output_path).expanduser().resolve()
     target.parent.mkdir(parents=True, exist_ok=True)
     temporary = target.with_suffix(target.suffix + ".tmp")
@@ -309,7 +310,7 @@ def predict_hdf5(
             }
         )
 
-        for batch in loader:
+        for batch in iterator:
             batch = _to_device(batch, device)
             output = module(batch, recurrent_steps=recurrent_steps)
             decoded = decode_batch(module.spec, batch, output, top_k)

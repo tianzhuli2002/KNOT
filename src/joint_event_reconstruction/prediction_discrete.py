@@ -72,6 +72,7 @@ def predict_discrete_flow_hdf5(
         "validation": data.val_dataloader,
         "test": data.test_dataloader,
     }[split]()
+    iterator = iter(loader)
     target = Path(output_path).expanduser().resolve()
     target.parent.mkdir(parents=True, exist_ok=True)
     temporary = target.with_suffix(target.suffix + ".tmp")
@@ -113,7 +114,7 @@ def predict_discrete_flow_hdf5(
             }
         )
 
-        for batch in loader:
+        for batch in iterator:
             batch = _move(batch, device)
             visible = module.event_model.visible(
                 batch["tokens"], batch["type_ids"], batch["padding_mask"]
