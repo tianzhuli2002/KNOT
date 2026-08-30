@@ -4,7 +4,7 @@ study:
   experiment_pattern: configs/experiments/{topology}.yaml
   topologies: [ttbar2L]
   seeds: [42]
-  split: test
+  split: validation
 
 variants:
   n10k:
