@@ -4,10 +4,13 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import re
 import shlex
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -15,6 +18,9 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from joint_event_reconstruction.studies import StudySpec, VariantSpec, load_study
+
+
+_CAMPAIGN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 
 
 def _selected(value: str, allowed: tuple, label: str) -> tuple:
@@ -64,6 +70,38 @@ def _submit(command: list[str], *, dry_run: bool, fake_id: int) -> str:
         raise RuntimeError(f"Could not parse sbatch job id from {result.stdout!r}")
     print(f"submitted job {job_id}")
     return job_id
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _git_state() -> tuple[str, bool]:
+    commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=True,
+    ).stdout.strip()
+    dirty = bool(
+        subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=True,
+        ).stdout.strip()
+    )
+    return commit, dirty
+
+
+def _save_submission(path: Path, submitted: dict) -> None:
+    path.write_text(json.dumps(submitted, indent=2, sort_keys=True) + "\n")
 
 
 def _write_task_file(path: Path, tasks: list[tuple[str, str, int]]) -> None:
@@ -199,6 +237,10 @@ def main() -> None:
         help="Pass one additional sbatch argument, e.g. --extra-sbatch=--account=project.",
     )
     parser.add_argument("--no-postprocess", action="store_true")
+    parser.add_argument(
+        "--campaign-id",
+        help="Human-readable immutable Slurm-attempt identifier; defaults to a UTC timestamp.",
+    )
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
@@ -223,20 +265,67 @@ def main() -> None:
 
     study_path = study.path
     output_root = args.output_root.expanduser().resolve()
-    slurm_root = output_root / study.name / "_slurm"
+    manifest_sha256 = _sha256_file(study_path)
+    submitted_at = datetime.now(timezone.utc).isoformat()
+    campaign_id = args.campaign_id or (
+        datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        + f"-{manifest_sha256[:8]}"
+    )
+    if not _CAMPAIGN_ID.fullmatch(campaign_id):
+        raise ValueError(
+            "--campaign-id must contain only letters, numbers, '.', '_' and '-'"
+        )
+    slurm_base = output_root / study.name / "_slurm"
+    slurm_root = slurm_base / campaign_id
+    if slurm_root.exists():
+        raise FileExistsError(
+            f"Slurm campaign attempt already exists and is immutable: {slurm_root}"
+        )
     log_dir = slurm_root / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     overrides = tuple(args.global_overrides)
     extra = tuple(args.extra_sbatch)
+    git_commit, git_dirty = _git_state()
+    if git_dirty and not args.dry_run:
+        raise RuntimeError("Study submission requires a clean committed checkout")
 
     submitted: dict[str, object] = {
+        "campaign_id": campaign_id,
+        "submission_timestamp": submitted_at,
+        "git_commit": git_commit,
+        "git_dirty": git_dirty,
         "study": study.name,
+        "study_manifest": str(study_path),
+        "study_manifest_sha256": manifest_sha256,
+        "selection_split": study.split,
+        "output_root": str(output_root),
+        "slurm_root": str(slurm_root),
+        "log_directory": str(log_dir),
         "topologies": list(topologies),
         "requested_variants": [variant.name for variant in requested],
         "training_closure": [variant.name for variant in training],
         "seeds": list(seeds),
+        "overrides": list(overrides),
+        "extra_sbatch": list(extra),
+        "resources": {
+            "gpu": {
+                "partition": args.gpu_partition,
+                "gres": args.gpu_gres,
+                "cpus": args.gpu_cpus,
+                "memory": args.gpu_mem,
+                "time": args.gpu_time,
+            },
+            "cpu": {
+                "partition": args.cpu_partition,
+                "cpus": args.cpu_cpus,
+                "memory": args.cpu_mem,
+                "time": args.cpu_time,
+            },
+        },
         "train_levels": [],
     }
+    submission_path = slurm_root / "submission.json"
+    _save_submission(submission_path, submitted)
     dependency = None
     fake_id = 0
     for level_index, variants in enumerate(_levels(study, training)):
@@ -281,9 +370,13 @@ def main() -> None:
                 "level": level_index,
                 "variants": [variant.name for variant in variants],
                 "job_id": job_id,
+                "depends_on": dependency,
+                "task_file": str(task_file),
+                "worker": str(worker),
             }
         )
         dependency = job_id
+        _save_submission(submission_path, submitted)
 
     prediction_variants = tuple(
         variant for variant in requested if variant.reporting != "setup"
@@ -326,6 +419,10 @@ def main() -> None:
         )
         fake_id += 1
         submitted["prediction_job"] = prediction_job
+        submitted["prediction_depends_on"] = dependency
+        submitted["prediction_task_file"] = str(prediction_file)
+        submitted["prediction_worker"] = str(prediction_worker)
+        _save_submission(submission_path, submitted)
 
         if not args.no_postprocess:
             post = " && ".join(
@@ -360,10 +457,12 @@ def main() -> None:
                 fake_id=fake_id,
             )
             submitted["postprocess_job"] = post_job
+            submitted["postprocess_depends_on"] = prediction_job
+            _save_submission(submission_path, submitted)
 
-    (slurm_root / "submission.json").write_text(
-        json.dumps(submitted, indent=2, sort_keys=True) + "\n"
-    )
+    _save_submission(submission_path, submitted)
+    slurm_base.mkdir(parents=True, exist_ok=True)
+    (slurm_base / "latest.txt").write_text(str(slurm_root) + "\n")
     print(json.dumps(submitted, indent=2, sort_keys=True))
 
 
