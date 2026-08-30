@@ -283,7 +283,7 @@ class JointEventModule(L.LightningModule):
             trainable,
             lr=self.learning_rate,
             weight_decay=self.weight_decay,
-            fused=bool(trainable[0].is_cuda),
+            fused=False,
         )
         if not self.scheduler_config.enabled:
             return optimiser
