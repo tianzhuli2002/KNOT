@@ -751,6 +751,43 @@ def _compare(study, topology, variants, seed, *, root, formats, include_diagnost
         )
 
 
+def _study_specific_analysis(study, topologies, variants, seeds, *, root, dry_run):
+    if study.name != "visible_recurrence":
+        print(f"No dedicated analysis is maintained for {study.name}.")
+        return
+    required = {
+        "m1",
+        "m2",
+        "m3",
+        "m2_parameter_control",
+        "m2_compute_control",
+        "m3_parameter_control",
+        "m3_compute_control",
+    }
+    selected = {variant.name for variant in variants}
+    if not required <= selected:
+        print(
+            "Skip Study 01 dedicated analysis for partial variant selection; "
+            f"missing={sorted(required - selected)}"
+        )
+        return
+    for topology in topologies:
+        for seed in seeds:
+            command = [
+                sys.executable,
+                str(ROOT / "scripts/analyze_study_01.py"),
+                "--output-root",
+                str(root),
+                "--topology",
+                topology,
+                "--seed",
+                str(seed),
+            ]
+            print(shlex.join(command))
+            if not dry_run:
+                subprocess.run(command, cwd=ROOT, check=True)
+
+
 def _plan(study, topologies, requested, training, seeds, root):
     print(
         f"study: {study.name}\n"
@@ -772,7 +809,17 @@ def main() -> None:
     parser.add_argument("study", type=Path)
     parser.add_argument(
         "stage",
-        choices=("plan", "train", "predict", "evaluate", "plot", "compare", "summary", "all"),
+        choices=(
+            "plan",
+            "train",
+            "predict",
+            "evaluate",
+            "plot",
+            "compare",
+            "summary",
+            "analyze",
+            "all",
+        ),
     )
     parser.add_argument("--output-root", type=Path, default=Path("results/studies"))
     parser.add_argument("--topologies", default="all")
@@ -832,7 +879,7 @@ def main() -> None:
         return
 
     stages = (
-        ("train", "predict", "evaluate", "plot", "compare", "summary")
+        ("train", "predict", "evaluate", "plot", "compare", "summary", "analyze")
         if args.stage == "all"
         else (args.stage,)
     )
@@ -880,6 +927,15 @@ def main() -> None:
                     )
         elif stage == "summary":
             _summary(study, topologies, requested, seeds, root=root, dry_run=args.dry_run)
+        elif stage == "analyze":
+            _study_specific_analysis(
+                study,
+                topologies,
+                requested,
+                seeds,
+                root=root,
+                dry_run=args.dry_run,
+            )
 
 
 if __name__ == "__main__":

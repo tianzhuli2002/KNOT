@@ -437,7 +437,7 @@ def main() -> None:
                         overrides=overrides,
                     )
                 )
-                for stage in ("evaluate", "plot", "compare", "summary")
+                for stage in ("evaluate", "plot", "compare", "summary", "analyze")
             )
             post_job = _submit(
                 [

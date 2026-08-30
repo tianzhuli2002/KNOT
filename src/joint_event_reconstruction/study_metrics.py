@@ -8,9 +8,11 @@ from pathlib import Path
 import h5py
 import numpy as np
 
-from joint_event_reconstruction.prediction import PREDICTION_SCHEMA
-from joint_event_reconstruction.prediction_discrete import DISCRETE_PREDICTION_SCHEMA
-from joint_event_reconstruction.prediction_joint import JOINT_PREDICTION_SCHEMA
+from joint_event_reconstruction.prediction_schema import (
+    DISCRETE_PREDICTION_SCHEMA,
+    JOINT_PREDICTION_SCHEMA,
+    PREDICTION_SCHEMA,
+)
 
 
 def _mode(states: np.ndarray) -> np.ndarray:

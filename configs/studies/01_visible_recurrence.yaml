@@ -1,6 +1,6 @@
 study:
   name: visible_recurrence
-  description: Compare one-pass assignment, recurrent refinement, and soft assignment feedback on ttbar2L.
+  description: Compare one-pass assignment with recurrent refinement, soft feedback, and fixed capacity/compute controls on ttbar2L validation data.
   experiment_pattern: configs/experiments/{topology}.yaml
   topologies: [ttbar2L]
   seeds: [42]
@@ -8,17 +8,17 @@ study:
 
 variants:
   m1:
-    label: M1 one-pass
+    label: One-pass structured assignment
     reporting: primary
     patch:
       training: {trainable: [visible, assignment]}
     initialise_from: null
     initialise_components: []
     predictions:
-      default: {label: M1, patch: {prediction: {top_k: 1}}, recurrent_steps: null}
+      default: {label: One pass, patch: {prediction: {top_k: 5}}, recurrent_steps: null}
 
   m2:
-    label: M2 recurrent
+    label: Recurrent assignment refinement
     reporting: primary
     patch:
       model:
@@ -29,13 +29,14 @@ variants:
     initialise_from: null
     initialise_components: []
     predictions:
-      r1: {label: R=1, patch: {}, recurrent_steps: 1}
-      r2: {label: R=2, patch: {}, recurrent_steps: 2}
-      r4: {label: R=4, patch: {}, recurrent_steps: 4}
-      r8: {label: R=8, patch: {}, recurrent_steps: 8}
+      r1: {label: R=1, patch: {prediction: {top_k: 5}}, recurrent_steps: 1}
+      r2: {label: R=2, patch: {prediction: {top_k: 5}}, recurrent_steps: 2}
+      r3: {label: R=3, patch: {prediction: {top_k: 5}}, recurrent_steps: 3}
+      r4: {label: R=4, patch: {prediction: {top_k: 5}}, recurrent_steps: 4}
+      r8: {label: R=8 diagnostic extrapolation, patch: {prediction: {top_k: 5}}, recurrent_steps: 8}
 
   m3:
-    label: M3 recurrent + soft feedback
+    label: Recurrent assignment + soft feedback
     reporting: primary
     patch:
       model:
@@ -46,7 +47,56 @@ variants:
     initialise_from: null
     initialise_components: []
     predictions:
-      r1: {label: R=1, patch: {}, recurrent_steps: 1}
-      r2: {label: R=2, patch: {}, recurrent_steps: 2}
-      r4: {label: R=4, patch: {}, recurrent_steps: 4}
-      r8: {label: R=8, patch: {}, recurrent_steps: 8}
+      r1: {label: R=1, patch: {prediction: {top_k: 5}}, recurrent_steps: 1}
+      r2: {label: R=2, patch: {prediction: {top_k: 5}}, recurrent_steps: 2}
+      r3: {label: R=3, patch: {prediction: {top_k: 5}}, recurrent_steps: 3}
+      r4: {label: R=4, patch: {prediction: {top_k: 5}}, recurrent_steps: 4}
+      r8: {label: R=8 diagnostic extrapolation, patch: {prediction: {top_k: 5}}, recurrent_steps: 8}
+
+  m2_parameter_control:
+    label: Parameter-matched non-recurrent control for recurrence
+    reporting: diagnostic
+    patch:
+      model:
+        encoder: {layers: 6, d_feedforward: 384}
+      training: {trainable: [visible, assignment]}
+    initialise_from: null
+    initialise_components: []
+    predictions:
+      default: {label: Parameter control, patch: {prediction: {top_k: 5}}, recurrent_steps: null}
+
+  m2_compute_control:
+    label: Training-compute-matched non-recurrent control for recurrence
+    reporting: diagnostic
+    patch:
+      model:
+        encoder: {layers: 16, d_feedforward: 64}
+      training: {trainable: [visible, assignment]}
+    initialise_from: null
+    initialise_components: []
+    predictions:
+      default: {label: Training-compute control, patch: {prediction: {top_k: 5}}, recurrent_steps: null}
+
+  m3_parameter_control:
+    label: Parameter-matched non-recurrent control for soft feedback
+    reporting: diagnostic
+    patch:
+      model:
+        encoder: {layers: 7, d_feedforward: 384}
+      training: {trainable: [visible, assignment]}
+    initialise_from: null
+    initialise_components: []
+    predictions:
+      default: {label: Parameter control, patch: {prediction: {top_k: 5}}, recurrent_steps: null}
+
+  m3_compute_control:
+    label: Training-compute-matched non-recurrent control for soft feedback
+    reporting: diagnostic
+    patch:
+      model:
+        encoder: {layers: 24, d_feedforward: 64}
+      training: {trainable: [visible, assignment]}
+    initialise_from: null
+    initialise_components: []
+    predictions:
+      default: {label: Training-compute control, patch: {prediction: {top_k: 5}}, recurrent_steps: null}

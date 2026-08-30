@@ -1,0 +1,48 @@
+{
+  "purpose": "Fixed Study 01 non-recurrent control design; benchmark numbers are engineering diagnostics, not physics results.",
+  "benchmark": {
+    "gpu": "NVIDIA L40S",
+    "batch_events": 128,
+    "warmup": 2,
+    "iterations": 5,
+    "git_sha": "48e476a3b7fe56598636bb4e325b40ad45423085",
+    "slurm_jobs": [19612414, 19612456]
+  },
+  "controls": {
+    "m2_parameter_control": {
+      "encoder_layers": 6,
+      "d_feedforward": 384,
+      "target_parameters": 1161474,
+      "control_parameters": 1160962,
+      "relative_parameter_difference": -0.000441,
+      "role": "parameter-matched non-recurrent control"
+    },
+    "m2_compute_control": {
+      "encoder_layers": 16,
+      "d_feedforward": 64,
+      "target_training_seconds_per_step": 0.017783,
+      "control_training_seconds_per_step": 0.017486,
+      "training_time_ratio": 0.983,
+      "inference_time_ratio": 0.642,
+      "role": "training-compute-matched non-recurrent control"
+    },
+    "m3_parameter_control": {
+      "encoder_layers": 7,
+      "d_feedforward": 384,
+      "target_parameters": 1327106,
+      "control_parameters": 1326338,
+      "relative_parameter_difference": -0.000579,
+      "role": "parameter-matched non-recurrent control"
+    },
+    "m3_compute_control": {
+      "encoder_layers": 24,
+      "d_feedforward": 64,
+      "target_training_seconds_per_step": 0.025350,
+      "control_training_seconds_per_step": 0.024360,
+      "training_time_ratio": 0.961,
+      "inference_time_ratio": 0.698,
+      "role": "training-compute-matched non-recurrent control"
+    }
+  },
+  "interpretation": "Training-step matching is the control criterion. Inference timing is reported separately and is not matched. Architectures are fixed before physics training."
+}
