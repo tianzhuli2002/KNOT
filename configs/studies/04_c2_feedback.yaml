@@ -8,7 +8,7 @@ study:
 
 variants:
   assignment_reference:
-    label: M3 assignment reference
+    label: Assignment reference (pending Study 01 gate)
     reporting: setup
     patch:
       model:
@@ -21,8 +21,8 @@ variants:
     predictions: {}
 
   c1:
-    label: M3 + soft CFM C1
-    reporting: primary
+    label: Assignment reference + soft CFM C1
+    reporting: diagnostic
     patch:
       model:
         assignment:
@@ -35,8 +35,8 @@ variants:
     predictions:
       baseline: {label: C1 baseline, patch: {prediction: {samples: 32, steps: 17, solver: euler}}, recurrent_steps: 4}
 
-  c2:
-    label: detached C2 feedback
+  continued_no_feedback:
+    label: Continued assignment training without posterior feedback
     reporting: primary
     patch:
       model:
@@ -44,7 +44,24 @@ variants:
           method: discriminative
           recurrence: {train_steps: [1, 2, 3, 4], eval_steps: 4, feedback: soft}
         invisible: {method: cfm, conditioning: soft}
-        c2: {posterior_samples: 8}
+      training: {trainable: [assignment]}
+    initialise_from: c1
+    initialise_components: [visible, assignment, invisible]
+    predictions:
+      continued: {label: Matched continued training, patch: {prediction: {samples: 32, steps: 17, solver: euler}}, recurrent_steps: 4}
+
+  c2:
+    label: Continued assignment training + detached posterior feedback
+    reporting: primary
+    patch:
+      model:
+        assignment:
+          method: discriminative
+          recurrence: {train_steps: [1, 2, 3, 4], eval_steps: 4, feedback: soft}
+        invisible: {method: cfm, conditioning: soft}
+        c2:
+          posterior_samples: 8
+          training_sampler: {steps: 17, solver: euler}
       training: {trainable: [assignment, c2]}
     initialise_from: c1
     initialise_components: [visible, assignment, invisible]

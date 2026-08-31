@@ -8,7 +8,7 @@ study:
 
 variants:
   assignment_reference:
-    label: M3 assignment reference
+    label: Assignment reference (pending Study 01 gate)
     reporting: setup
     patch:
       model:
@@ -20,20 +20,6 @@ variants:
     initialise_components: []
     predictions: {}
 
-  factorized_cfm:
-    label: factorized CFM setup
-    reporting: setup
-    patch:
-      model:
-        assignment:
-          method: discriminative
-          recurrence: {train_steps: [1, 2, 3, 4], eval_steps: 4, feedback: soft}
-        invisible: {method: cfm, conditioning: hypothesis}
-      training: {trainable: [invisible]}
-    initialise_from: assignment_reference
-    initialise_components: [visible, assignment]
-    predictions: {}
-
   stateless:
     label: joint stateless
     reporting: primary
@@ -42,8 +28,8 @@ variants:
         assignment: null
         joint_flow: {recurrent: false}
       training: {trainable: [assignment, invisible]}
-    initialise_from: factorized_cfm
-    initialise_components: [visible, invisible]
+    initialise_from: assignment_reference
+    initialise_components: [visible]
     predictions:
       t8: {label: stateless T=8, patch: {prediction: {samples: 64, steps: 8, sample_chunk_size: 8}}, recurrent_steps: null}
       t16: {label: stateless T=16, patch: {prediction: {samples: 64, steps: 16, sample_chunk_size: 8}}, recurrent_steps: null}
@@ -56,8 +42,8 @@ variants:
         assignment: null
         joint_flow: {recurrent: true, train_steps: [1, 2, 3, 4]}
       training: {trainable: [assignment, invisible]}
-    initialise_from: factorized_cfm
-    initialise_components: [visible, invisible]
+    initialise_from: assignment_reference
+    initialise_components: [visible]
     predictions:
       t8: {label: recurrent T=8, patch: {prediction: {samples: 64, steps: 8, sample_chunk_size: 8}}, recurrent_steps: null}
       t16: {label: recurrent T=16, patch: {prediction: {samples: 64, steps: 16, sample_chunk_size: 8}}, recurrent_steps: null}

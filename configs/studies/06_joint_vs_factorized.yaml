@@ -8,7 +8,7 @@ study:
 
 variants:
   assignment_reference:
-    label: M3 assignment reference
+    label: Assignment reference (pending Study 01 gate)
     reporting: setup
     patch:
       model:
@@ -29,22 +29,22 @@ variants:
           method: discriminative
           recurrence: {train_steps: [1, 2, 3, 4], eval_steps: 4, feedback: soft}
         invisible: {method: cfm, conditioning: hypothesis}
-      training: {trainable: [invisible]}
+      training: {trainable: [assignment, invisible]}
     initialise_from: assignment_reference
     initialise_components: [visible, assignment]
     predictions:
       k5_m16: {label: factorized K=5 M=16, patch: {prediction: {top_k: 5, samples: 16, steps: 17, solver: euler}}, recurrent_steps: 4}
 
   joint:
-    label: joint DFM+CFM
+    label: joint DFM+CFM from common visible reference
     reporting: primary
     patch:
       model:
         assignment: null
         joint_flow: {recurrent: false}
       training: {trainable: [assignment, invisible]}
-    initialise_from: factorized
-    initialise_components: [visible, invisible]
+    initialise_from: assignment_reference
+    initialise_components: [visible]
     predictions:
       s64_t8: {label: joint S=64 T=8, patch: {prediction: {samples: 64, steps: 8, sample_chunk_size: 8}}, recurrent_steps: null}
       s64_t16: {label: joint S=64 T=16, patch: {prediction: {samples: 64, steps: 16, sample_chunk_size: 8}}, recurrent_steps: null}

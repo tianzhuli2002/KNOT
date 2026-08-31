@@ -1,6 +1,6 @@
 study:
   name: generator_inference
-  description: Scan generator sampling cost without retraining, using one frozen M3 ttbar2L assignment reference.
+  description: Scan generator sampling cost without retraining, using the assignment reference selected by Study 01.
   experiment_pattern: configs/experiments/{topology}.yaml
   topologies: [ttbar2L]
   seeds: [42]
@@ -8,7 +8,7 @@ study:
 
 variants:
   assignment_reference:
-    label: M3 assignment reference
+    label: Assignment reference (pending Study 01 gate)
     reporting: setup
     patch:
       model:

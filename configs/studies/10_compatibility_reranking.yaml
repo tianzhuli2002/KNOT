@@ -1,6 +1,6 @@
 study:
   name: compatibility_reranking
-  description: Train a compatibility head on a frozen ttbar2L factorized model and scan reranking strength without retraining.
+  description: Train a compatibility head, generate hypotheses once, and scan reranking weight offline on validation data.
   experiment_pattern: configs/experiments/{topology}.yaml
   topologies: [ttbar2L]
   seeds: [42]
@@ -8,7 +8,7 @@ study:
 
 variants:
   assignment_reference:
-    label: M3 assignment reference
+    label: Assignment reference (pending Study 01 gate)
     reporting: setup
     patch:
       model:
@@ -48,9 +48,4 @@ variants:
     initialise_from: factorized
     initialise_components: [visible, assignment, invisible]
     predictions:
-      w0: {label: weight=0, patch: {prediction: {top_k: 10, samples: 16, steps: 17, solver: euler, compatibility_weight: 0.0}}, recurrent_steps: 4}
-      w025: {label: weight=0.25, patch: {prediction: {top_k: 10, samples: 16, steps: 17, solver: euler, compatibility_weight: 0.25}}, recurrent_steps: 4}
-      w05: {label: weight=0.5, patch: {prediction: {top_k: 10, samples: 16, steps: 17, solver: euler, compatibility_weight: 0.5}}, recurrent_steps: 4}
-      w1: {label: weight=1, patch: {prediction: {top_k: 10, samples: 16, steps: 17, solver: euler, compatibility_weight: 1.0}}, recurrent_steps: 4}
-      w2: {label: weight=2, patch: {prediction: {top_k: 10, samples: 16, steps: 17, solver: euler, compatibility_weight: 2.0}}, recurrent_steps: 4}
-      w4: {label: weight=4, patch: {prediction: {top_k: 10, samples: 16, steps: 17, solver: euler, compatibility_weight: 4.0}}, recurrent_steps: 4}
+      posterior: {label: One stored posterior for offline weight scan, patch: {prediction: {top_k: 10, samples: 16, steps: 17, solver: euler, compatibility_weight: 0.0}}, recurrent_steps: 4}

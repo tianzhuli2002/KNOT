@@ -1,6 +1,6 @@
 study:
   name: posterior_size
-  description: Check convergence with assignment top-K, conditional posterior M, and joint posterior sample count S on ttbar2L.
+  description: Generate maximum factorized and joint posteriors once, then evaluate deterministic nested prefixes offline on validation data.
   experiment_pattern: configs/experiments/{topology}.yaml
   topologies: [ttbar2L]
   seeds: [42]
@@ -8,7 +8,7 @@ study:
 
 variants:
   assignment_reference:
-    label: M3 assignment reference
+    label: Assignment reference (pending Study 01 gate)
     reporting: setup
     patch:
       model:
@@ -33,16 +33,7 @@ variants:
     initialise_from: assignment_reference
     initialise_components: [visible, assignment]
     predictions:
-      k1_m16: {label: K=1 M=16, patch: {prediction: {top_k: 1, samples: 16, steps: 17, solver: euler}}, recurrent_steps: 4}
-      k2_m16: {label: K=2 M=16, patch: {prediction: {top_k: 2, samples: 16, steps: 17, solver: euler}}, recurrent_steps: 4}
-      k3_m16: {label: K=3 M=16, patch: {prediction: {top_k: 3, samples: 16, steps: 17, solver: euler}}, recurrent_steps: 4}
-      k5_m16: {label: K=5 M=16, patch: {prediction: {top_k: 5, samples: 16, steps: 17, solver: euler}}, recurrent_steps: 4}
-      k10_m16: {label: K=10 M=16, patch: {prediction: {top_k: 10, samples: 16, steps: 17, solver: euler}}, recurrent_steps: 4}
-      k5_m1: {label: K=5 M=1, patch: {prediction: {top_k: 5, samples: 1, steps: 17, solver: euler}}, recurrent_steps: 4}
-      k5_m4: {label: K=5 M=4, patch: {prediction: {top_k: 5, samples: 4, steps: 17, solver: euler}}, recurrent_steps: 4}
-      k5_m8: {label: K=5 M=8, patch: {prediction: {top_k: 5, samples: 8, steps: 17, solver: euler}}, recurrent_steps: 4}
-      k5_m32: {label: K=5 M=32, patch: {prediction: {top_k: 5, samples: 32, steps: 17, solver: euler}}, recurrent_steps: 4}
-      k5_m64: {label: K=5 M=64, patch: {prediction: {top_k: 5, samples: 64, steps: 17, solver: euler}}, recurrent_steps: 4}
+      k10_m64: {label: Generate once at Kmax=10 Mmax=64, patch: {prediction: {top_k: 10, samples: 64, steps: 17, solver: euler}}, recurrent_steps: 4}
 
   joint:
     label: joint DFM+CFM
@@ -52,12 +43,7 @@ variants:
         assignment: null
         joint_flow: {recurrent: false}
       training: {trainable: [assignment, invisible]}
-    initialise_from: factorized
-    initialise_components: [visible, invisible]
+    initialise_from: assignment_reference
+    initialise_components: [visible]
     predictions:
-      s1: {label: S=1, patch: {prediction: {samples: 1, steps: 8, sample_chunk_size: 1}}, recurrent_steps: null}
-      s4: {label: S=4, patch: {prediction: {samples: 4, steps: 8, sample_chunk_size: 4}}, recurrent_steps: null}
-      s8: {label: S=8, patch: {prediction: {samples: 8, steps: 8, sample_chunk_size: 8}}, recurrent_steps: null}
-      s16: {label: S=16, patch: {prediction: {samples: 16, steps: 8, sample_chunk_size: 8}}, recurrent_steps: null}
-      s32: {label: S=32, patch: {prediction: {samples: 32, steps: 8, sample_chunk_size: 8}}, recurrent_steps: null}
-      s64: {label: S=64, patch: {prediction: {samples: 64, steps: 8, sample_chunk_size: 8}}, recurrent_steps: null}
+      s64: {label: Generate once at Smax=64, patch: {prediction: {samples: 64, steps: 8, sample_chunk_size: 8}}, recurrent_steps: null}

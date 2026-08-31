@@ -1,6 +1,6 @@
 study:
   name: generator_formulations
-  description: Compare DDIM, EDM, CFM and OT-CFM with one frozen M3 assignment reference on ttbar2L.
+  description: Compare DDIM, EDM, CFM and OT-CFM with one frozen assignment-reference template after the Study 01 gate on ttbar2L.
   experiment_pattern: configs/experiments/{topology}.yaml
   topologies: [ttbar2L]
   seeds: [42]
@@ -8,7 +8,7 @@ study:
 
 variants:
   assignment_reference:
-    label: M3 assignment reference
+    label: Assignment reference (pending Study 01 gate)
     reporting: setup
     patch:
       model:

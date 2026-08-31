@@ -88,6 +88,40 @@ def analyze(root: Path, topology: str, seed: int) -> dict:
         for index, (name, value) in enumerate(values.items())
         if name != "one_pass"
     }
+    control_pairs = {
+        "recurrent_r4_vs_m2_parameter_control": (
+            "parameter_control_m2",
+            "recurrent_r4",
+            "R=4 recurrence vs M2 parameter-matched non-recurrent control",
+        ),
+        "recurrent_r4_vs_m2_training_compute_control": (
+            "compute_control_m2",
+            "recurrent_r4",
+            "R=4 recurrence vs M2 training-compute-matched non-recurrent control",
+        ),
+        "recurrent_soft_r4_vs_m3_parameter_control": (
+            "parameter_control_m3",
+            "recurrent_soft_r4",
+            "R=4 recurrence + soft feedback vs M3 parameter-matched non-recurrent control",
+        ),
+        "recurrent_soft_r4_vs_m3_training_compute_control": (
+            "compute_control_m3",
+            "recurrent_soft_r4",
+            "R=4 recurrence + soft feedback vs M3 training-compute-matched non-recurrent control",
+        ),
+    }
+    paired_controls = {}
+    for index, (name, (control, target, label)) in enumerate(control_pairs.items()):
+        paired_controls[name] = {
+            "label": label,
+            "control": COMPARISONS[control][2],
+            "target": COMPARISONS[target][2],
+            **_paired(
+                values[control]["correct"],
+                values[target]["correct"],
+                seed=14000 + index,
+            ),
+        }
     result = {
         "study": "visible_recurrence",
         "topology": topology,
@@ -97,6 +131,7 @@ def analyze(root: Path, topology: str, seed: int) -> dict:
         "identical_ordered_event_ids": True,
         "recurrent_depth": recurrent,
         "paired_vs_one_pass": paired,
+        "paired_vs_controls": paired_controls,
     }
 
     destination = root / "visible_recurrence" / topology / "analysis" / f"seed_{seed}"

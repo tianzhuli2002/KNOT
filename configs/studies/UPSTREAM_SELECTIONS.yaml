@@ -1,0 +1,22 @@
+# Human-reviewed scientific decision gates. Do not mark a gate locked until its
+# validation study and required confirmation seeds have been interpreted.
+assignment:
+  status: pending
+  source_study: visible_recurrence
+  selected_variant: null
+  validated_sha: null
+  required_by: [generator_formulations, assignment_conditioning, c2_feedback, discrete_assignment, joint_vs_factorized, joint_recurrence, generator_inference, posterior_size, compatibility_reranking, data_scaling]
+
+invisible_generator:
+  status: pending
+  source_study: generator_formulations
+  selected_variant: null
+  validated_sha: null
+  required_by: [assignment_conditioning, c2_feedback, joint_vs_factorized, joint_recurrence, generator_inference, posterior_size, compatibility_reranking]
+
+joint_model:
+  status: pending
+  source_study: joint_vs_factorized
+  selected_variant: null
+  validated_sha: null
+  required_by: [joint_recurrence, posterior_size]

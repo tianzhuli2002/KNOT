@@ -1,6 +1,6 @@
 study:
   name: data_scaling
-  description: Measure how the selected recurrent assignment baseline scales from 10k to 500k ttbar2L training events with fixed validation/test samples.
+  description: Measure how the Study 01-selected assignment reference scales from 10k to 500k ttbar2L training events with fixed validation/test samples.
   experiment_pattern: configs/experiments/{topology}.yaml
   topologies: [ttbar2L]
   seeds: [42]
@@ -16,7 +16,7 @@ variants:
         assignment:
           method: discriminative
           recurrence: {train_steps: [1, 2, 3, 4], eval_steps: 4, feedback: soft}
-      training: {trainable: [visible, assignment]}
+      training: {epochs: 100, early_stopping: {enabled: true, patience: 10}, scheduler: {enabled: true, factor: 0.8, patience: 5, min_lr: 1.0e-6}, trainable: [visible, assignment]}
     initialise_from: null
     initialise_components: []
     predictions:
@@ -31,7 +31,7 @@ variants:
         assignment:
           method: discriminative
           recurrence: {train_steps: [1, 2, 3, 4], eval_steps: 4, feedback: soft}
-      training: {trainable: [visible, assignment]}
+      training: {epochs: 100, early_stopping: {enabled: true, patience: 10}, scheduler: {enabled: true, factor: 0.8, patience: 5, min_lr: 1.0e-6}, trainable: [visible, assignment]}
     initialise_from: null
     initialise_components: []
     predictions:
@@ -46,7 +46,7 @@ variants:
         assignment:
           method: discriminative
           recurrence: {train_steps: [1, 2, 3, 4], eval_steps: 4, feedback: soft}
-      training: {trainable: [visible, assignment]}
+      training: {epochs: 100, early_stopping: {enabled: true, patience: 10}, scheduler: {enabled: true, factor: 0.8, patience: 5, min_lr: 1.0e-6}, trainable: [visible, assignment]}
     initialise_from: null
     initialise_components: []
     predictions:
@@ -61,7 +61,7 @@ variants:
         assignment:
           method: discriminative
           recurrence: {train_steps: [1, 2, 3, 4], eval_steps: 4, feedback: soft}
-      training: {trainable: [visible, assignment]}
+      training: {epochs: 100, early_stopping: {enabled: true, patience: 10}, scheduler: {enabled: true, factor: 0.8, patience: 5, min_lr: 1.0e-6}, trainable: [visible, assignment]}
     initialise_from: null
     initialise_components: []
     predictions:
@@ -76,7 +76,7 @@ variants:
         assignment:
           method: discriminative
           recurrence: {train_steps: [1, 2, 3, 4], eval_steps: 4, feedback: soft}
-      training: {trainable: [visible, assignment]}
+      training: {epochs: 100, early_stopping: {enabled: true, patience: 10}, scheduler: {enabled: true, factor: 0.8, patience: 5, min_lr: 1.0e-6}, trainable: [visible, assignment]}
     initialise_from: null
     initialise_components: []
     predictions:
@@ -91,7 +91,7 @@ variants:
         assignment:
           method: discriminative
           recurrence: {train_steps: [1, 2, 3, 4], eval_steps: 4, feedback: soft}
-      training: {trainable: [visible, assignment]}
+      training: {epochs: 100, early_stopping: {enabled: true, patience: 10}, scheduler: {enabled: true, factor: 0.8, patience: 5, min_lr: 1.0e-6}, trainable: [visible, assignment]}
     initialise_from: null
     initialise_components: []
     predictions:

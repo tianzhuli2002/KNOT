@@ -18,7 +18,7 @@ variants:
       top1: {label: M1, patch: {prediction: {top_k: 1}}, recurrent_steps: null}
 
   m3:
-    label: discriminative M3
+    label: discriminative recurrent-feedback candidate reference
     reporting: primary
     patch:
       model:
@@ -29,7 +29,7 @@ variants:
     initialise_from: null
     initialise_components: []
     predictions:
-      top1: {label: M3, patch: {prediction: {top_k: 1}}, recurrent_steps: 4}
+      top1: {label: recurrent-feedback candidate, patch: {prediction: {top_k: 1}}, recurrent_steps: 4}
 
   dfm:
     label: complete-state DFM
