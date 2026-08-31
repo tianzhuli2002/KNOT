@@ -83,6 +83,30 @@ def active_architecture(model) -> dict:
     return payload
 
 
+def architecture_component_signatures(model) -> dict[str, str]:
+    """Hash the semantic architecture owned by each partial-load component."""
+    architecture = active_architecture(model)
+    payloads = {
+        "visible": {"visible": architecture["visible"]},
+        "assignment": {
+            "assignment": architecture["assignment"],
+            "joint_flow": architecture.get("joint_flow"),
+        },
+        "invisible": {
+            "invisible": architecture.get("invisible"),
+            "joint_flow": architecture.get("joint_flow"),
+        },
+        "c2": {"coupling": architecture.get("coupling")},
+        "compatibility": {"compatibility": architecture.get("compatibility")},
+    }
+    return {
+        component: hashlib.sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        for component, payload in payloads.items()
+    }
+
+
 def _freeze(module) -> None:
     if module is not None:
         module.requires_grad_(False)
@@ -180,6 +204,7 @@ class JointEventModule(L.LightningModule):
         signature = hashlib.sha256(
             json.dumps(architecture, sort_keys=True).encode()
         ).hexdigest()
+        component_signatures = architecture_component_signatures(model)
         self.scaler_metadata = (
             None if invisible_scaler is None else invisible_scaler.as_dict()
         )
@@ -195,6 +220,7 @@ class JointEventModule(L.LightningModule):
                 "topology_signature": self.spec.signature,
                 "architecture_signature_version": ARCHITECTURE_SIGNATURE_VERSION,
                 "architecture_signature": signature,
+                "architecture_component_signatures": component_signatures,
                 "model_mode": mode,
                 "assignment_formulation": assignment_formulation,
                 "input_features": list(schema.names),
@@ -309,12 +335,21 @@ class JointEventModule(L.LightningModule):
                     f"Incompatible checkpoint metadata {key}: "
                     f"checkpoint={saved.get(key)!r}, current={self.hparams.get(key)!r}"
                 )
-        if saved.get("architecture_signature_version") == ARCHITECTURE_SIGNATURE_VERSION:
-            if saved.get("architecture_signature") != self.hparams.get("architecture_signature"):
-                raise ValueError(
-                    "Incompatible active architecture signature: "
-                    f"checkpoint={saved.get('architecture_signature')!r}, "
-                    f"current={self.hparams.get('architecture_signature')!r}"
-                )
+        if saved.get("architecture_signature_version") != ARCHITECTURE_SIGNATURE_VERSION:
+            raise ValueError(
+                "Incompatible architecture signature version: "
+                f"checkpoint={saved.get('architecture_signature_version')!r}, "
+                f"current={ARCHITECTURE_SIGNATURE_VERSION!r}"
+            )
+        if saved.get("architecture_signature") != self.hparams.get("architecture_signature"):
+            raise ValueError(
+                "Incompatible active architecture signature: "
+                f"checkpoint={saved.get('architecture_signature')!r}, "
+                f"current={self.hparams.get('architecture_signature')!r}"
+            )
+        if saved.get("architecture_component_signatures") != self.hparams.get(
+            "architecture_component_signatures"
+        ):
+            raise ValueError("Incompatible architecture component signatures")
         if checkpoint.get("invisible_scaler") != self.scaler_metadata:
             raise ValueError("Incompatible invisible target scaling metadata")

@@ -88,9 +88,10 @@ class InvisibleGenerator(nn.Module):
     ) -> torch.Tensor:
         """Build parent contexts for non-hypothesis sampling and training.
 
-        ``hypothesis`` trains p(nu|X,A) with the truth assignment only when it is
-        reconstructable. Prediction uses explicit decoded assignments through
-        :meth:`assignment_parent_context`; it is not an oracle at inference time.
+        ``hypothesis`` and ``truth`` use the truth assignment only when it is
+        reconstructable. Prediction for ``hypothesis`` uses explicit decoded
+        assignments through :meth:`assignment_parent_context`; it is not an
+        oracle at inference time.
         """
         mode = self.assignment_mode if mode is None else mode
         contexts = []
@@ -113,7 +114,7 @@ class InvisibleGenerator(nn.Module):
                         torch.arange(len(candidates), device=candidates.device), safe
                     ]
                     summary = summary * (selected >= 0).unsqueeze(1)
-                elif mode == "hypothesis":
+                elif mode in {"hypothesis", "truth"}:
                     pool = structured["pools"][node]
                     selected = pool["truth_index"]
                     safe = selected.clamp_min(0)
@@ -121,23 +122,6 @@ class InvisibleGenerator(nn.Module):
                         torch.arange(len(candidates), device=candidates.device), safe
                     ]
                     summary = summary * pool["reconstructable"].unsqueeze(1)
-                elif mode == "truth":
-                    pool = structured["pools"][node]
-                    selected = pool["truth_index"]
-                    if (selected < 0).any():
-                        events = (
-                            (selected < 0)
-                            .nonzero(as_tuple=False)
-                            .flatten()[:10]
-                            .tolist()
-                        )
-                        raise RuntimeError(
-                            "Truth-oracle conditioning requested for unreconstructable "
-                            f"node {node}; rows={events}"
-                        )
-                    summary = candidates[
-                        torch.arange(len(candidates), device=candidates.device), selected
-                    ]
                 else:
                     raise ValueError(
                         f"Unknown assignment conditioning mode {mode!r}"
@@ -205,6 +189,7 @@ class InvisibleGenerator(nn.Module):
         *,
         samples: int,
         budget: int | None = None,
+        sampler: str | None = None,
         generator: torch.Generator | None = None,
     ) -> tuple[torch.Tensor, int]:
         if samples <= 0:
@@ -238,13 +223,16 @@ class InvisibleGenerator(nn.Module):
                 generator=generator,
             )
         else:
+            selected_sampler = self.sampler if sampler is None else str(sampler)
+            if selected_sampler not in {"euler", "heun"}:
+                raise ValueError("Flow Matching sampler must be euler or heun")
             values, nfe = self.formulation.sample(
                 shape,
                 context,
                 mask,
                 parent,
                 steps=selected_budget,
-                solver=self.sampler,
+                solver=selected_sampler,
                 generator=generator,
             )
         return values.reshape(batch, samples, roles, 3), nfe

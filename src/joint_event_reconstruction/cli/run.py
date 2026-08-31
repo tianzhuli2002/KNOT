@@ -114,6 +114,22 @@ def _load_initial_components(
                 f"Initial checkpoint has incompatible {key}: "
                 f"checkpoint={saved.get(key)!r}, current={module.hparams.get(key)!r}"
             )
+    source_signatures = saved.get("architecture_component_signatures")
+    target_signatures = module.hparams.get("architecture_component_signatures")
+    if not isinstance(source_signatures, dict) or not isinstance(target_signatures, dict):
+        raise ValueError(
+            "Initial checkpoint is missing architecture component signatures"
+        )
+    incompatible_components = [
+        component
+        for component in components
+        if source_signatures.get(component) != target_signatures.get(component)
+    ]
+    if incompatible_components:
+        raise ValueError(
+            "Initial checkpoint has incompatible architecture component signatures: "
+            f"{incompatible_components}"
+        )
     if "invisible" in components and checkpoint.get("invisible_scaler") != module.scaler_metadata:
         raise ValueError("Invisible component initialisation requires identical scaler metadata")
 
@@ -275,6 +291,7 @@ def predict(config, args) -> None:
             steps=int(config.inference.joint_flow.steps),
             sample_chunk_size=int(config.inference.joint_flow.sample_chunk_size),
             device=device,
+            prediction_seed=prediction_seed,
             checkpoint_path=args.checkpoint,
         )
     elif assignment_formulation == "flow_matching":
@@ -286,6 +303,7 @@ def predict(config, args) -> None:
             posterior_samples=int(config.inference.posterior_samples),
             steps=int(config.inference.assignment_flow.steps),
             device=device,
+            prediction_seed=prediction_seed,
             checkpoint_path=args.checkpoint,
         )
     else:
@@ -306,6 +324,7 @@ def predict(config, args) -> None:
                 else None
             ),
             device=device,
+            prediction_seed=prediction_seed,
             checkpoint_path=args.checkpoint,
             compatibility_weight=float(config.inference.compatibility_weight),
         )

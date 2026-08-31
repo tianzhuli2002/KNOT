@@ -119,6 +119,7 @@ def predict_joint_flow_hdf5(
     posterior_samples: int,
     steps: int,
     device: str,
+    prediction_seed: int,
     checkpoint_path: str = "",
     sample_chunk_size: int = 1,
 ) -> None:
@@ -139,6 +140,7 @@ def predict_joint_flow_hdf5(
         "test": data.test_dataloader,
     }[split]()
     iterator = iter(loader)
+    sampling_generator = torch.Generator(device=device).manual_seed(int(prediction_seed))
     target = Path(output_path).expanduser().resolve()
     target.parent.mkdir(parents=True, exist_ok=True)
     temporary = target.with_suffix(target.suffix + ".tmp")
@@ -168,6 +170,7 @@ def predict_joint_flow_hdf5(
                     else "untrained"
                 ),
                 "split": split,
+                "prediction_seed": int(prediction_seed),
                 "posterior_samples": posterior_samples,
                 "flow_steps": steps,
                 "actual_nfe": steps,
@@ -201,6 +204,7 @@ def predict_joint_flow_hdf5(
                 samples=posterior_samples,
                 steps=steps,
                 sample_chunk_size=sample_chunk_size,
+                generator=sampling_generator,
             )
             space = AssignmentSpace.from_structured(batch["structured"])
             states = generated["assignment_state"]

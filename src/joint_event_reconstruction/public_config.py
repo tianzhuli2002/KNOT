@@ -138,7 +138,9 @@ def build_visible_loader_config(experiment: DictConfig) -> DictConfig:
                 "topology": str(experiment.experiment.name),
                 "mode": "train",
                 "device": "cuda",
-                "seed": int(experiment.experiment.seed),
+                # The mature loader uses this only for split construction.  Keep
+                # split identity independent of model/training randomness.
+                "seed": int(experiment.data.subset_seed),
             },
             "tasks": {
                 "classification": {"enabled": False, "weight": 0.0},
@@ -307,6 +309,7 @@ def _resolve_model(public, defaults) -> dict:
                     "enabled": False,
                     "posterior_samples": int(defaults.c2.posterior_samples),
                     "gate_initial_bias": float(defaults.c2.gate_initial_bias),
+                    "training_sampler": None,
                 }
             },
             "compatibility": {
@@ -342,8 +345,43 @@ def _resolve_model(public, defaults) -> dict:
         if method != "discriminative" or not recurrent or not invisible["enabled"]:
             raise ValueError("model.c2 requires recurrent discriminative assignment and invisible inference")
         _mapping(c2_public, "model.c2")
-        _unknown(c2_public, {"posterior_samples", "gate_initial_bias"}, "model.c2")
+        _unknown(
+            c2_public,
+            {"posterior_samples", "gate_initial_bias", "training_sampler"},
+            "model.c2",
+        )
         c2 = _plain(_merge(defaults.c2, c2_public))
+        sampler_public = c2_public.get("training_sampler")
+        if sampler_public is not None:
+            _mapping(sampler_public, "model.c2.training_sampler")
+            formulation = invisible["formulation"]
+            allowed = {
+                "standard": {"steps"},
+                "edm": {"nfe"},
+                "flow_matching": {"steps", "solver"},
+            }[formulation]
+            _unknown(
+                sampler_public,
+                allowed,
+                f"model.c2.training_sampler ({formulation})",
+            )
+
+    c2_sampler = None
+    if c2_enabled:
+        formulation = invisible["formulation"]
+        selected = _plain(
+            _merge(
+                defaults.c2.training_sampler[formulation],
+                c2_public.get("training_sampler"),
+            )
+        )
+        c2_sampler = {
+            "formulation": formulation,
+            "budget": int(selected.get("nfe", selected.get("steps"))),
+            "solver": (
+                str(selected["solver"]) if formulation == "flow_matching" else None
+            ),
+        }
 
     compatibility_public = public.get("compatibility")
     compatibility = _plain(defaults.compatibility)
@@ -384,6 +422,7 @@ def _resolve_model(public, defaults) -> dict:
                 "enabled": c2_enabled,
                 "posterior_samples": int(c2["posterior_samples"]),
                 "gate_initial_bias": float(c2["gate_initial_bias"]),
+                "training_sampler": c2_sampler,
             }
         },
         "compatibility": {

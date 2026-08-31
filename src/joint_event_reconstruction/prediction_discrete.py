@@ -56,6 +56,7 @@ def predict_discrete_flow_hdf5(
     posterior_samples: int,
     steps: int,
     device: str,
+    prediction_seed: int,
     checkpoint_path: str = "",
 ) -> None:
     if posterior_samples <= 0 or steps <= 0:
@@ -81,7 +82,7 @@ def predict_discrete_flow_hdf5(
 
     module = module.to(device).eval()
     datasets = None
-    generator = torch.Generator(device=device).manual_seed(12345)
+    generator = torch.Generator(device=device).manual_seed(int(prediction_seed))
     with h5py.File(temporary, "w") as destination, torch.inference_mode():
         source_path = Path(data.h5_path).expanduser().resolve()
         source_stat = source_path.stat()
@@ -102,6 +103,7 @@ def predict_discrete_flow_hdf5(
                     else "untrained"
                 ),
                 "split": split,
+                "prediction_seed": int(prediction_seed),
                 "posterior_samples": posterior_samples,
                 "flow_steps": steps,
                 "nfe_per_sample": steps,

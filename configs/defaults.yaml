@@ -30,6 +30,10 @@ model:
   c2:
     posterior_samples: 4
     gate_initial_bias: -2.0
+    training_sampler:
+      standard: {steps: 50}
+      edm: {nfe: 17}
+      flow_matching: {steps: 8, solver: heun}
   compatibility:
     include_invisible: true
 

@@ -192,9 +192,39 @@ def validate_experiment(config: DictConfig) -> None:
 
     c2 = model.coupling.invisible_to_assignment
     _exact_keys(model.coupling, {"invisible_to_assignment"}, "model.coupling")
-    _exact_keys(c2, {"enabled", "posterior_samples", "gate_initial_bias"}, "model.coupling.invisible_to_assignment")
+    _exact_keys(
+        c2,
+        {"enabled", "posterior_samples", "gate_initial_bias", "training_sampler"},
+        "model.coupling.invisible_to_assignment",
+    )
     _positive_int(c2.posterior_samples, "model.coupling.invisible_to_assignment.posterior_samples")
     _finite(c2.gate_initial_bias, "model.coupling.invisible_to_assignment.gate_initial_bias")
+    if c2.enabled:
+        _exact_keys(
+            c2.training_sampler,
+            {"formulation", "budget", "solver"},
+            "model.coupling.invisible_to_assignment.training_sampler",
+        )
+        if str(c2.training_sampler.formulation) != str(invisible.formulation):
+            raise ValueError("C2 training sampler formulation must match invisible model")
+        _positive_int(
+            c2.training_sampler.budget,
+            "model.coupling.invisible_to_assignment.training_sampler.budget",
+        )
+        if invisible.formulation == "flow_matching":
+            if str(c2.training_sampler.solver) not in {"euler", "heun"}:
+                raise ValueError("C2 flow-matching training solver must be euler or heun")
+        elif invisible.formulation == "standard":
+            if int(c2.training_sampler.budget) > int(invisible.standard.training_steps):
+                raise ValueError(
+                    "C2 DDIM training steps cannot exceed diffusion training steps"
+                )
+        elif int(c2.training_sampler.budget) < 3 or int(c2.training_sampler.budget) % 2 == 0:
+            raise ValueError("C2 EDM nfe must be odd and >=3")
+        if invisible.formulation != "flow_matching" and c2.training_sampler.solver is not None:
+            raise ValueError("C2 training sampler solver applies only to Flow Matching")
+    elif c2.training_sampler is not None:
+        raise ValueError("Inactive C2 must not define a training sampler")
     _exact_keys(model.compatibility, {"enabled", "include_invisible"}, "model.compatibility")
 
     if mode == "factorized" and formulation == "flow_matching":

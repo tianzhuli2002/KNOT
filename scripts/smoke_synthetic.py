@@ -44,6 +44,7 @@ from scripts.smoke_rng import seed_smoke
 
 
 CONTRACTS = {
+    "ttH1L": {"minimum_invisible": 1, "minimum_repeat": 2},
     "synthetic_contract": {"minimum_invisible": 1, "minimum_repeat": 2},
     "synthetic_multinu": {"minimum_invisible": 3, "minimum_repeat": 3},
 }
@@ -214,7 +215,11 @@ def _prediction_roundtrip(base, visible, batch, scaler, device):
             config = _factorized_cfm_config(base, conditioning)
             module = JointEventModule(config, visible, invisible_scaler=scaler, synthetic_data=True).to(device)
             path = directory / f"cfm_{conditioning}.h5"
-            predict_hdf5(module, data, scaler, path, split="test", top_k=2, posterior_samples=2, device=device)
+            predict_hdf5(
+                module, data, scaler, path, split="test", top_k=2,
+                posterior_samples=2, device=device,
+                prediction_seed=int(config.inference.seed),
+            )
             metrics = evaluate_predictions(path)
             if metrics["events"] != len(batch["tokens"]):
                 raise RuntimeError(f"CFM {conditioning} prediction changed event count")
@@ -233,7 +238,10 @@ def _prediction_roundtrip(base, visible, batch, scaler, device):
         seed_smoke(int(base.experiment.seed) + 30_010)
         dfm = JointEventModule(dfm_config, visible, invisible_scaler=None, synthetic_data=True).to(device)
         dfm_path = directory / "dfm.h5"
-        predict_discrete_flow_hdf5(dfm, data, dfm_path, split="test", posterior_samples=2, steps=2, device=device)
+        predict_discrete_flow_hdf5(
+            dfm, data, dfm_path, split="test", posterior_samples=2, steps=2,
+            device=device, prediction_seed=int(dfm_config.inference.seed),
+        )
         dfm_metrics = evaluate_discrete_predictions(dfm_path)
         _assert_support(dfm_metrics, NULL_INCLUDING_SUPPORT, "DFM")
         paths["dfm"] = dfm_path
@@ -243,7 +251,11 @@ def _prediction_roundtrip(base, visible, batch, scaler, device):
         seed_smoke(int(base.experiment.seed) + 30_011)
         joint = JointEventModule(joint_config, visible, invisible_scaler=scaler, synthetic_data=True).to(device)
         joint_path = directory / "joint.h5"
-        predict_joint_flow_hdf5(joint, data, scaler, joint_path, split="test", posterior_samples=2, steps=2, sample_chunk_size=2, device=device)
+        predict_joint_flow_hdf5(
+            joint, data, scaler, joint_path, split="test", posterior_samples=2,
+            steps=2, sample_chunk_size=2, device=device,
+            prediction_seed=int(joint_config.inference.seed),
+        )
         joint_metrics = evaluate_joint_predictions(joint_path)
         _assert_support(joint_metrics, NULL_INCLUDING_SUPPORT, "joint flow")
         paths["joint"] = joint_path
@@ -335,7 +347,7 @@ def run_topology_contract(topology_name: str, *, device="cpu", events=4):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--topology", required=True, choices=("ttbar1L", "ttbar2L", "ttH1L", *CONTRACTS))
+    parser.add_argument("--topology", required=True, choices=("ttbar1L", "ttbar2L", *CONTRACTS))
     parser.add_argument("--device", choices=("cpu", "cuda"), default="cpu")
     parser.add_argument("--events", type=int, default=4)
     parser.add_argument("--factorized-only", action="store_true")

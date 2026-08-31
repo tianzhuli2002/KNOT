@@ -10,6 +10,10 @@ import subprocess
 import sys
 from pathlib import Path
 
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 import torch
 from torch.nn import functional as F
 
@@ -270,6 +274,16 @@ def run_flow_smoke(
     torch.set_num_threads(1)
     base = load_experiment(experiment_path)
     seed_smoke(int(base.experiment.seed) + 20_000)
+    if not real_data and base.data.tensor_cache is None:
+        if base.data.invisible.path is None:
+            raise ValueError(
+                "File-backed flow smoke requires a tensor cache or configured "
+                "invisible_truth; use scripts/smoke_synthetic.py for an in-memory smoke"
+            )
+        # A compact real experiment deliberately has no obsolete visible tensor
+        # cache.  Use its canonical HDF5 pair instead of attempting to create a
+        # synthetic sidecar from a cache that does not exist.
+        real_data = True
     if not real_data and base.experiment.name == "ttbar1L" and base.data.tensor_cache is None:
         base.data.tensor_cache = (
             "/mnt/iusers01/fatpou01/phy01/w00238tl/scratch/SB_paper/results/"

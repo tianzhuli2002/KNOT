@@ -44,7 +44,7 @@ def main() -> None:
         configured = config.data.max_events["val" if split == "validation" else split]
         count = args.max_events if args.max_events is not None else configured
         if count is not None and int(count) < len(split_ids):
-            rng_split = np.random.default_rng(int(config.experiment.seed) + offset)
+            rng_split = np.random.default_rng(int(config.data.subset_seed) + offset)
             positions = np.sort(
                 rng_split.choice(len(split_ids), size=int(count), replace=False)
             )

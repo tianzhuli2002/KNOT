@@ -6,9 +6,14 @@ from __future__ import annotations
 import argparse
 import copy
 import json
-import subprocess
 import sys
 from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+import subprocess
 
 import torch
 
@@ -144,6 +149,12 @@ def configure(base, mode):
     c2 = config.model.coupling.invisible_to_assignment
     c2.enabled = mode == "edm_c2_detached"
     c2.posterior_samples = 2
+    if c2.enabled:
+        c2.training_sampler = {
+            "formulation": "edm",
+            "budget": 5,
+            "solver": None,
+        }
     config.model.compatibility.enabled = mode == "joint_compatibility"
     config.inference.top_k_assignments = 2 if mode == "topk_edm" else 1
     config.inference.posterior_samples = 2 if mode == "topk_edm" else 1
@@ -302,7 +313,13 @@ def run_mode(base, visible, batch, scaler, mode, device):
 
     if mode == "edm_c2_detached":
         posterior = output["posterior_feedback"]
-        if not posterior["detached"] or posterior["samples"].grad_fn is not None or posterior["nfe"] != 5:
+        expected_nfe = int(config.model.coupling.invisible_to_assignment.training_sampler.budget)
+        if (
+            not posterior["detached"]
+            or posterior["samples"].grad_fn is not None
+            or posterior["nfe"] != expected_nfe
+            or posterior["training_sampler"]["formulation"] != "edm"
+        ):
             raise RuntimeError("C2 posterior feedback is not detached or has wrong NFE")
         summary["posterior_shape"] = list(posterior["samples"].shape)
 
@@ -402,6 +419,8 @@ def run_experiment_smoke(
         allow_synthetic=bool(data_config.data.invisible.allow_synthetic),
         max_events={"train": events, "val": events, "test": events},
         subset_seed=int(base.data.subset_seed),
+        build_assignments=True,
+        max_assignment_states=int(data_config.data.max_assignment_states),
     )
     data.setup("fit")
     batch = move(next(iter(data.train_dataloader())), torch.device(device))

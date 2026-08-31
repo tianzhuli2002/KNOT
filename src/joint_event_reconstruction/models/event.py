@@ -18,6 +18,7 @@ from joint_event_reconstruction.models.reconstruction.structured import (
     StructuredReconstruction,
 )
 from joint_event_reconstruction.models.visible.encoder import VisibleEventEncoder
+from joint_event_reconstruction.topology.assignments import AssignmentSpace
 from joint_event_reconstruction.topology.spec import TopologySpec
 
 
@@ -331,6 +332,8 @@ class JointEventModel(nn.Module):
                 visible,
                 parent,
                 samples=int(feedback_config.posterior_samples),
+                budget=int(feedback_config.training_sampler.budget),
+                sampler=feedback_config.training_sampler.solver,
             )
             updated, gates = self.posterior_feedback(
                 node_tokens,
@@ -358,6 +361,11 @@ class JointEventModel(nn.Module):
             result["node_context"] = node_tokens
             result["posterior_feedback"] = {
                 "samples": samples,
+                "training_sampler": {
+                    "formulation": str(feedback_config.training_sampler.formulation),
+                    "budget": int(feedback_config.training_sampler.budget),
+                    "solver": feedback_config.training_sampler.solver,
+                },
                 "nfe": nfe,
                 "gates": gates,
                 "detached": True,
@@ -379,6 +387,50 @@ class JointEventModel(nn.Module):
             valid &= batch["structured"]["pools"][role.node]["reconstructable"]
         return valid
 
+    def _compatibility_assignment_summaries(
+        self, batch: dict, result: dict
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Return truth and globally feasible wrong complete assignments."""
+        space = AssignmentSpace.from_structured(batch["structured"])
+        rows = torch.arange(
+            len(batch["tokens"]), device=batch["tokens"].device
+        )
+        valid_states = space.valid_mask & space.non_null_mask.unsqueeze(0)
+        truth_state = space.truth_state
+        truth_valid = valid_states[rows, truth_state]
+
+        state_log_score = torch.zeros(
+            valid_states.shape,
+            dtype=result["assignment_probabilities"][space.roots[0]].dtype,
+            device=rows.device,
+        )
+        for root_index, root in enumerate(space.roots):
+            selected = space.root_candidate_indices[:, root_index]
+            probabilities = result["assignment_probabilities"][root]
+            state_log_score = state_log_score + probabilities[:, selected + 1].clamp_min(
+                1.0e-12
+            ).log()
+
+        wrong_states = valid_states.clone()
+        wrong_states[rows, truth_state] = False
+        wrong_valid = wrong_states.any(dim=1)
+        wrong_state = state_log_score.masked_fill(~wrong_states, -torch.inf).argmax(
+            dim=1
+        )
+        valid = truth_valid & wrong_valid
+
+        def summary(states: torch.Tensor) -> torch.Tensor:
+            root_indices = space.root_candidate_indices[states].clamp_min(0)
+            return torch.stack(
+                [
+                    result["candidate_embeddings"][root][rows, root_indices[:, index]]
+                    for index, root in enumerate(space.roots)
+                ],
+                dim=1,
+            ).mean(dim=1)
+
+        return valid, summary(truth_state), summary(wrong_state)
+
     def _invisible_result(
         self,
         result: dict,
@@ -396,7 +448,7 @@ class JointEventModel(nn.Module):
         )
         result["invisible_parent_context"] = parent
         event_mask = None
-        if self.invisible.assignment_mode == "hypothesis":
+        if self.invisible.assignment_mode in {"hypothesis", "truth"}:
             event_mask = self._hypothesis_training_mask(batch)
             result["invisible_training_mask"] = event_mask
             result["invisible_training_valid_fraction"] = event_mask.to(
@@ -417,52 +469,18 @@ class JointEventModel(nn.Module):
         if self.compatibility is None:
             return result
 
-        valid = torch.ones(
-            len(visible["pooled"]),
-            dtype=torch.bool,
-            device=visible["pooled"].device,
+        valid, truth_assignment, wrong_assignment = (
+            self._compatibility_assignment_summaries(batch, result)
         )
-        truth_summaries = []
-        wrong_summaries = []
-        for root in self.spec.roots:
-            pool = batch["structured"]["pools"][root]
-            candidates = result["candidate_embeddings"][root]
-            truth = pool["truth_index"]
-            reconstructable = truth >= 0
-            safe_truth = truth.clamp_min(0)
-            rows = torch.arange(len(candidates), device=candidates.device)
-
-            alternatives = pool["candidate_mask"].clone()
-            if reconstructable.any():
-                active_rows = rows[reconstructable]
-                alternatives[active_rows, truth[reconstructable]] = False
-            has_wrong = alternatives.any(dim=1)
-            valid &= reconstructable & has_wrong
-
-            truth_summaries.append(candidates[rows, safe_truth])
-            candidate_probabilities = result["assignment_probabilities"][root][
-                :, 1:
-            ].clone()
-            candidate_probabilities = candidate_probabilities.masked_fill(
-                ~pool["candidate_mask"], -torch.inf
-            )
-            if reconstructable.any():
-                candidate_probabilities[
-                    rows[reconstructable], truth[reconstructable]
-                ] = -torch.inf
-            wrong = candidate_probabilities.argmax(dim=1)
-            wrong_summaries.append(candidates[rows, wrong])
 
         result["compatibility_training_valid_fraction"] = valid.to(
             visible["pooled"].dtype
         ).mean()
         if valid.any():
-            truth_assignment = torch.stack(truth_summaries, dim=1).mean(dim=1)[valid]
-            wrong_assignment = torch.stack(wrong_summaries, dim=1).mean(dim=1)[valid]
             compatibility = self.compatibility.contrastive_loss(
                 visible["pooled"][valid],
-                truth_assignment,
-                wrong_assignment,
+                truth_assignment[valid],
+                wrong_assignment[valid],
                 batch["invisible_truth_scaled"][valid],
             )
         else:

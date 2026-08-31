@@ -119,7 +119,14 @@ def _truth_node_indices(spec, batch: dict, event: int) -> torch.Tensor:
     ).to(torch.long)
 
 
-def _compose_physics(module, batch: dict, assignments, samples: torch.Tensor):
+def _compose_physics(
+    module,
+    batch: dict,
+    assignments,
+    samples: torch.Tensor,
+    *,
+    truth_assignment: bool = False,
+):
     if "physics_vectors" not in batch:
         return None, None, None
     batch_size, _, posterior_samples = samples.shape[:3]
@@ -128,8 +135,41 @@ def _compose_physics(module, batch: dict, assignments, samples: torch.Tensor):
 
     for event in range(batch_size):
         event_values = {node: [] for node in module.spec.dag_order}
-        for hypothesis_index, hypothesis in enumerate(assignments[event]):
-            indices = _node_indices(module.spec, batch, event, hypothesis)
+        truth_supported = all(
+            int(batch["structured"]["pools"][role.node]["truth_index"][event]) >= 0
+            for role in module.spec.invisible_roles
+        )
+        if truth_assignment and not truth_supported:
+            missing = torch.full(
+                (samples.shape[1], posterior_samples, 4),
+                float("nan"),
+                dtype=samples.dtype,
+                device=samples.device,
+            )
+            for node in module.spec.dag_order:
+                composite_values[node].append(missing.clone())
+            truth_indices = _truth_node_indices(module.spec, batch, event)
+            truth_invisible = {
+                role.key: batch["invisible_truth"][event, role_index]
+                for role_index, role in enumerate(module.spec.invisible_roles)
+            }
+            truth_composed = compose_assignment_state(
+                module.spec,
+                batch["structured"]["pools"],
+                batch["physics_vectors"][event],
+                truth_indices,
+                truth_invisible,
+            )
+            for node in module.spec.dag_order:
+                truth_values[node].append(truth_composed[node])
+            continue
+        hypotheses = range(samples.shape[1]) if truth_assignment else assignments[event]
+        for hypothesis_index, hypothesis in enumerate(hypotheses):
+            indices = (
+                _truth_node_indices(module.spec, batch, event)
+                if truth_assignment
+                else _node_indices(module.spec, batch, event, hypothesis)
+            )
             hypothesis_values = {node: [] for node in module.spec.dag_order}
             for sample_index in range(posterior_samples):
                 invisible = {
@@ -200,6 +240,7 @@ def _generate_invisible(
     *,
     top_k: int,
     posterior_samples: int,
+    sampling_generator: torch.Generator,
 ):
     generator = module.event_model.invisible
     if generator is None:
@@ -214,7 +255,8 @@ def _generate_invisible(
             output.get("node_context"),
         )
         scaled, nfe = generator.sample_hypotheses(
-            output["visible"], parent, samples=posterior_samples
+            output["visible"], parent, samples=posterior_samples,
+            generator=sampling_generator,
         )
         return scaled, nfe, top_k
 
@@ -226,7 +268,8 @@ def _generate_invisible(
         mode=mode,
     )
     generated, nfe = generator.sample(
-        output["visible"], parent, samples=posterior_samples
+        output["visible"], parent, samples=posterior_samples,
+        generator=sampling_generator,
     )
     # Common storage is [B,K,M,Rnu,3]. Non-hypothesis modes have one unique
     # posterior branch; K contains repeated views and is not counted as new samples.
@@ -245,6 +288,7 @@ def predict_hdf5(
     posterior_samples: int = 1,
     recurrent_steps: int | None = None,
     device: str = "cpu",
+    prediction_seed: int,
     checkpoint_path: str = "",
     compatibility_weight: float = 1.0,
 ) -> None:
@@ -256,6 +300,7 @@ def predict_hdf5(
         "test": data.test_dataloader,
     }[split]()
     iterator = iter(loader)
+    sampling_generator = torch.Generator(device=device).manual_seed(int(prediction_seed))
     target = Path(output_path).expanduser().resolve()
     target.parent.mkdir(parents=True, exist_ok=True)
     temporary = target.with_suffix(target.suffix + ".tmp")
@@ -289,6 +334,7 @@ def predict_hdf5(
                     else "untrained"
                 ),
                 "split": split,
+                "prediction_seed": int(prediction_seed),
                 "recurrent_steps": -1 if recurrent_steps is None else recurrent_steps,
                 "invisible_formulation": module.hparams.invisible_formulation or "disabled",
                 "invisible_assignment_conditioning": assignment_mode,
@@ -359,13 +405,18 @@ def predict_hdf5(
                     decoded,
                     top_k=top_k,
                     posterior_samples=posterior_samples,
+                    sampling_generator=sampling_generator,
                 )
                 samples_tensor = scaler.inverse(scaled)
                 samples = samples_tensor.cpu().numpy().astype(np.float32)
                 mean = samples.mean(axis=2)
                 std = samples.std(axis=2)
                 composites, truth_composites, observed_met = _compose_physics(
-                    module, batch, assignments, samples_tensor
+                    module,
+                    batch,
+                    assignments,
+                    samples_tensor,
+                    truth_assignment=assignment_mode == "truth",
                 )
 
                 if module.event_model.compatibility is not None:
