@@ -47,3 +47,25 @@ selects exactly one labelled electron and one labelled muon with opposite source
 roles. Source JET label matching the electron role becomes canonical JET label 1 and the
 muon partner becomes label 2. Invisible storage remains unchanged and ordered
 `(nu_e, nu_mu)`.
+
+## Validation provenance
+
+The production-like GPU smoke completed as Slurm job `19609771` from commit
+`afc011d68bb4b63e433a01cd47a346e73f953dd3` on an NVIDIA L40S. It validated the
+CUDA mechanism matrix and a real canonical ttbar2L round trip with the
+production multi-worker loader, 16-mixed AMP, gradient clipping, checkpoint
+reload in a fresh process, prediction HDF5 validation, EVENT_ID closure,
+evaluation and plotting. Peak device allocation was approximately 1.26 GiB.
+
+The full ttbar2L data-contract audit inspected 3,921,094 canonical events.
+Only 543 events (0.01385%) had either truth b jet outside the retained eight
+jet slots; the audit found no non-finite active inputs. The compact summary is
+in `docs/ttbar2L_data_contract.md`. Study 01 control-design measurements are
+recorded separately in `configs/studies/01_recurrence_controls.json` and are
+engineering provenance rather than physics results.
+
+A fixed two-event joint-flow CFM loss-balance diagnostic gave assignment loss
+`4.3266`, invisible loss `1.4455`, and shared gradient L2 norms `0.4101` and
+`3.5358`, respectively. This is not an order-of-magnitude objective
+imbalance, so the maintained 1:1 loss weighting is retained. This is an
+engineering diagnostic, not a physics result.

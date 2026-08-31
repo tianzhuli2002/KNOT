@@ -8,10 +8,13 @@ import hashlib
 import json
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+
+from omegaconf import OmegaConf
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -21,6 +24,89 @@ from joint_event_reconstruction.studies import StudySpec, VariantSpec, load_stud
 
 
 _CAMPAIGN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+SELECTIONS_PATH = ROOT / "configs/studies/UPSTREAM_SELECTIONS.yaml"
+_GATE_KEYS = {
+    "status",
+    "source_study",
+    "selected_variant",
+    "validated_sha",
+    "required_by",
+}
+_COMMIT_SHA = re.compile(r"^[0-9a-f]{40}$")
+
+
+def _scientific_gates() -> dict:
+    if not SELECTIONS_PATH.is_file():
+        raise FileNotFoundError(f"Scientific selection gates do not exist: {SELECTIONS_PATH}")
+    raw = OmegaConf.to_container(OmegaConf.load(SELECTIONS_PATH), resolve=True)
+    if not isinstance(raw, dict) or not raw:
+        raise ValueError(f"Scientific selection gates must be a non-empty mapping: {SELECTIONS_PATH}")
+    study_paths = {
+        load_study(path).name: path
+        for path in sorted((ROOT / "configs/studies").glob("[0-9][0-9]_*.yaml"))
+    }
+    for name, gate in raw.items():
+        if not isinstance(gate, dict) or set(gate) != _GATE_KEYS:
+            raise ValueError(
+                f"Scientific gate {name!r} must contain exactly {sorted(_GATE_KEYS)}"
+            )
+        if gate["status"] not in {"pending", "locked"}:
+            raise ValueError(f"Scientific gate {name!r} has invalid status {gate['status']!r}")
+        source_study = str(gate["source_study"]).strip()
+        if not source_study:
+            raise ValueError(f"Scientific gate {name!r} has no source_study")
+        if source_study not in study_paths:
+            raise ValueError(
+                f"Scientific gate {name!r} refers to unknown source study "
+                f"{source_study!r}"
+            )
+        required_by = gate["required_by"]
+        if (
+            not isinstance(required_by, list)
+            or not required_by
+            or any(not str(study).strip() for study in required_by)
+            or len(set(required_by)) != len(required_by)
+        ):
+            raise ValueError(f"Scientific gate {name!r} has invalid required_by")
+        unknown_dependents = sorted(set(required_by) - set(study_paths))
+        if unknown_dependents:
+            raise ValueError(
+                f"Scientific gate {name!r} refers to unknown dependent studies "
+                f"{unknown_dependents}"
+            )
+        if gate["status"] == "locked":
+            selected_variant = str(gate["selected_variant"]).strip()
+            if not selected_variant:
+                raise ValueError(f"Locked scientific gate {name!r} has no selected_variant")
+            if selected_variant not in load_study(
+                study_paths[source_study]
+            ).variant_map:
+                raise ValueError(
+                    f"Locked scientific gate {name!r} selects unknown variant "
+                    f"{selected_variant!r} from {source_study!r}"
+                )
+            if not isinstance(gate["validated_sha"], str) or not _COMMIT_SHA.fullmatch(
+                gate["validated_sha"]
+            ):
+                raise ValueError(
+                    f"Locked scientific gate {name!r} must record a 40-character validated_sha"
+                )
+    return raw
+
+
+def _require_locked_scientific_gates(study_name: str, selections: dict | None = None) -> None:
+    selections = _scientific_gates() if selections is None else selections
+    pending = [
+        name
+        for name, gate in selections.items()
+        if study_name in gate["required_by"] and gate["status"] != "locked"
+    ]
+    if pending:
+        raise RuntimeError(
+            f"Study {study_name!r} is decision-gated by pending selections {pending}. "
+            f"Record the human-reviewed winner in {SELECTIONS_PATH} and update the "
+            "study's explicit reference patch before submission."
+        )
 
 
 def _selected(value: str, allowed: tuple, label: str) -> tuple:
@@ -120,6 +206,8 @@ def _worker_script(
     output_root: Path,
     device: str,
     global_overrides: tuple[str, ...],
+    expected_commit: str,
+    expected_manifest_sha256: str,
 ) -> None:
     command = [
         sys.executable,
@@ -142,11 +230,63 @@ def _worker_script(
     path.write_text(
         "#!/usr/bin/env bash\n"
         "set -euo pipefail\n"
+        f"repo_root={shlex.quote(str(ROOT))}\n"
+        f"expected_git_commit={shlex.quote(expected_commit)}\n"
+        'actual_git_commit=$(git -C "$repo_root" rev-parse HEAD)\n'
+        'if [[ "$actual_git_commit" != "$expected_git_commit" ]]; then\n'
+        '    echo "Checkout changed after Slurm submission: expected $expected_git_commit, found $actual_git_commit" >&2\n'
+        "    exit 3\n"
+        "fi\n"
+        'if [[ -n "$(git -C "$repo_root" status --porcelain)" ]]; then\n'
+        '    echo "Checkout became dirty after Slurm submission" >&2\n'
+        "    exit 3\n"
+        "fi\n"
+        f"manifest_snapshot={shlex.quote(str(study_path))}\n"
+        f"expected_manifest_sha256={shlex.quote(expected_manifest_sha256)}\n"
+        'actual_manifest_sha256=$(sha256sum "$manifest_snapshot" | cut -d" " -f1)\n'
+        'if [[ "$actual_manifest_sha256" != "$expected_manifest_sha256" ]]; then\n'
+        '    echo "Study manifest snapshot changed after submission" >&2\n'
+        "    exit 3\n"
+        "fi\n"
         f"task_file={shlex.quote(str(task_file))}\n"
         'line=$(sed -n "$((SLURM_ARRAY_TASK_ID + 1))p" "$task_file")\n'
         "if [[ -z \"$line\" ]]; then echo \"Missing study task for index $SLURM_ARRAY_TASK_ID\" >&2; exit 2; fi\n"
         "IFS=$'\\t' read -r topology variant seed <<< \"$line\"\n"
         f"exec {rendered}\n"
+    )
+    path.chmod(0o755)
+
+
+def _post_script(
+    path: Path,
+    commands: list[list[str]],
+    expected_commit: str,
+    manifest_snapshot: Path,
+    expected_manifest_sha256: str,
+) -> None:
+    path.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        f"repo_root={shlex.quote(str(ROOT))}\n"
+        f"expected_git_commit={shlex.quote(expected_commit)}\n"
+        'actual_git_commit=$(git -C "$repo_root" rev-parse HEAD)\n'
+        'if [[ "$actual_git_commit" != "$expected_git_commit" ]]; then\n'
+        '    echo "Checkout changed after Slurm submission: expected $expected_git_commit, found $actual_git_commit" >&2\n'
+        "    exit 3\n"
+        "fi\n"
+        'if [[ -n "$(git -C "$repo_root" status --porcelain)" ]]; then\n'
+        '    echo "Checkout became dirty after Slurm submission" >&2\n'
+        "    exit 3\n"
+        "fi\n"
+        f"manifest_snapshot={shlex.quote(str(manifest_snapshot))}\n"
+        f"expected_manifest_sha256={shlex.quote(expected_manifest_sha256)}\n"
+        'actual_manifest_sha256=$(sha256sum "$manifest_snapshot" | cut -d" " -f1)\n'
+        'if [[ "$actual_manifest_sha256" != "$expected_manifest_sha256" ]]; then\n'
+        '    echo "Study manifest snapshot changed after submission" >&2\n'
+        "    exit 3\n"
+        "fi\n"
+        + " && ".join(shlex.join(command) for command in commands)
+        + "\n"
     )
     path.chmod(0o755)
 
@@ -238,6 +378,10 @@ def main() -> None:
     )
     parser.add_argument("--no-postprocess", action="store_true")
     parser.add_argument(
+        "--dependency-afterok",
+        help="External job ID that must succeed before the first training layer starts.",
+    )
+    parser.add_argument(
         "--campaign-id",
         help="Human-readable immutable Slurm-attempt identifier; defaults to a UTC timestamp.",
     )
@@ -245,6 +389,9 @@ def main() -> None:
     args = parser.parse_args()
 
     study = load_study(args.study)
+    selections = _scientific_gates()
+    if not args.dry_run:
+        _require_locked_scientific_gates(study.name, selections)
     topologies = _selected(args.topologies, study.topologies, "topologies")
     variant_names = tuple(variant.name for variant in study.variants)
     requested_names = _selected(args.variants, variant_names, "variants")
@@ -283,6 +430,12 @@ def main() -> None:
         )
     log_dir = slurm_root / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
+    manifest_snapshot = slurm_root / "study_manifest.yaml"
+    shutil.copyfile(study_path, manifest_snapshot)
+    if _sha256_file(manifest_snapshot) != manifest_sha256:
+        raise RuntimeError(
+            "Study manifest snapshot checksum does not match the submitted manifest"
+        )
     overrides = tuple(args.global_overrides)
     extra = tuple(args.extra_sbatch)
     git_commit, git_dirty = _git_state()
@@ -297,11 +450,20 @@ def main() -> None:
         "study": study.name,
         "study_manifest": str(study_path),
         "study_manifest_sha256": manifest_sha256,
+        "study_manifest_snapshot": str(manifest_snapshot),
+        "study_manifest_snapshot_sha256": _sha256_file(manifest_snapshot),
         "selection_split": study.split,
         "output_root": str(output_root),
         "slurm_root": str(slurm_root),
         "log_directory": str(log_dir),
         "topologies": list(topologies),
+        "base_experiments": {
+            topology: {
+                "path": str(study.experiment_path(ROOT, topology)),
+                "sha256": _sha256_file(study.experiment_path(ROOT, topology)),
+            }
+            for topology in topologies
+        },
         "requested_variants": [variant.name for variant in requested],
         "training_closure": [variant.name for variant in training],
         "seeds": list(seeds),
@@ -326,7 +488,7 @@ def main() -> None:
     }
     submission_path = slurm_root / "submission.json"
     _save_submission(submission_path, submitted)
-    dependency = None
+    dependency = args.dependency_afterok
     fake_id = 0
     for level_index, variants in enumerate(_levels(study, training)):
         tasks = [
@@ -341,11 +503,13 @@ def main() -> None:
         _worker_script(
             worker,
             task_file=task_file,
-            study_path=study_path,
+            study_path=manifest_snapshot,
             stage="train",
             output_root=output_root,
             device="cuda",
             global_overrides=overrides,
+            expected_commit=git_commit,
+            expected_manifest_sha256=manifest_sha256,
         )
         job_id = _submit(
             _sbatch_array(
@@ -394,11 +558,13 @@ def main() -> None:
         _worker_script(
             prediction_worker,
             task_file=prediction_file,
-            study_path=study_path,
+            study_path=manifest_snapshot,
             stage="predict",
             output_root=output_root,
             device="cuda",
             global_overrides=overrides,
+            expected_commit=git_commit,
+            expected_manifest_sha256=manifest_sha256,
         )
         prediction_job = _submit(
             _sbatch_array(
@@ -425,19 +591,25 @@ def main() -> None:
         _save_submission(submission_path, submitted)
 
         if not args.no_postprocess:
-            post = " && ".join(
-                shlex.join(
-                    _post_command(
-                        study_path,
-                        stage,
-                        output_root=output_root,
-                        topologies=topologies,
-                        variants=prediction_variants,
-                        seeds=seeds,
-                        overrides=overrides,
-                    )
+            post_worker = slurm_root / "postprocess.sh"
+            post_commands = [
+                _post_command(
+                    manifest_snapshot,
+                    stage,
+                    output_root=output_root,
+                    topologies=topologies,
+                    variants=prediction_variants,
+                    seeds=seeds,
+                    overrides=overrides,
                 )
                 for stage in ("evaluate", "plot", "compare", "summary", "analyze")
+            ]
+            _post_script(
+                post_worker,
+                post_commands,
+                git_commit,
+                manifest_snapshot,
+                manifest_sha256,
             )
             post_job = _submit(
                 [
@@ -451,13 +623,14 @@ def main() -> None:
                     f"--output={log_dir}/%x-%j.out",
                     f"--error={log_dir}/%x-%j.err",
                     *extra,
-                    "--wrap", post,
+                    str(post_worker),
                 ],
                 dry_run=args.dry_run,
                 fake_id=fake_id,
             )
             submitted["postprocess_job"] = post_job
             submitted["postprocess_depends_on"] = prediction_job
+            submitted["postprocess_worker"] = str(post_worker)
             _save_submission(submission_path, submitted)
 
     _save_submission(submission_path, submitted)

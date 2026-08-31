@@ -92,6 +92,7 @@ topology: configs/topology/ttbar2L.yaml
 
 data:
   config: configs/data/ttbar2L.yaml
+  subset_seed: 42
   events: {train: 100000, validation: 50000, test: 50000}
   max_assignment_states: 100000
 
@@ -266,6 +267,7 @@ model:
     conditioning: soft
   c2:
     posterior_samples: 8
+    training_sampler: {steps: 17, solver: euler}  # CFM training semantics
 ```
 
 Compatibility is an optional factorized reranker:
@@ -318,10 +320,11 @@ prediction:
   solver: heun
 ```
 
-The training seed and prediction seed have different meanings:
+The three seeds have different meanings:
 
 ```text
-experiment.seed -> training/data stochasticity
+experiment.seed -> model/training stochasticity
+data.subset_seed -> stable EVENT_ID-based train subset identity
 prediction.seed -> posterior Monte-Carlo stochasticity
 ```
 
@@ -485,6 +488,21 @@ python scripts/submit_study_slurm.py configs/studies/04_c2_feedback.yaml \
 
 Slurm workers run one exact variant per dependency level, avoiding recursive resubmission of precursor variants.
 
+Each real submission gets an immutable campaign directory under
+`results/studies/<study>/_slurm/<campaign-id>/`. Its `submission.json` records
+the source commit, manifest, output root, variants, seeds and dependency graph;
+task files and logs from a previous campaign are never reused. Training and
+prediction artifacts also carry identity sidecars. Matching identities may be
+resumed, while a stale or incomplete artifact is a hard error unless the user
+explicitly requests `--force` (which invalidates dependent products).
+
+Studies 02--11 are human decision-gated templates. They may be dry-planned
+while their upstream choices are pending, but real submission is blocked until
+the corresponding entry in `configs/studies/UPSTREAM_SELECTIONS.yaml` is
+locked. Study 01 is the first submission-ready gate and uses validation for
+selection; the locked finalists are evaluated on test only after the decision
+gates are recorded.
+
 ## Maintained study sequence
 
 The initial controlled campaign is intentionally ttbar2L-first:
@@ -513,11 +531,11 @@ This keeps topology fixed while individual modelling effects are isolated. A `tt
 10k, 25k, 50k, 100k, 250k, 500k training events
 ```
 
-with fixed validation/test samples.
+with fixed validation/test samples and nested EVENT_ID-based training subsets.
 
 ## Recurrence controls
 
-Generate both a parameter-matched and an empirical compute-matched non-recurrent control for M2/M3:
+Generate both a parameter-matched and a training-compute-matched non-recurrent control for M2/M3:
 
 ```bash
 python scripts/match_recurrence_controls.py \
@@ -528,7 +546,7 @@ python scripts/match_recurrence_controls.py \
   --output results/recurrence_controls_m3.json
 ```
 
-The script first searches non-recurrent encoder depth/feed-forward width by parameter count, then benchmarks shortlisted candidates and the recurrent target on the same synthetic batch. It records separate parameter- and compute-matched controls. These measurements are software controls, not physics results.
+The script first searches non-recurrent encoder depth/feed-forward width by parameter count, then benchmarks shortlisted candidates and the recurrent target on the same synthetic batch. It records separate parameter- and training-compute-matched controls; the latter is not automatically inference-compute-equivalent. These measurements are engineering provenance, not physics results.
 
 ## Validation
 

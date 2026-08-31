@@ -93,6 +93,13 @@ def _identity_digest(identity: dict) -> str:
     return _sha256_bytes(payload)
 
 
+def _training_config_identity(resolved) -> dict:
+    """Keep prediction-only settings out of the checkpoint identity."""
+    config = OmegaConf.to_container(resolved, resolve=True)
+    config.pop("inference", None)
+    return config
+
+
 def _file_identity(path: str | Path) -> dict:
     path = Path(path).expanduser().resolve()
     stat = path.stat()
@@ -121,6 +128,12 @@ def _data_subset_identity_cached(
     data = OmegaConf.load(data_config_path)
     source_path = _repo_path(data.source)
     split_path = _repo_path(data.split)
+    invisible_truth = data.get("invisible_truth")
+    invisible_identity = (
+        None
+        if invisible_truth is None
+        else _file_identity(_repo_path(invisible_truth))
+    )
     requested = {
         "train": train_count,
         "validation": validation_count,
@@ -142,11 +155,13 @@ def _data_subset_identity_cached(
     return {
         "ranking": SUBSET_RANKING,
         "subset_seed": int(subset_seed),
+        "data_config_sha256": _sha256_file(data_config_path),
         "source": str(source_path),
         "source_size_bytes": source_stat.st_size,
         "source_mtime_ns": source_stat.st_mtime_ns,
         "split_indices": str(split_path),
         "split_indices_sha256": _sha256_file(split_path),
+        "invisible_truth": invisible_identity,
         "splits": split_identity,
     }
 
@@ -196,17 +211,17 @@ def _training_identity(
         "kind": "training",
         "git_commit": git_commit,
         "study": study.name,
-        "study_manifest": str(study.path),
         "study_manifest_sha256": _sha256_file(study.path),
         "topology": topology,
         "variant": variant.name,
         "variant_label": variant.label,
         "variant_patch": variant.patch,
         "model_seed": int(seed),
+        "topology_config": _file_identity(resolved.topology_config),
         "data_subset": _data_subset_identity(resolved),
         "base_experiment": str(experiment),
         "base_experiment_sha256": _sha256_file(experiment),
-        "resolved_config": OmegaConf.to_container(resolved, resolve=True),
+        "resolved_config": _training_config_identity(resolved),
         "initial_checkpoint": None if initial is None else _file_identity(initial),
         "initial_components": list(variant.initialise_components),
     }
@@ -228,12 +243,12 @@ def _prediction_identity(
         "kind": "prediction",
         "git_commit": git_commit,
         "study": study.name,
-        "study_manifest": str(study.path),
         "study_manifest_sha256": _sha256_file(study.path),
         "topology": topology,
         "variant": variant.name,
         "prediction": prediction.name,
         "model_seed": int(seed),
+        "topology_config": _file_identity(resolved.topology_config),
         "data_subset": _data_subset_identity(resolved),
         "split": study.split,
         "checkpoint": _file_identity(checkpoint),
@@ -306,6 +321,9 @@ def _invalidate_aggregate_outputs(root: Path, study, topology: str, seed: int) -
     comparison = study_root / topology / "comparisons" / f"seed_{seed}"
     if comparison.exists():
         shutil.rmtree(comparison)
+    analysis = study_root / topology / "analysis" / f"seed_{seed}"
+    if analysis.exists():
+        shutil.rmtree(analysis)
     for name in ("summary.csv", "summary.json", "summary_aggregate.json"):
         path = study_root / name
         if path.exists():
@@ -524,13 +542,32 @@ def _predict_one(study, topology, variant, prediction, seed, *, root, global_ove
     if not dry_run:
         git_commit = _require_clean_git()
         training_identity_path = run_dir / "train/artifact_identity.json"
-        training_record = json.loads(training_identity_path.read_text()) if training_identity_path.is_file() else None
-        if training_record is None:
-            raise RuntimeError(
-                f"Prediction checkpoint has no completed training identity: {checkpoint}"
-            )
-        if training_record.get("artifact") != _file_identity(checkpoint):
-            raise RuntimeError(f"Prediction checkpoint changed after training: {checkpoint}")
+        training_experiment, _, training_resolved = _public_run_config(
+            study, topology, variant, seed, root, global_overrides
+        )
+        initial = None
+        if variant.initialise_from is not None:
+            initial = _checkpoint(root, study, topology, variant.initialise_from, seed)
+            if not initial.is_file():
+                raise FileNotFoundError(
+                    f"Variant {variant.name!r} requires checkpoint {initial}"
+                )
+        expected_training = _training_identity(
+            study,
+            topology,
+            variant,
+            seed,
+            training_experiment,
+            training_resolved,
+            initial,
+            git_commit,
+        )
+        _verify_artifact_record(
+            training_identity_path,
+            checkpoint,
+            expected_training,
+            "training checkpoint",
+        )
         identity = _prediction_identity(
             study,
             topology,
@@ -736,9 +773,13 @@ def _compare(study, topology, variants, seed, *, root, formats, include_diagnost
             continue
         for prediction in variant.predictions:
             path = _prediction_path(root, study, topology, variant.name, seed, prediction.name)
-            if path.is_file() or dry_run:
-                paths.append(path)
-                labels.append(f"{variant.label}: {prediction.label}")
+            if not dry_run and not path.is_file():
+                raise FileNotFoundError(
+                    f"Comparison requires prediction artifact {path}; "
+                    "the requested comparison set is incomplete"
+                )
+            paths.append(path)
+            labels.append(f"{variant.label}: {prediction.label}")
     if len(paths) < 2:
         return
     if not dry_run:
@@ -752,6 +793,66 @@ def _compare(study, topology, variants, seed, *, root, formats, include_diagnost
 
 
 def _study_specific_analysis(study, topologies, variants, seeds, *, root, dry_run):
+    if study.name == "posterior_size":
+        required = {"factorized", "joint"}
+        selected = {variant.name for variant in variants}
+        if not required <= selected:
+            print(
+                "Skip posterior-size analysis for partial variant selection; "
+                f"missing={sorted(required - selected)}"
+            )
+            return
+        for topology in topologies:
+            for seed in seeds:
+                factorized = _prediction_path(
+                    root, study, topology, "factorized", seed, "k10_m64"
+                )
+                joint = _prediction_path(
+                    root, study, topology, "joint", seed, "s64"
+                )
+                output = (
+                    root / study.name / topology / "analysis" / f"seed_{seed}"
+                    / "posterior_convergence.json"
+                )
+                command = [
+                    sys.executable,
+                    str(ROOT / "scripts/analyze_posterior_convergence.py"),
+                    "--factorized", str(factorized),
+                    "--joint", str(joint),
+                    "--output", str(output),
+                ]
+                print(shlex.join(command))
+                if not dry_run:
+                    subprocess.run(command, cwd=ROOT, check=True)
+        return
+    if study.name == "compatibility_reranking":
+        required = {"compatibility"}
+        selected = {variant.name for variant in variants}
+        if not required <= selected:
+            print(
+                "Skip compatibility analysis for partial variant selection; "
+                f"missing={sorted(required - selected)}"
+            )
+            return
+        for topology in topologies:
+            for seed in seeds:
+                prediction = _prediction_path(
+                    root, study, topology, "compatibility", seed, "posterior"
+                )
+                output = (
+                    root / study.name / topology / "analysis" / f"seed_{seed}"
+                    / "compatibility_scan.json"
+                )
+                command = [
+                    sys.executable,
+                    str(ROOT / "scripts/analyze_compatibility_scan.py"),
+                    "--prediction", str(prediction),
+                    "--output", str(output),
+                ]
+                print(shlex.join(command))
+                if not dry_run:
+                    subprocess.run(command, cwd=ROOT, check=True)
+        return
     if study.name != "visible_recurrence":
         print(f"No dedicated analysis is maintained for {study.name}.")
         return
