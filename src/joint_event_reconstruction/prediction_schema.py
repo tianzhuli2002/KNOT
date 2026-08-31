@@ -79,9 +79,12 @@ def validate_prediction(path: str | Path) -> None:
             raise ValueError("Prediction output must have a positive M")
         log_scores = source["VISIBLE/assignment_log_scores"][:]
         probabilities = source["VISIBLE/constrained_probabilities"][:]
+        valid_hypotheses = source["VISIBLE/valid_hypotheses"][:]
         if (
             log_scores.ndim != 2
             or probabilities.shape != log_scores.shape
+            or valid_hypotheses.shape != log_scores.shape
+            or valid_hypotheses.dtype != np.bool_
             or probabilities.shape[0] != count
             or probabilities.shape[1] != top_k
             or not np.isfinite(log_scores).all()
@@ -93,13 +96,23 @@ def validate_prediction(path: str | Path) -> None:
                 "Prediction output has invalid assignment scores/probabilities: "
                 f"scores={log_scores.shape}, probabilities={probabilities.shape}"
             )
+        if not valid_hypotheses[:, 0].all() or (
+            np.diff(valid_hypotheses.astype(np.int8), axis=1) > 0
+        ).any():
+            raise ValueError("Prediction hypothesis support must be a non-empty prefix")
+        if (probabilities[~valid_hypotheses] != 0).any():
+            raise ValueError("Unsupported prediction hypotheses must have zero probability")
         exact_logz = source["VISIBLE/exact_logZ"][:]
         if (
             exact_logz.shape != (count,)
             or not np.isfinite(exact_logz).all()
         ):
             raise ValueError("Prediction output has invalid VISIBLE/exact_logZ")
-        expected = np.exp(log_scores.astype(np.float64) - exact_logz[:, None])
+        expected = np.where(
+            valid_hypotheses,
+            np.exp(log_scores.astype(np.float64) - exact_logz[:, None]),
+            0.0,
+        )
         if (
             not np.isfinite(expected).all()
             or not np.allclose(probabilities, expected, rtol=1.0e-5, atol=1.0e-7)

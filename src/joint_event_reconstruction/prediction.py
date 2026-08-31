@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from dataclasses import replace
 from pathlib import Path
 
 import h5py
@@ -78,10 +79,16 @@ def decode_batch(spec, batch: dict, output: dict, k: int):
                 values.append(ScoredCandidate(record, probability))
             scored[root] = tuple(values)
         result = decode_complete(spec, scored, k=k)
-        if len(result.assignments) < k:
+        if not result.assignments:
             raise RuntimeError(
-                f"EVENT_ID={int(batch['event_index'][event])} has only "
-                f"{len(result.assignments)} complete non-null hypotheses"
+                f"EVENT_ID={int(batch['event_index'][event])} has no complete "
+                "non-null assignment hypothesis"
+            )
+        if len(result.assignments) < k:
+            result = replace(
+                result,
+                assignments=result.assignments
+                + (result.assignments[-1],) * (k - len(result.assignments)),
             )
         decoded.append(result)
     return decoded
@@ -376,14 +383,24 @@ def predict_hdf5(
                 [[hyp.log_score for hyp in event] for event in assignments],
                 dtype=np.float32,
             )
+            valid_hypotheses = np.asarray(
+                [np.arange(top_k) < item.valid_assignment_count for item in decoded],
+                dtype=np.bool_,
+            )
+            log_scores = np.where(valid_hypotheses, log_scores, -1.0e30).astype(
+                np.float32
+            )
             logz = np.asarray(
                 [item.log_normalisation for item in decoded], dtype=np.float32
             )
-            constrained = np.exp(log_scores - logz[:, None]).astype(np.float32)
+            constrained = np.where(
+                valid_hypotheses, np.exp(log_scores - logz[:, None]), 0.0
+            ).astype(np.float32)
             truth = np.asarray(
                 [[hyp.truth for hyp in event] for event in assignments],
                 dtype=np.bool_,
             )
+            truth &= valid_hypotheses
 
             jet_type = data.schema.source_type_ids.get("JET")
             if jet_type is None:
@@ -453,6 +470,9 @@ def predict_hdf5(
                         .astype(np.float32)
                     )
                     final_score = log_scores + compatibility_weight * compatibility
+                    final_score = np.where(
+                        valid_hypotheses, final_score, -1.0e30
+                    ).astype(np.float32)
                     final_rank = np.argsort(
                         -final_score, axis=1, kind="stable"
                     ).astype(np.int32)
@@ -477,6 +497,9 @@ def predict_hdf5(
                     "logz": _create(visible_group, "exact_logZ", (), "<f4"),
                     "probabilities": _create(
                         visible_group, "constrained_probabilities", (top_k,), "<f4"
+                    ),
+                    "valid_hypotheses": _create(
+                        visible_group, "valid_hypotheses", (top_k,), "?"
                     ),
                     "truth_assignment": _create(
                         truth_group, "topk_assignment", (top_k,), "?"
@@ -561,6 +584,7 @@ def predict_hdf5(
             _append(datasets["log_scores"], log_scores)
             _append(datasets["logz"], logz)
             _append(datasets["probabilities"], constrained)
+            _append(datasets["valid_hypotheses"], valid_hypotheses)
             _append(datasets["truth_assignment"], truth)
             _append(datasets["njet"], njet)
             for node in module.spec.dag_order:
