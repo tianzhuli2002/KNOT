@@ -9,19 +9,15 @@ import h5py
 import numpy as np
 
 from joint_event_reconstruction.assignment_semantics import read_hdf5_support
+from joint_event_reconstruction.evaluation import (
+    _posterior_kinematic_metrics,
+    _posterior_metrics,
+)
 from joint_event_reconstruction.prediction_schema import (
+    DISCRETE_PREDICTION_SCHEMA,
     JOINT_PREDICTION_SCHEMA,
     validate_joint_prediction,
 )
-
-
-def _energy_score(samples: np.ndarray, truth: np.ndarray) -> float:
-    samples = samples.reshape(len(samples), samples.shape[1], -1)
-    truth = truth.reshape(len(truth), -1)
-    data_term = np.linalg.norm(samples - truth[:, None], axis=-1).mean(axis=1)
-    pair = samples[:, :, None] - samples[:, None, :]
-    sample_term = np.linalg.norm(pair, axis=-1).mean(axis=(1, 2))
-    return float(np.mean(data_term - 0.5 * sample_term))
 
 
 def _single_event_energy(samples: np.ndarray, truth: np.ndarray) -> float:
@@ -90,6 +86,7 @@ def _composite_metrics(predicted: np.ndarray, truth: np.ndarray) -> dict:
             else None
         ),
         "kinematic_events": int(eligible.sum()),
+        "posterior_distribution": _posterior_kinematic_metrics(predicted, truth),
     }
     if not eligible.any():
         return result
@@ -243,42 +240,9 @@ def evaluate_joint_predictions(path: str | Path) -> dict:
             },
             "invisible": {
                 "interpretation": "native joint posterior samples p(A,nu|X)",
-                "energy_score_joint": _energy_score(samples, truth),
-                "roles": {},
+                **_posterior_metrics(samples, truth, roles),
             },
         }
-
-        mean = samples.mean(axis=1)
-        levels = (0.50, 0.68, 0.90, 0.95)
-        for role_index, role_name in enumerate(roles):
-            role_result = {}
-            for component, component_index in zip(("px", "py", "pz"), range(3)):
-                mean_residual = (
-                    mean[:, role_index, component_index]
-                    - truth[:, role_index, component_index]
-                )
-                component_result = {
-                    "bias": float(mean_residual.mean()),
-                    "rmse": float(np.sqrt(np.mean(mean_residual**2))),
-                    "median_residual": float(np.median(mean_residual)),
-                    "central_68_width": float(
-                        np.quantile(mean_residual, 0.84)
-                        - np.quantile(mean_residual, 0.16)
-                    ),
-                }
-                values = samples[:, :, role_index, component_index]
-                target = truth[:, role_index, component_index]
-                for level in levels:
-                    low = np.quantile(values, (1 - level) / 2, axis=1)
-                    high = np.quantile(values, 1 - (1 - level) / 2, axis=1)
-                    component_result[f"coverage_{int(level * 100)}"] = float(
-                        ((target >= low) & (target <= high)).mean()
-                    )
-                role_result[component] = component_result
-            role_result["energy_score"] = _energy_score(
-                samples[:, :, role_index], truth[:, role_index]
-            )
-            result["invisible"]["roles"][role_name] = role_result
 
         diagnostic = _truth_assignment_continuous_diagnostic(
             samples, truth, truth_hit, roles
@@ -316,10 +280,6 @@ def evaluate_any_predictions(path: str | Path) -> dict:
         schema = source.attrs.get("schema_version")
     if schema == JOINT_PREDICTION_SCHEMA:
         return evaluate_joint_predictions(path)
-
-    from joint_event_reconstruction.prediction_discrete import (
-        DISCRETE_PREDICTION_SCHEMA,
-    )
 
     if schema == DISCRETE_PREDICTION_SCHEMA:
         from joint_event_reconstruction.evaluation_discrete import (

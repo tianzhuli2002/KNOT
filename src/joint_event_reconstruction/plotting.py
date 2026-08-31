@@ -14,6 +14,12 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from joint_event_reconstruction.assignment_semantics import read_hdf5_support
+from joint_event_reconstruction.evaluation import (
+    COVERAGE_CURVE_LEVELS,
+    _finite_sample_rank,
+    _weighted_quantile_rows,
+    truth_oracle_support,
+)
 from joint_event_reconstruction.evaluation_joint import evaluate_any_predictions
 from joint_event_reconstruction.prediction_schema import (
     DISCRETE_PREDICTION_SCHEMA,
@@ -23,7 +29,7 @@ from joint_event_reconstruction.prediction_schema import (
 
 
 COMPONENTS = ("px", "py", "pz")
-CALIBRATION_LEVELS = np.asarray((0.50, 0.68, 0.90, 0.95))
+CALIBRATION_LEVELS = np.asarray(COVERAGE_CURVE_LEVELS)
 FIGURE_SIZE = (7.0, 5.0)
 PLOT_STYLE = {
     "font.size": 11,
@@ -110,21 +116,6 @@ def _mode(states: np.ndarray) -> np.ndarray:
     return result
 
 
-def _weighted_quantile(
-    values: np.ndarray, weights: np.ndarray, quantile: float
-) -> np.ndarray:
-    result = np.empty(len(values), dtype=np.float64)
-    for event in range(len(values)):
-        order = np.argsort(values[event], kind="stable")
-        cumulative = np.cumsum(weights[event, order])
-        index = min(
-            int(np.searchsorted(cumulative, quantile, side="left")),
-            values.shape[1] - 1,
-        )
-        result[event] = values[event, order[index]]
-    return result
-
-
 def _factorized_posterior(source: h5py.File):
     samples = source["INVISIBLE/samples"][:]
     conditioning = str(
@@ -167,14 +158,14 @@ def _coverage(
 ) -> np.ndarray:
     result = []
     for level in CALIBRATION_LEVELS:
-        low = _weighted_quantile(values, weights, (1 - level) / 2)
-        high = _weighted_quantile(values, weights, 1 - (1 - level) / 2)
+        low = _weighted_quantile_rows(values, weights, (1 - level) / 2)
+        high = _weighted_quantile_rows(values, weights, 1 - (1 - level) / 2)
         result.append(((target >= low) & (target <= high)).mean())
     return np.asarray(result)
 
 
 def _pit(values: np.ndarray, target: np.ndarray, weights: np.ndarray) -> np.ndarray:
-    return np.sum(weights * (values <= target[:, None]), axis=1)
+    return _finite_sample_rank(values, target, weights)
 
 
 def _mass(vectors: np.ndarray) -> np.ndarray:
@@ -376,13 +367,20 @@ def _invisible_plots(
     if schema == PREDICTION_SCHEMA:
         if "INVISIBLE/samples" not in source:
             return []
-        samples, weights, _ = _factorized_posterior(source)
+        samples, weights, conditioning = _factorized_posterior(source)
     elif schema == JOINT_PREDICTION_SCHEMA:
         samples, weights, _ = _joint_posterior(source)
     else:
         return []
 
     truth = source["TRUTH/NEUTRINO"][:]
+    if schema == PREDICTION_SCHEMA and conditioning == "truth":
+        support = truth_oracle_support(source)
+        if not support.any():
+            return []
+        samples = samples[support]
+        weights = weights[support]
+        truth = truth[support]
     roles = json.loads(source.attrs["invisible_roles"])
     mean = _posterior_mean(samples, weights)
     written = []
@@ -425,8 +423,8 @@ def _invisible_plots(
             )
             ax.set_xlabel("Nominal central interval coverage")
             ax.set_ylabel("Empirical coverage")
-            ax.set_xlim(0.45, 1.0)
-            ax.set_ylim(0.45, 1.0)
+            ax.set_xlim(0.0, 1.0)
+            ax.set_ylim(0.0, 1.0)
             _stats_box(ax, [f"N = {len(target)}", "error bars: binomial SE"])
             _finish(ax, legend=True)
             written += _save(
@@ -445,7 +443,7 @@ def _invisible_plots(
                 linewidth=1.5,
             )
             ax.axhline(1.0, linestyle="--", linewidth=1.0, label="uniform reference")
-            ax.set_xlabel(f"{role} {component} posterior rank / PIT")
+            ax.set_xlabel(f"{role} {component} finite-sample mid-rank")
             ax.set_ylabel("Density")
             ax.set_xlim(0.0, 1.0)
             _stats_box(ax, [f"N = {len(pit)}"])
