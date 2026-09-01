@@ -230,7 +230,7 @@ def validate_experiment(config: DictConfig) -> None:
     invisible = model.invisible
     _exact_keys(
         invisible,
-        {"enabled", "formulation", "conditioning", "denoiser", "standard", "edm", "flow_matching"},
+        {"enabled", "formulation", "conditioning", "coordinates", "denoiser", "standard", "edm", "flow_matching"},
         "model.invisible",
     )
     if str(invisible.formulation) not in {"standard", "edm", "flow_matching"}:
@@ -241,6 +241,22 @@ def validate_experiment(config: DictConfig) -> None:
         raise ValueError("resolved invisible conditioning is invalid")
     if (conditioning == "truth") != bool(invisible.conditioning.allow_truth_oracle):
         raise ValueError("truth conditioning and oracle permission must agree")
+    _exact_keys(
+        invisible.coordinates,
+        {"type", "version", "basis_convention"},
+        "model.invisible.coordinates",
+    )
+    if str(invisible.coordinates.type) not in {"cartesian", "met_residual", "met_exact"}:
+        raise ValueError("resolved invisible coordinate type is invalid")
+    if str(invisible.coordinates.version) != "v1":
+        raise ValueError("resolved invisible coordinate version is invalid")
+    expected_basis = (
+        "helmert_orthonormal_v1"
+        if str(invisible.coordinates.type) in {"met_residual", "met_exact"}
+        else None
+    )
+    if invisible.coordinates.basis_convention != expected_basis:
+        raise ValueError("resolved invisible coordinate basis convention is invalid")
     _network(invisible.denoiser, "model.invisible.denoiser", zero_init=True)
     _exact_keys(invisible.standard, {"training_steps"}, "model.invisible.standard")
     _positive_int(invisible.standard.training_steps, "model.invisible.standard.training_steps")
@@ -249,8 +265,19 @@ def validate_experiment(config: DictConfig) -> None:
     _finite(invisible.edm.p_mean, "model.invisible.edm.p_mean")
     _positive(invisible.edm.p_std, "model.invisible.edm.p_std")
     _exact_keys(invisible.flow_matching, {"coupling"}, "model.invisible.flow_matching")
-    if str(invisible.flow_matching.coupling) not in {"independent", "minibatch_ot"}:
-        raise ValueError("CFM coupling must be independent or minibatch_ot")
+    _exact_keys(
+        invisible.flow_matching.coupling,
+        {"method", "condition_weight"},
+        "model.invisible.flow_matching.coupling",
+    )
+    coupling_method = str(invisible.flow_matching.coupling.method)
+    if coupling_method not in {"independent", "minibatch_ot", "conditional_ot"}:
+        raise ValueError("CFM coupling method is invalid")
+    condition_weight = float(invisible.flow_matching.coupling.condition_weight)
+    if not math.isfinite(condition_weight) or condition_weight < 0:
+        raise ValueError("CFM coupling condition_weight must be finite and nonnegative")
+    if coupling_method != "conditional_ot" and condition_weight != 0:
+        raise ValueError("CFM condition_weight must be zero outside conditional_ot")
 
     joint = model.joint_flow
     _exact_keys(joint, {"recurrent_state", "block_layers", "train_steps"}, "model.joint_flow")

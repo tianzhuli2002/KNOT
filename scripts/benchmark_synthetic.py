@@ -137,7 +137,7 @@ def _inference_call(mode, module, batch, *, posterior_samples, flow_steps, joint
     sampled = module.event_model.joint_flow.sample(
         visible, batch["structured"], module.event_model.reconstruction,
         module.event_model.invisible, samples=posterior_samples, steps=flow_steps,
-        sample_chunk_size=joint_sample_chunk_size,
+        sample_chunk_size=joint_sample_chunk_size, met_xy=batch["met_xy"],
     )
     return sampled["invisible"], flow_steps * posterior_samples
 

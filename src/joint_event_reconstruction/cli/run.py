@@ -64,6 +64,7 @@ def build_data(config, visible):
         max_assignment_states=(
             int(config.data.max_assignment_states) if build_assignments else None
         ),
+        coordinates_config=config.model.invisible.coordinates,
     )
 
 

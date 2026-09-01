@@ -14,6 +14,10 @@ from torch.utils.data import DataLoader, Dataset, Subset
 from joint_event_reconstruction.data.invisible import InvisibleScaler, InvisibleTruthStore
 from joint_event_reconstruction.data.subsets import deterministic_subset_positions
 from joint_event_reconstruction.m0.data.module import TransformerDataModule, _collate_transformer
+from joint_event_reconstruction.models.invisible.coordinates import (
+    build_invisible_coordinates,
+    met_xy_from_batch,
+)
 from joint_event_reconstruction.topology.assignments import build_assignment_template
 from joint_event_reconstruction.topology.candidates import build_event_candidates
 from joint_event_reconstruction.topology.compiler import load_topology
@@ -44,6 +48,7 @@ class StructuredCollator:
         self._type_layout = None
         self.invisible_store = None
         self.invisible_scaler = None
+        self.invisible_coordinates = None
 
     @property
     def spec(self):
@@ -160,10 +165,16 @@ class StructuredCollator:
         if self._assignment_template is not None:
             structured["assignments"] = self._assignment_template.batch(pools)
         batch["structured"] = structured
+        if "physics_vectors" in batch:
+            batch["met_xy"] = met_xy_from_batch(batch, self)
+        elif self.invisible_store is not None:
+            raise KeyError("Invisible truth collation requires physical MET vectors")
         if self.invisible_store is not None:
             invisible = self.invisible_store.lookup(batch["event_index"])
             batch["invisible_truth"] = invisible
-            batch["invisible_truth_scaled"] = self.invisible_scaler.transform(invisible)
+            state = self.invisible_coordinates.encode(invisible, batch["met_xy"])
+            batch["invisible_target_state"] = state
+            batch["invisible_truth_scaled"] = self.invisible_scaler.transform(state)
         return batch
 
     def _build_templates(
@@ -261,6 +272,7 @@ class StructuredCachedDataset(Dataset):
             "event_index": self.payload["indices"][position],
             "reco_raw_labels": self.payload["reco_raw_labels"][position],
             "reco_source_ids": self.payload["type_ids"][position].to(torch.int8),
+            "physics_vectors": self.payload["physics_vectors"][position],
         }
 
 
@@ -277,6 +289,7 @@ class StructuredDataModule(TransformerDataModule):
         subset_seed: int = 42,
         build_assignments: bool = False,
         max_assignment_states: int | None = None,
+        coordinates_config=None,
     ):
         self.tensor_cache = (
             None if tensor_cache is None else Path(tensor_cache).expanduser().resolve()
@@ -294,6 +307,15 @@ class StructuredDataModule(TransformerDataModule):
         self.max_events = max_events
         self.subset_seed = subset_seed
         self.invisible_scaler = None
+        role_names = tuple(
+            role.key for role in self.structured_collator.spec.invisible_roles
+        )
+        if coordinates_config is None:
+            coordinates_config = OmegaConf.create({"type": "cartesian"})
+        self.invisible_coordinates = build_invisible_coordinates(
+            coordinates_config, role_names
+        )
+        self.structured_collator.invisible_coordinates = self.invisible_coordinates
         self._joint_setup_done = False
 
     def setup(self, stage=None):
@@ -387,6 +409,7 @@ class StructuredDataModule(TransformerDataModule):
             "test": "test",
         }
         selected_positions = {}
+        training_dataset = self.train_dataset
         for loader_name, split_name in split_names.items():
             dataset = getattr(self, f"{loader_name}_dataset")
             count = None if self.max_events is None else self.max_events.get(loader_name)
@@ -424,9 +447,58 @@ class StructuredDataModule(TransformerDataModule):
             )
             scaler_ids = self._selected_ids("train", full_train)
         train_truth = store.lookup(scaler_ids)
-        self.invisible_scaler = InvisibleScaler.fit(train_truth, role_names)
+        scaler_positions = (
+            selected_positions["train"]
+            if store.synthetic
+            else np.arange(len(training_dataset), dtype=np.int64)
+        )
+        train_met = self._met_for_positions(training_dataset, scaler_positions)
+        train_state = self.invisible_coordinates.encode(train_truth, train_met)
+        self.invisible_scaler = InvisibleScaler.fit(
+            train_state,
+            self.invisible_coordinates.token_names,
+            representation=(
+                f"invisible_coordinate_state_"
+                f"{self.invisible_coordinates.coordinate_type}_v1"
+            ),
+            active_mask=self.invisible_coordinates.active_mask,
+        )
         self.structured_collator.invisible_store = store
         self.structured_collator.invisible_scaler = self.invisible_scaler
+
+    def _met_for_positions(self, dataset, positions) -> torch.Tensor:
+        positions = np.asarray(positions, dtype=np.int64)
+        payload = getattr(dataset, "payload", None)
+        if payload is None:
+            payload = getattr(dataset, "cache_payload", None)
+        dataset_positions = getattr(dataset, "positions", None)
+        if payload is not None and dataset_positions is not None:
+            rows = np.asarray(dataset_positions, dtype=np.int64)[positions]
+            vectors = payload["physics_vectors"][torch.as_tensor(rows)]
+            type_ids = payload["type_ids"][torch.as_tensor(rows)]
+            padding = payload["padding_mask"][torch.as_tensor(rows)]
+            return met_xy_from_batch(
+                {
+                    "physics_vectors": vectors,
+                    "type_ids": type_ids,
+                    "padding_mask": padding,
+                },
+                self.schema,
+            )
+        values = []
+        for position in positions:
+            item = dataset[int(position)]
+            values.append(
+                met_xy_from_batch(
+                    {
+                        "physics_vectors": item["physics_vectors"].unsqueeze(0),
+                        "type_ids": item["type_ids"].unsqueeze(0),
+                        "padding_mask": item["padding_mask"].unsqueeze(0),
+                    },
+                    self.schema,
+                )[0]
+            )
+        return torch.stack(values)
 
     def _loader(self, dataset, split: str, shuffle: bool) -> DataLoader:
         return DataLoader(

@@ -42,6 +42,7 @@ model:
         start_step: 1
         gate_initial_bias: -2.0
   invisible:
+    coordinates: {type: cartesian}
     network:
       d_model: 128
       n_heads: 4
@@ -56,10 +57,12 @@ model:
       p_mean: -0.5
       p_std: 1.2
     flow_matching:
-      coupling: independent
+      coupling: {method: independent, condition_weight: 0.0}
   joint_flow:
     block_layers: 2
     train_steps: [1, 2, 3, 4]
+    coordinates: {type: cartesian}
+    coupling: {method: independent, condition_weight: 0.0}
   c2:
     posterior_samples: 4
     gate_initial_bias: -2.0

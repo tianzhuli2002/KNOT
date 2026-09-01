@@ -5,6 +5,10 @@ from __future__ import annotations
 import torch
 from torch import nn
 
+from joint_event_reconstruction.models.invisible.coordinates import (
+    build_invisible_coordinates,
+)
+from joint_event_reconstruction.models.invisible.couplings import build_flow_coupling
 from joint_event_reconstruction.models.invisible.denoiser import InvisibleDenoiser
 from joint_event_reconstruction.models.invisible.edm import EDMDiffusion
 from joint_event_reconstruction.models.invisible.flow_matching import ContinuousFlowMatching
@@ -13,13 +17,20 @@ from joint_event_reconstruction.topology.spec import TopologySpec
 
 
 class InvisibleGenerator(nn.Module):
-    def __init__(self, spec: TopologySpec, visible_dim: int, config, inference_config):
+    def __init__(
+        self, spec: TopologySpec, visible_dim: int, config, inference_config,
+        scaler=None,
+    ):
         super().__init__()
         self.spec = spec
         self.assignment_mode = str(config.conditioning.assignment)
+        self.scaler = scaler
+        role_names = tuple(role.key for role in spec.invisible_roles)
+        self.coordinates = build_invisible_coordinates(config.coordinates, role_names)
+        active_mask = self.coordinates.active_mask
         denoiser_config = config.denoiser
         denoiser = InvisibleDenoiser(
-            len(spec.invisible_roles),
+            self.coordinates.token_count,
             visible_dim=visible_dim,
             parent_dim=visible_dim,
             d_model=int(denoiser_config.d_model),
@@ -33,7 +44,9 @@ class InvisibleGenerator(nn.Module):
         self.formulation_name = str(config.formulation)
         if self.formulation_name == "standard":
             self.formulation = StandardDiffusion(
-                denoiser, int(config.standard.training_steps)
+                denoiser,
+                int(config.standard.training_steps),
+                active_mask=active_mask,
             )
             self.inference_budget = int(inference_config.standard.steps)
             self.sampler = "ddim"
@@ -48,12 +61,16 @@ class InvisibleGenerator(nn.Module):
                 sigma_min=float(sampling.sigma_min),
                 sigma_max=float(sampling.sigma_max),
                 rho=float(sampling.rho),
+                active_mask=active_mask,
             )
             self.inference_budget = int(sampling.nfe)
             self.sampler = "heun"
         elif self.formulation_name == "flow_matching":
+            coupling = build_flow_coupling(
+                config.flow_matching.coupling, active_mask
+            )
             self.formulation = ContinuousFlowMatching(
-                denoiser, coupling=str(config.flow_matching.coupling)
+                denoiser, coupling=coupling, active_mask=active_mask
             )
             self.inference_budget = int(inference_config.flow_matching.steps)
             self.sampler = str(inference_config.flow_matching.solver)
@@ -127,7 +144,32 @@ class InvisibleGenerator(nn.Module):
                         f"Unknown assignment conditioning mode {mode!r}"
                     )
             contexts.append(base + summary)
-        return torch.stack(contexts, dim=1)
+        role_context = torch.stack(contexts, dim=1)
+        return self.coordinates.parent_context(role_context, pooled)
+
+    @staticmethod
+    def _expanded_met(met_xy: torch.Tensor, state: torch.Tensor) -> torch.Tensor:
+        leading = state.shape[:-2]
+        if met_xy.shape == leading + (2,):
+            return met_xy
+        if met_xy.ndim != 2 or met_xy.shape != (leading[0], 2):
+            raise ValueError("met_xy cannot be aligned with invisible state")
+        shape = (leading[0],) + (1,) * (len(leading) - 1) + (2,)
+        return met_xy.reshape(shape).expand(leading + (2,))
+
+    def encode_target(self, momenta, met_xy, scaler):
+        state = self.coordinates.encode(momenta, met_xy)
+        return scaler.transform(state)
+
+    def decode_state(self, scaled_state, met_xy, scaler):
+        state = scaler.inverse(scaled_state)
+        return self.coordinates.decode(state, self._expanded_met(met_xy, state))
+
+    @staticmethod
+    def coupling_condition(visible: dict, parent_context: torch.Tensor) -> torch.Tensor:
+        return torch.cat(
+            (visible["pooled"], parent_context.mean(dim=1)), dim=1
+        )
 
     def loss(
         self,
@@ -154,7 +196,15 @@ class InvisibleGenerator(nn.Module):
             context = context[event_mask]
             mask = mask[event_mask]
             parent_context = parent_context[event_mask]
-        result = self.formulation.loss(target, context, mask, parent_context)
+        condition = self.coupling_condition(visible, parent_context)
+        if event_mask is not None:
+            condition = condition[event_mask]
+        if self.formulation_name == "flow_matching":
+            result = self.formulation.loss(
+                target, context, mask, parent_context, condition=condition
+            )
+        else:
+            result = self.formulation.loss(target, context, mask, parent_context)
         result["valid_events"] = len(target)
         return result
 
@@ -163,10 +213,13 @@ class InvisibleGenerator(nn.Module):
         target: torch.Tensor,
         *,
         generator: torch.Generator | None = None,
+        condition: torch.Tensor | None = None,
     ) -> torch.Tensor:
         if self.formulation_name != "flow_matching":
             raise RuntimeError("Flow source is only defined for Flow Matching")
-        return self.formulation.source(target, generator=generator)
+        return self.formulation.source(
+            target, generator=generator, condition=condition
+        )
 
     def velocity(
         self,
@@ -195,11 +248,11 @@ class InvisibleGenerator(nn.Module):
         if samples <= 0:
             raise ValueError("Posterior sample count must be positive")
         context, mask = self.visible_context(visible)
-        batch, roles, _ = parent_context.shape
+        batch, state_tokens, _ = parent_context.shape
         context = context.repeat_interleave(samples, dim=0)
         mask = mask.repeat_interleave(samples, dim=0)
         parent = parent_context.repeat_interleave(samples, dim=0)
-        shape = (batch * samples, roles, 3)
+        shape = (batch * samples, state_tokens, 3)
         selected_budget = self.inference_budget if budget is None else int(budget)
         if selected_budget <= 0:
             raise ValueError("Invisible inference budget must be positive")
@@ -235,7 +288,7 @@ class InvisibleGenerator(nn.Module):
                 solver=selected_sampler,
                 generator=generator,
             )
-        return values.reshape(batch, samples, roles, 3), nfe
+        return values.reshape(batch, samples, state_tokens, 3), nfe
 
     def assignment_parent_context(
         self,
@@ -291,7 +344,11 @@ class InvisibleGenerator(nn.Module):
                     contexts.append(base + candidate)
                 per_hypothesis.append(torch.stack(contexts, dim=0))
             per_event.append(torch.stack(per_hypothesis, dim=0))
-        return torch.stack(per_event, dim=0)
+        role_context = torch.stack(per_event, dim=0)
+        pooled_hypotheses = pooled[:, None, :].expand(
+            role_context.shape[0], role_context.shape[1], pooled.shape[-1]
+        )
+        return self.coordinates.parent_context(role_context, pooled_hypotheses)
 
     def sample_hypotheses(
         self,
@@ -304,7 +361,7 @@ class InvisibleGenerator(nn.Module):
     ) -> tuple[torch.Tensor, int]:
         if parent_context.ndim != 4:
             raise ValueError("Hypothesis parent context must be [B,K,Rnu,D]")
-        batch, hypotheses, roles, width = parent_context.shape
+        batch, hypotheses, state_tokens, width = parent_context.shape
         repeated_visible = {
             "pooled": visible["pooled"].repeat_interleave(hypotheses, dim=0),
             "tokens": visible["tokens"].repeat_interleave(hypotheses, dim=0),
@@ -314,9 +371,11 @@ class InvisibleGenerator(nn.Module):
         }
         generated, nfe = self.sample(
             repeated_visible,
-            parent_context.reshape(batch * hypotheses, roles, width),
+            parent_context.reshape(batch * hypotheses, state_tokens, width),
             samples=samples,
             budget=budget,
             generator=generator,
         )
-        return generated.reshape(batch, hypotheses, samples, roles, 3), nfe
+        return generated.reshape(
+            batch, hypotheses, samples, state_tokens, 3
+        ), nfe

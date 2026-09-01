@@ -195,11 +195,24 @@ def _resolve_recurrence(public, defaults) -> tuple[dict, bool, bool]:
     return recurrence, True, feedback == "soft"
 
 
+def _coordinate_config(coordinate_type: str) -> dict:
+    return {
+        "type": coordinate_type,
+        "version": "v1",
+        "basis_convention": (
+            "helmert_orthonormal_v1"
+            if coordinate_type in {"met_residual", "met_exact"}
+            else None
+        ),
+    }
+
+
 def _resolve_invisible(public, defaults) -> dict:
     invisible = {
         "enabled": False,
         "formulation": "edm",
         "conditioning": {"assignment": "none", "allow_truth_oracle": False},
+        "coordinates": _coordinate_config(str(defaults.coordinates.type)),
         "denoiser": _plain(defaults.network),
         "standard": _plain(defaults.standard),
         "edm": _plain(defaults.edm),
@@ -209,7 +222,11 @@ def _resolve_invisible(public, defaults) -> dict:
         return invisible
 
     _mapping(public, "model.invisible")
-    _unknown(public, {"method", "conditioning", "coupling", "network", "training"}, "model.invisible")
+    _unknown(
+        public,
+        {"method", "conditioning", "coordinates", "coupling", "network", "training"},
+        "model.invisible",
+    )
     _required(public, {"method"}, "model.invisible")
     method = str(public.method)
     method_map = {"ddim": "standard", "edm": "edm", "cfm": "flow_matching"}
@@ -227,15 +244,36 @@ def _resolve_invisible(public, defaults) -> dict:
         "assignment": "truth" if conditioning == "truth_oracle" else conditioning,
         "allow_truth_oracle": conditioning == "truth_oracle",
     }
+    coordinates = public.get("coordinates", defaults.coordinates)
+    _mapping(coordinates, "model.invisible.coordinates")
+    _unknown(coordinates, {"type"}, "model.invisible.coordinates")
+    coordinate_type = str(coordinates.get("type", "cartesian"))
+    if coordinate_type not in {"cartesian", "met_residual", "met_exact"}:
+        raise ValueError(
+            "model.invisible.coordinates.type must be cartesian, met_residual or met_exact"
+        )
+    invisible["coordinates"] = _coordinate_config(coordinate_type)
     if public.get("network") is not None:
         invisible["denoiser"] = _plain(_merge(defaults.network, public.network))
 
     coupling = public.get("coupling")
     if method == "cfm":
-        coupling = str(coupling if coupling is not None else defaults.flow_matching.coupling)
-        if coupling not in {"independent", "minibatch_ot"}:
-            raise ValueError("model.invisible.coupling must be independent or minibatch_ot")
-        invisible["flow_matching"] = {"coupling": coupling}
+        coupling = coupling if coupling is not None else defaults.flow_matching.coupling
+        if isinstance(coupling, str):
+            coupling = {"method": coupling, "condition_weight": 0.0}
+        _mapping(coupling, "model.invisible.coupling")
+        _unknown(coupling, {"method", "condition_weight"}, "model.invisible.coupling")
+        method_name = str(coupling.get("method", "independent"))
+        if method_name not in {"independent", "minibatch_ot", "conditional_ot"}:
+            raise ValueError(
+                "model.invisible.coupling.method must be independent, minibatch_ot or conditional_ot"
+            )
+        condition_weight = float(coupling.get("condition_weight", 0.0))
+        if method_name != "conditional_ot" and condition_weight != 0.0:
+            raise ValueError("condition_weight must be zero unless coupling.method=conditional_ot")
+        invisible["flow_matching"] = {
+            "coupling": {"method": method_name, "condition_weight": condition_weight}
+        }
     elif coupling is not None:
         raise ValueError("model.invisible.coupling is only meaningful for method=cfm")
 
@@ -374,8 +412,27 @@ def _resolve_model(public, defaults) -> dict:
             if public.get(name) is not None:
                 raise ValueError(f"model.{name} must be omitted when model.joint_flow is used")
         _mapping(joint_public, "model.joint_flow")
-        _unknown(joint_public, {"recurrent", "block_layers", "train_steps"}, "model.joint_flow")
+        _unknown(
+            joint_public,
+            {"recurrent", "block_layers", "train_steps", "coordinates", "coupling"},
+            "model.joint_flow",
+        )
         joint = _plain(_merge(defaults.joint_flow, joint_public))
+        coordinates = joint["coordinates"]
+        _unknown(coordinates, {"type"}, "model.joint_flow.coordinates")
+        coordinate_type = str(coordinates["type"])
+        if coordinate_type not in {"cartesian", "met_residual", "met_exact"}:
+            raise ValueError("model.joint_flow.coordinates.type is invalid")
+        coupling = joint["coupling"]
+        if isinstance(coupling, str):
+            coupling = {"method": coupling, "condition_weight": 0.0}
+        _unknown(coupling, {"method", "condition_weight"}, "model.joint_flow.coupling")
+        coupling_method = str(coupling["method"])
+        coupling_weight = float(coupling.get("condition_weight", 0.0))
+        if coupling_method not in {"independent", "minibatch_ot", "conditional_ot"}:
+            raise ValueError("model.joint_flow.coupling.method is invalid")
+        if coupling_method != "conditional_ot" and coupling_weight != 0.0:
+            raise ValueError("condition_weight must be zero unless coupling.method=conditional_ot")
         recurrence = defaults.assignment.recurrence
         return {
             "mode": "joint_flow",
@@ -400,10 +457,16 @@ def _resolve_model(public, defaults) -> dict:
                 "enabled": True,
                 "formulation": "flow_matching",
                 "conditioning": {"assignment": "none", "allow_truth_oracle": False},
+                "coordinates": _coordinate_config(coordinate_type),
                 "denoiser": _plain(defaults.invisible.network),
                 "standard": _plain(defaults.invisible.standard),
                 "edm": _plain(defaults.invisible.edm),
-                "flow_matching": _plain(defaults.invisible.flow_matching),
+                "flow_matching": {
+                    "coupling": {
+                        "method": coupling_method,
+                        "condition_weight": coupling_weight,
+                    }
+                },
             },
             "joint_flow": {
                 "recurrent_state": bool(joint.get("recurrent", False)),

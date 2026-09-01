@@ -55,17 +55,19 @@ class InvisibleDenoiserBlock(nn.Module):
 
 class InvisibleDenoiser(nn.Module):
     def __init__(
-        self, role_count: int, *, visible_dim: int, parent_dim: int, d_model: int,
+        self, state_token_count: int, *, visible_dim: int, parent_dim: int, d_model: int,
         n_heads: int, layers: int, d_feedforward: int, dropout: float,
         zero_init_output: bool = True,
     ):
         super().__init__()
-        if role_count <= 0:
-            raise ValueError("InvisibleDenoiser requires at least one invisible role")
-        self.role_count = role_count
+        if state_token_count <= 0:
+            raise ValueError("InvisibleDenoiser requires at least one state token")
+        self.state_token_count = state_token_count
         self.input_projection = nn.Linear(3, d_model)
-        self.role_embedding = nn.Parameter(torch.empty(role_count, d_model))
-        nn.init.normal_(self.role_embedding, std=0.02)
+        self.state_token_embedding = nn.Parameter(
+            torch.empty(state_token_count, d_model)
+        )
+        nn.init.normal_(self.state_token_embedding, std=0.02)
         self.noise_projection = nn.Sequential(nn.Linear(d_model, d_model), nn.SiLU(), nn.Linear(d_model, d_model))
         self.visible_projection = nn.Linear(visible_dim, d_model)
         self.parent_projection = nn.Linear(parent_dim, d_model)
@@ -82,20 +84,25 @@ class InvisibleDenoiser(nn.Module):
         self, noisy: torch.Tensor, noise_level: torch.Tensor, visible: torch.Tensor,
         visible_padding_mask: torch.Tensor, parent_context: torch.Tensor,
     ) -> torch.Tensor:
-        if noisy.ndim != 3 or noisy.shape[1:] != (self.role_count, 3):
-            raise ValueError(f"Noisy invisible state must be [B,{self.role_count},3], found {tuple(noisy.shape)}")
+        if noisy.ndim != 3 or noisy.shape[1:] != (self.state_token_count, 3):
+            raise ValueError(
+                f"Noisy invisible state must be [B,{self.state_token_count},3], "
+                f"found {tuple(noisy.shape)}"
+            )
         if parent_context.shape[:2] != noisy.shape[:2]:
             raise ValueError("Parent context and invisible role axes do not match")
         if noise_level.shape != (len(noisy),):
             raise ValueError(f"Noise level must have shape [B], found {tuple(noise_level.shape)}")
-        noise = self.noise_projection(noise_embedding(noise_level, self.role_embedding.shape[1]))
+        noise = self.noise_projection(
+            noise_embedding(noise_level, self.state_token_embedding.shape[1])
+        )
         visible_state = self.visible_projection(visible)
         parent = self.parent_projection(parent_context)
         # Direct parent addition keeps assignment conditioning effective from
         # the first optimisation step; the zero-initialised adaptive modulation
         # then learns a finer role-specific conditioning on top.
         state = (
-            self.input_projection(noisy) + self.role_embedding.unsqueeze(0)
+            self.input_projection(noisy) + self.state_token_embedding.unsqueeze(0)
             + noise.unsqueeze(1) + parent
         )
         for block in self.blocks:

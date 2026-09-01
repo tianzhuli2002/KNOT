@@ -353,6 +353,13 @@ def predict_hdf5(
                 "invisible_roles": json.dumps(
                     [role.key for role in module.spec.invisible_roles]
                 ),
+                "invisible_coordinates": (
+                    module.hparams.invisible_coordinates or "disabled"
+                ),
+                "invisible_coordinate_metadata": json.dumps(
+                    module.hparams.invisible_coordinate_metadata
+                ),
+                "flow_coupling": json.dumps(module.hparams.flow_coupling),
                 "scaler": (
                     json.dumps(scaler.as_dict()) if scaler is not None else "null"
                 ),
@@ -424,7 +431,9 @@ def predict_hdf5(
                     posterior_samples=posterior_samples,
                     sampling_generator=sampling_generator,
                 )
-                samples_tensor = scaler.inverse(scaled)
+                samples_tensor = module.event_model.invisible.decode_state(
+                    scaled, batch["met_xy"], scaler
+                )
                 samples = samples_tensor.cpu().numpy().astype(np.float32)
                 mean = samples.mean(axis=2)
                 std = samples.std(axis=2)

@@ -198,6 +198,7 @@ class JointEventModule(L.LightningModule):
             invisible_inference_config=(
                 experiment.inference.invisible if invisible_config is not None else None
             ),
+            invisible_scaler=invisible_scaler,
             coupling_config=coupling_config,
             assignment_loss_weight=float(experiment.training.loss_weights.assignment),
             invisible_loss_weight=float(experiment.training.loss_weights.invisible),
@@ -219,6 +220,26 @@ class JointEventModule(L.LightningModule):
         self.scaler_metadata = (
             None if invisible_scaler is None else invisible_scaler.as_dict()
         )
+        if invisible_config is not None:
+            if invisible_scaler is None:
+                raise ValueError("Invisible models require a train-fitted coordinate scaler")
+            coordinates = self.event_model.invisible.coordinates
+            expected_representation = (
+                f"invisible_coordinate_state_{coordinates.coordinate_type}_v1"
+            )
+            if invisible_scaler.representation != expected_representation:
+                raise ValueError(
+                    "Invisible scaler coordinate representation differs from the model: "
+                    f"expected={expected_representation}, "
+                    f"observed={invisible_scaler.representation}"
+                )
+            if tuple(invisible_scaler.role_names) != tuple(coordinates.token_names):
+                raise ValueError("Invisible scaler state-token ordering differs from the model")
+            if tuple(invisible_scaler.active_mask or ()) != tuple(
+                tuple(bool(value) for value in row)
+                for row in coordinates.active_mask.tolist()
+            ):
+                raise ValueError("Invisible scaler active mask differs from the model")
         mode = str(model.mode)
         assignment_formulation = str(assignment.formulation)
         recurrent_representation = None
@@ -253,10 +274,25 @@ class JointEventModule(L.LightningModule):
                     str(model.invisible.formulation) if model.invisible.enabled else None
                 ),
                 "invisible_target": (
-                    "cartesian_px_py_pz_v1" if model.invisible.enabled else None
+                    f"coordinate_state_{model.invisible.coordinates.type}_v1"
+                    if model.invisible.enabled else None
+                ),
+                "invisible_coordinates": (
+                    str(model.invisible.coordinates.type)
+                    if model.invisible.enabled else None
+                ),
+                "invisible_coordinate_metadata": (
+                    self.event_model.invisible.coordinates.metadata()
+                    if model.invisible.enabled else None
                 ),
                 "invisible_roles": [role.key for role in self.spec.invisible_roles],
                 "invisible_role_count": len(self.spec.invisible_roles),
+                "flow_coupling": (
+                    _resolved(model.invisible.flow_matching.coupling)
+                    if model.invisible.enabled
+                    and str(model.invisible.formulation) == "flow_matching"
+                    else None
+                ),
                 "canonical_data_schema": (
                     "joint_event_reconstruction_canonical_v1"
                     if model.invisible.enabled and not synthetic_data

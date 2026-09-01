@@ -30,6 +30,10 @@ from joint_event_reconstruction.evaluation import evaluate_predictions
 from joint_event_reconstruction.evaluation_discrete import evaluate_discrete_predictions
 from joint_event_reconstruction.evaluation_joint import evaluate_joint_predictions
 from joint_event_reconstruction.m0.data.module import build_token_schema
+from joint_event_reconstruction.models.invisible.coordinates import (
+    build_invisible_coordinates,
+    met_xy_from_batch,
+)
 from joint_event_reconstruction.plotting import plot_comparison, plot_prediction
 from joint_event_reconstruction.prediction import predict_hdf5
 from joint_event_reconstruction.prediction_discrete import predict_discrete_flow_hdf5
@@ -141,12 +145,24 @@ def build_synthetic_batch(experiment, *, events: int, device: str):
     invisible_truth = torch.randn((events, len(spec.invisible_roles), 3), generator=generator)
     role_offsets = torch.arange(len(spec.invisible_roles), dtype=invisible_truth.dtype).reshape(1, -1, 1)
     invisible_truth = invisible_truth + 0.25 * role_offsets
-    scaler = InvisibleScaler.fit(invisible_truth, tuple(role.key for role in spec.invisible_roles))
     batch["invisible_truth"] = invisible_truth
-    batch["invisible_truth_scaled"] = scaler.transform(invisible_truth)
     batch["physics_vectors"] = _synthetic_physics_vectors(
         batch, schema, seed=int(experiment.experiment.seed) + 31
     )
+    batch["met_xy"] = met_xy_from_batch(batch, schema)
+    role_names = tuple(role.key for role in spec.invisible_roles)
+    coordinates = build_invisible_coordinates(
+        experiment.model.invisible.coordinates, role_names
+    )
+    state = coordinates.encode(invisible_truth, batch["met_xy"])
+    scaler = InvisibleScaler.fit(
+        state,
+        coordinates.token_names,
+        representation=f"invisible_coordinate_state_{coordinates.coordinate_type}_v1",
+        active_mask=coordinates.active_mask,
+    )
+    batch["invisible_target_state"] = state
+    batch["invisible_truth_scaled"] = scaler.transform(state)
 
     def move_value(value):
         if torch.is_tensor(value):

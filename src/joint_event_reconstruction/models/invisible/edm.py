@@ -10,7 +10,7 @@ class EDMDiffusion(nn.Module):
     def __init__(
         self, denoiser: nn.Module, *, sigma_data: float = 1.0, p_mean: float = -0.5,
         p_std: float = 1.2, sigma_min: float = 0.004, sigma_max: float = 160.0,
-        rho: float = 7.0,
+        rho: float = 7.0, active_mask: torch.Tensor | None = None,
     ):
         super().__init__()
         if not 0 < sigma_min < sigma_max or sigma_data <= 0 or p_std <= 0 or rho <= 0:
@@ -22,6 +22,9 @@ class EDMDiffusion(nn.Module):
         self.sigma_min = sigma_min
         self.sigma_max = sigma_max
         self.rho = rho
+        if active_mask is None:
+            active_mask = torch.ones(denoiser.state_token_count, 3, dtype=torch.bool)
+        self.register_buffer("active_mask", torch.as_tensor(active_mask, dtype=torch.bool))
 
     def coefficients(self, sigma: torch.Tensor) -> tuple[torch.Tensor, ...]:
         data = self.sigma_data
@@ -36,18 +39,20 @@ class EDMDiffusion(nn.Module):
             raise ValueError("EDM denoising requires strictly positive sigma")
         c_skip, c_out, c_in, c_noise = self.coefficients(sigma)
         expand = (len(sigma),) + (1,) * (noisy.ndim - 1)
+        active = self.active_mask.to(dtype=noisy.dtype)
         network = self.denoiser(
             c_in.view(expand) * noisy, c_noise, visible, mask, parent,
-        )
-        return c_skip.view(expand) * noisy + c_out.view(expand) * network
+        ) * active
+        return (c_skip.view(expand) * noisy + c_out.view(expand) * network) * active
 
     def loss(self, target: torch.Tensor, visible: torch.Tensor, mask: torch.Tensor, parent: torch.Tensor) -> dict:
         sigma = (torch.randn(len(target), device=target.device, dtype=target.dtype) * self.p_std + self.p_mean).exp()
-        noise = torch.randn_like(target)
+        active = self.active_mask.to(dtype=target.dtype)
+        noise = torch.randn_like(target) * active
         noisy = target + sigma.view(len(target), 1, 1) * noise
         denoised = self.denoise(noisy, sigma, visible, mask, parent)
         weight = (sigma.square() + self.sigma_data ** 2) / (sigma * self.sigma_data).square()
-        per_event = (denoised - target).square().flatten(1).mean(dim=1)
+        per_event = (denoised - target).square().flatten(1).sum(dim=1) / active.sum()
         return {"loss": (weight * per_event).mean(), "sigma": sigma, "denoised": denoised}
 
     def schedule(self, nfe: int, *, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
@@ -66,7 +71,11 @@ class EDMDiffusion(nn.Module):
         parent: torch.Tensor, *, nfe: int, generator: torch.Generator | None = None,
     ) -> tuple[torch.Tensor, int]:
         sigmas = self.schedule(nfe, device=visible.device, dtype=visible.dtype)
-        x = torch.randn(shape, device=visible.device, dtype=visible.dtype, generator=generator) * sigmas[0]
+        active = self.active_mask.to(device=visible.device, dtype=visible.dtype)
+        x = (
+            torch.randn(shape, device=visible.device, dtype=visible.dtype, generator=generator)
+            * sigmas[0] * active
+        )
         evaluations = 0
         for index in range(len(sigmas) - 1):
             sigma, following = sigmas[index], sigmas[index + 1]
@@ -84,6 +93,7 @@ class EDMDiffusion(nn.Module):
                 x = x + (following - sigma) * (derivative + next_derivative) / 2
             else:
                 x = proposed
+            x = x * active
         if evaluations != nfe:
             raise RuntimeError(f"EDM sampler requested {nfe} NFE but executed {evaluations}")
         return x, evaluations

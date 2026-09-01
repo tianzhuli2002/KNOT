@@ -73,7 +73,9 @@ def configure(base, mode):
     config.model.invisible.denoiser.layers = 1
     config.model.invisible.denoiser.d_feedforward = 64
     config.model.invisible.denoiser.zero_init_output = False
-    config.model.invisible.flow_matching.coupling = "independent"
+    config.model.invisible.flow_matching.coupling = {
+        "method": "independent", "condition_weight": 0.0
+    }
     config.inference.invisible.flow_matching.solver = "euler"
     config.inference.invisible.flow_matching.steps = 2
     config.model.coupling.invisible_to_assignment.enabled = False
@@ -86,7 +88,9 @@ def configure(base, mode):
     config.inference.posterior_samples = 2
 
     if mode == "ot_cfm":
-        config.model.invisible.flow_matching.coupling = "minibatch_ot"
+        config.model.invisible.flow_matching.coupling = {
+            "method": "minibatch_ot", "condition_weight": 0.0
+        }
     elif mode == "dfm_assignment":
         assignment.formulation = "flow_matching"
         config.model.invisible.enabled = False
@@ -145,6 +149,7 @@ def _joint_coupling_gradients(module, batch) -> tuple[float, float]:
         candidates,
         state,
         time,
+        batch["met_xy"],
     )
     assignment_probe = F.cross_entropy(step.complete_assignment_logits, space.truth_state)
     invisible_to_assignment = torch.autograd.grad(
@@ -203,7 +208,10 @@ def run_mode(base, visible, batch, scaler, mode, device):
                 budget=2,
                 generator=torch.Generator(device=device).manual_seed(9),
             )
-            expected = (len(batch["tokens"]), 2, len(module.spec.invisible_roles), 3)
+            expected = (
+                len(batch["tokens"]), 2,
+                module.event_model.invisible.coordinates.token_count, 3,
+            )
             if generated.shape != expected:
                 raise RuntimeError(f"CFM sample shape is wrong: {tuple(generated.shape)}")
             if nfe != 2 or not torch.isfinite(generated).all():
@@ -240,6 +248,7 @@ def run_mode(base, visible, batch, scaler, mode, device):
                 steps=2,
                 sample_chunk_size=2,
                 generator=torch.Generator(device=device).manual_seed(11),
+                met_xy=batch["met_xy"],
             )
             states = sampled["assignment_state"]
             valid = batch["structured"]["assignments"]["valid_mask"]
@@ -335,6 +344,7 @@ def run_flow_smoke(
         subset_seed=int(base.data.subset_seed),
         build_assignments=True,
         max_assignment_states=int(data_config.data.max_assignment_states),
+        coordinates_config=data_config.model.invisible.coordinates,
     )
     data.setup("fit")
     batch = move(next(iter(data.train_dataloader())), torch.device(device))

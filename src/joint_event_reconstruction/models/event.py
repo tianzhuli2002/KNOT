@@ -44,6 +44,7 @@ class JointEventModel(nn.Module):
         feedback_gate_initial_bias: float = -2.0,
         invisible_config=None,
         invisible_inference_config=None,
+        invisible_scaler=None,
         coupling_config=None,
         invisible_loss_weight: float = 1.0,
         compatibility_config=None,
@@ -116,6 +117,7 @@ class JointEventModel(nn.Module):
                 d_model,
                 invisible_config,
                 invisible_inference_config,
+                scaler=invisible_scaler,
             )
 
         self.assignment_flow = None
@@ -176,7 +178,7 @@ class JointEventModel(nn.Module):
                 raise ValueError("Compatibility scoring requires invisible generation")
             self.compatibility = CompatibilityHead(
                 d_model,
-                len(spec.invisible_roles),
+                self.invisible.coordinates.token_count,
                 include_invisible=bool(compatibility_config.include_invisible),
             )
 
@@ -207,6 +209,7 @@ class JointEventModel(nn.Module):
                 visible,
                 batch["structured"],
                 batch["invisible_truth_scaled"],
+                batch["met_xy"],
                 self.reconstruction,
                 self.invisible,
             )
@@ -332,9 +335,14 @@ class JointEventModel(nn.Module):
                 budget=int(feedback_config.training_sampler.budget),
                 sampler=feedback_config.training_sampler.solver,
             )
+            if self.invisible.scaler is None:
+                raise RuntimeError("C2 sampling requires invisible scaler metadata")
+            physical_samples = self.invisible.decode_state(
+                samples, batch["met_xy"], self.invisible.scaler
+            )
             updated, gates = self.posterior_feedback(
                 node_tokens,
-                samples,
+                physical_samples,
                 detach=True,
             )
             state = self.reasoner.replace_topology(
@@ -357,7 +365,7 @@ class JointEventModel(nn.Module):
             result["recurrent_state"] = state
             result["node_context"] = node_tokens
             result["posterior_feedback"] = {
-                "samples": samples,
+                "samples": physical_samples,
                 "training_sampler": {
                     "formulation": str(feedback_config.training_sampler.formulation),
                     "budget": int(feedback_config.training_sampler.budget),

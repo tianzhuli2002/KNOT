@@ -183,6 +183,11 @@ def predict_joint_flow_hdf5(
                 "invisible_roles": json.dumps(
                     [role.key for role in module.spec.invisible_roles]
                 ),
+                "invisible_coordinates": module.hparams.invisible_coordinates,
+                "invisible_coordinate_metadata": json.dumps(
+                    module.hparams.invisible_coordinate_metadata
+                ),
+                "flow_coupling": json.dumps(module.hparams.flow_coupling),
                 "scaler": json.dumps(scaler.as_dict()),
                 "assignment_probabilities_are_exact_likelihoods": False,
                 "source_data": str(source_path),
@@ -203,6 +208,7 @@ def predict_joint_flow_hdf5(
                 steps=steps,
                 sample_chunk_size=sample_chunk_size,
                 generator=sampling_generator,
+                met_xy=batch["met_xy"],
             )
             space = AssignmentSpace.from_structured(batch["structured"])
             states = generated["assignment_state"]
@@ -214,7 +220,9 @@ def predict_joint_flow_hdf5(
                 len(states), posterior_samples, len(space.nodes)
             )
             truth_root_indices = space.root_candidate_indices[space.truth_state]
-            invisible = scaler.inverse(generated["invisible"])
+            invisible = module.event_model.invisible.decode_state(
+                generated["invisible"], batch["met_xy"], scaler
+            )
             truth_hit = states == space.truth_state.unsqueeze(1)
             composites, truth_composites, observed_met = _physics_hypotheses(
                 module, batch, space, node_indices, invisible

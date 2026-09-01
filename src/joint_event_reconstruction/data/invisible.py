@@ -126,12 +126,16 @@ class InvisibleScaler:
     std: tuple[tuple[float, float, float], ...]
     role_names: tuple[str, ...]
     representation: str = "cartesian_px_py_pz_v1"
+    active_mask: tuple[tuple[bool, bool, bool], ...] | None = None
 
     @classmethod
     def fit(
         cls,
         values: torch.Tensor,
         role_names: tuple[str, ...] | None = None,
+        *,
+        representation: str = "cartesian_px_py_pz_v1",
+        active_mask: torch.Tensor | None = None,
     ) -> "InvisibleScaler":
         if (
             values.ndim != 3
@@ -143,8 +147,20 @@ class InvisibleScaler:
             )
         values = values.to(torch.float64)
         mean = values.mean(dim=0)
+        if active_mask is None:
+            active_mask = torch.ones(values.shape[1:], dtype=torch.bool)
+        active_mask = torch.as_tensor(active_mask, dtype=torch.bool)
+        if tuple(active_mask.shape) != tuple(values.shape[1:]):
+            raise ValueError("Invisible scaler active_mask must have shape [T,3]")
+        active_mask = active_mask.to(values.device)
+        if not torch.equal(
+            values[..., ~active_mask], torch.zeros_like(values[..., ~active_mask])
+        ):
+            raise ValueError("Inactive invisible-coordinate target components must be zero")
         std = values.std(dim=0, unbiased=False)
-        if not torch.isfinite(std).all() or (std <= 0).any():
+        mean = torch.where(active_mask, mean, torch.zeros_like(mean))
+        std = torch.where(active_mask, std, torch.ones_like(std))
+        if not torch.isfinite(std).all() or (std[active_mask] <= 0).any():
             raise ValueError(
                 "Invisible training standard deviations must be finite and positive: "
                 f"{std}"
@@ -162,6 +178,8 @@ class InvisibleScaler:
             tuple(tuple(row) for row in mean.tolist()),
             tuple(tuple(row) for row in std.tolist()),
             names,
+            str(representation),
+            tuple(tuple(bool(component) for component in row) for row in active_mask.tolist()),
         )
 
     @classmethod
@@ -169,7 +187,9 @@ class InvisibleScaler:
         if values is None:
             raise ValueError("Invisible scaler metadata is null")
         representation = str(values.get("representation", ""))
-        if representation != "cartesian_px_py_pz_v1":
+        if representation != "cartesian_px_py_pz_v1" and not representation.startswith(
+            "invisible_coordinate_state_"
+        ):
             raise ValueError(
                 f"Unsupported invisible scaler representation {representation!r}"
             )
@@ -179,6 +199,12 @@ class InvisibleScaler:
         )
         std = tuple(
             tuple(float(component) for component in row) for row in values["std"]
+        )
+        raw_active = values.get("active_mask")
+        active_mask = (
+            tuple(tuple(bool(component) for component in row) for row in raw_active)
+            if raw_active is not None
+            else tuple((True, True, True) for _ in role_names)
         )
         if len(mean) != len(role_names) or len(std) != len(role_names):
             raise ValueError("Invisible scaler role and statistic counts differ")
@@ -190,22 +216,47 @@ class InvisibleScaler:
             raise ValueError(
                 "Invisible scaler standard deviations must be positive"
             )
+        if len(active_mask) != len(role_names) or any(
+            len(row) != 3 for row in active_mask
+        ):
+            raise ValueError("Invisible scaler active_mask must be [T,3]")
+        if any(
+            not np.isfinite(component)
+            for row in (*mean, *std)
+            for component in row
+        ):
+            raise ValueError("Invisible scaler statistics must be finite")
+        for token, active in enumerate(active_mask):
+            for component, is_active in enumerate(active):
+                if not is_active and (
+                    mean[token][component] != 0 or std[token][component] != 1
+                ):
+                    raise ValueError(
+                        "Inactive invisible scaler components require mean=0 and std=1"
+                    )
         return cls(
             mean=mean,
             std=std,
             role_names=role_names,
             representation=representation,
+            active_mask=active_mask,
         )
 
     def transform(self, values: torch.Tensor) -> torch.Tensor:
         mean = values.new_tensor(self.mean)
         std = values.new_tensor(self.std)
-        return (values - mean) / std
+        transformed = (values - mean) / std
+        if self.active_mask is not None:
+            transformed = transformed * values.new_tensor(self.active_mask)
+        return transformed
 
     def inverse(self, values: torch.Tensor) -> torch.Tensor:
         mean = values.new_tensor(self.mean)
         std = values.new_tensor(self.std)
-        return values * std + mean
+        result = values * std + mean
+        if self.active_mask is not None:
+            result = result * values.new_tensor(self.active_mask)
+        return result
 
     def as_dict(self) -> dict:
         return {
@@ -213,4 +264,7 @@ class InvisibleScaler:
             "role_names": list(self.role_names),
             "mean": [list(row) for row in self.mean],
             "std": [list(row) for row in self.std],
+            "active_mask": (
+                None if self.active_mask is None else [list(row) for row in self.active_mask]
+            ),
         }
