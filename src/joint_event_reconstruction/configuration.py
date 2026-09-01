@@ -24,6 +24,7 @@ TOP_LEVEL_KEYS = {
 }
 MODEL_KEYS = {
     "mode",
+    "latent",
     "visible",
     "assignment",
     "invisible",
@@ -88,6 +89,18 @@ def _network(section, name: str, *, zero_init: bool = False) -> None:
         raise ValueError(f"{name}.dropout must lie in [0,1)")
 
 
+def _latent(section, name: str) -> None:
+    _exact_keys(section, {"d_model", "n_heads", "d_feedforward", "dropout"}, name)
+    width = _positive_int(section.d_model, f"{name}.d_model")
+    heads = _positive_int(section.n_heads, f"{name}.n_heads")
+    if width % heads:
+        raise ValueError(f"{name}.d_model must be divisible by n_heads")
+    _positive_int(section.d_feedforward, f"{name}.d_feedforward")
+    dropout = float(section.dropout)
+    if not math.isfinite(dropout) or not 0 <= dropout < 1:
+        raise ValueError(f"{name}.dropout must lie in [0,1)")
+
+
 def load_experiment(
     path: str | Path,
     overrides: list[str] | tuple[str, ...] | None = None,
@@ -134,7 +147,25 @@ def validate_experiment(config: DictConfig) -> None:
     mode = str(model.mode)
     if mode not in {"factorized", "joint_flow"}:
         raise ValueError("model.mode must resolve to factorized or joint_flow")
-    _network(model.visible, "model.visible")
+    _latent(model.latent, "model.latent")
+    _exact_keys(
+        model.visible,
+        {"type", "d_model", "n_heads", "layers", "d_feedforward", "dropout"},
+        "model.visible",
+    )
+    if str(model.visible.type) != "transformer":
+        raise ValueError("resolved model.visible.type must currently be transformer")
+    width = _positive_int(model.visible.d_model, "model.visible.d_model")
+    heads = _positive_int(model.visible.n_heads, "model.visible.n_heads")
+    if width % heads:
+        raise ValueError("model.visible.d_model must be divisible by n_heads")
+    _positive_int(model.visible.layers, "model.visible.layers")
+    _positive_int(model.visible.d_feedforward, "model.visible.d_feedforward")
+    visible_dropout = float(model.visible.dropout)
+    if not math.isfinite(visible_dropout) or not 0 <= visible_dropout < 1:
+        raise ValueError("model.visible.dropout must lie in [0,1)")
+    if int(model.visible.d_model) != int(model.latent.d_model):
+        raise ValueError("visible encoder output width must equal model.latent.d_model")
 
     assignment = model.assignment
     _exact_keys(assignment, {"formulation", "reasoning", "feedback"}, "model.assignment")

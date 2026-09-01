@@ -11,7 +11,8 @@ data:
   max_assignment_states: 100000
 
 model:
-  encoder: {d_model: 105, n_heads: 3, layers: 4, d_feedforward: 292, dropout: 0.04889685146434}
+  latent: {d_model: 105, n_heads: 3, d_feedforward: 292, dropout: 0.04889685146434}
+  encoder: {type: transformer, layers: 4}
   assignment:
     method: discriminative
 

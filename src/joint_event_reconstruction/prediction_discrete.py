@@ -118,9 +118,7 @@ def predict_discrete_flow_hdf5(
 
         for batch in iterator:
             batch = _move(batch, device)
-            visible = module.event_model.visible(
-                batch["tokens"], batch["type_ids"], batch["padding_mask"]
-            )
+            visible = module.event_model.encode_visible(batch)
             space = AssignmentSpace.from_structured(batch["structured"])
             generated = module.event_model.assignment_flow.sample_many(
                 visible,

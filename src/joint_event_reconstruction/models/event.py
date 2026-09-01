@@ -17,7 +17,7 @@ from joint_event_reconstruction.models.reconstruction.discrete_flow import (
 from joint_event_reconstruction.models.reconstruction.structured import (
     StructuredReconstruction,
 )
-from joint_event_reconstruction.models.visible.encoder import VisibleEventEncoder
+from joint_event_reconstruction.models.visible.encoder import build_visible_encoder
 from joint_event_reconstruction.topology.assignments import AssignmentSpace
 from joint_event_reconstruction.topology.spec import TopologySpec
 
@@ -29,11 +29,8 @@ class JointEventModel(nn.Module):
         *,
         n_features: int,
         n_object_types: int,
-        d_model: int,
-        n_heads: int,
-        n_layers: int,
-        d_feedforward: int,
-        dropout: float,
+        latent_config,
+        visible_config,
         model_mode: str = "factorized",
         assignment_formulation: str = "discriminative",
         reasoning_enabled: bool = False,
@@ -70,14 +67,14 @@ class JointEventModel(nn.Module):
         self.spec = spec
         self.model_mode = model_mode
         self.assignment_formulation = assignment_formulation
-        self.visible = VisibleEventEncoder(
-            n_features,
-            d_model,
-            n_heads,
-            n_layers,
-            d_feedforward,
-            dropout,
-            n_object_types,
+        d_model = int(latent_config.d_model)
+        n_heads = int(latent_config.n_heads)
+        d_feedforward = int(latent_config.d_feedforward)
+        dropout = float(latent_config.dropout)
+        self.visible = build_visible_encoder(
+            visible_config,
+            n_features=n_features,
+            n_object_types=n_object_types,
         )
         # The implementation still reconstructs hierarchical topology candidates;
         # the public scientific quantity it scores is their assignment.
@@ -191,7 +188,7 @@ class JointEventModel(nn.Module):
                 torch.randint(
                     len(self.train_steps),
                     (),
-                    device=self.visible.cls_token.device,
+                    device=next(self.visible.parameters()).device,
                 )
             )
             return self.train_steps[index]
@@ -200,9 +197,7 @@ class JointEventModel(nn.Module):
     def forward(
         self, batch: dict, *, recurrent_steps: int | None = None
     ) -> dict:
-        visible = self.visible(
-            batch["tokens"], batch["type_ids"], batch["padding_mask"]
-        )
+        visible = self.encode_visible(batch)
         if self.model_mode == "joint_flow":
             if "invisible_truth_scaled" not in batch:
                 raise ValueError("joint_flow training requires scaled invisible truth")
@@ -376,6 +371,9 @@ class JointEventModel(nn.Module):
             visible,
             result.get("node_context"),
         )
+
+    def encode_visible(self, batch: dict) -> dict:
+        return self.visible(batch)
 
     def _hypothesis_training_mask(self, batch: dict) -> torch.Tensor:
         valid = torch.ones(

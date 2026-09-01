@@ -1,4 +1,12 @@
 model:
+  latent:
+    d_model: 128
+    n_heads: 4
+    d_feedforward: 384
+    dropout: 0.05
+  encoder:
+    transformer:
+      layers: 4
   assignment:
     recurrence:
       block_layers: 2

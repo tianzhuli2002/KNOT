@@ -122,7 +122,7 @@ def _joint_coupling_gradients(module, batch) -> tuple[float, float]:
     """Deterministically verify both cross-modal paths in one joint-flow step."""
     model = module.event_model
     joint = model.joint_flow
-    visible = model.visible(batch["tokens"], batch["type_ids"], batch["padding_mask"])
+    visible = model.encode_visible(batch)
     space = AssignmentSpace.from_structured(batch["structured"])
     candidates = model.reconstruction.encode_candidates(visible["tokens"], batch["structured"])
     batch_size = len(batch["tokens"])

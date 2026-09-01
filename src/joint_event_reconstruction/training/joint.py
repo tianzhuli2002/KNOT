@@ -14,7 +14,7 @@ from joint_event_reconstruction.models.event import JointEventModel
 from joint_event_reconstruction.topology.compiler import load_topology
 
 
-ARCHITECTURE_SIGNATURE_VERSION = 4
+ARCHITECTURE_SIGNATURE_VERSION = 5
 
 
 def _resolved(value):
@@ -38,6 +38,7 @@ def active_architecture(model) -> dict:
     formulation = str(assignment.formulation)
     payload = {
         "mode": mode,
+        "latent": _resolved(model.latent),
         "visible": _resolved(model.visible),
         "assignment": {"formulation": formulation},
     }
@@ -87,17 +88,28 @@ def architecture_component_signatures(model) -> dict[str, str]:
     """Hash the semantic architecture owned by each partial-load component."""
     architecture = active_architecture(model)
     payloads = {
-        "visible": {"visible": architecture["visible"]},
+        "visible": {
+            "latent_width": architecture["latent"]["d_model"],
+            "visible": architecture["visible"],
+        },
         "assignment": {
+            "latent": architecture["latent"],
             "assignment": architecture["assignment"],
             "joint_flow": architecture.get("joint_flow"),
         },
         "invisible": {
+            "latent_width": architecture["latent"]["d_model"],
             "invisible": architecture.get("invisible"),
             "joint_flow": architecture.get("joint_flow"),
         },
-        "c2": {"coupling": architecture.get("coupling")},
-        "compatibility": {"compatibility": architecture.get("compatibility")},
+        "c2": {
+            "latent_width": architecture["latent"]["d_model"],
+            "coupling": architecture.get("coupling"),
+        },
+        "compatibility": {
+            "latent_width": architecture["latent"]["d_model"],
+            "compatibility": architecture.get("compatibility"),
+        },
     }
     return {
         component: hashlib.sha256(
@@ -168,11 +180,8 @@ class JointEventModule(L.LightningModule):
             self.spec,
             n_features=schema.dim,
             n_object_types=len(schema.source_type_ids),
-            d_model=int(model.visible.d_model),
-            n_heads=int(model.visible.n_heads),
-            n_layers=int(model.visible.layers),
-            d_feedforward=int(model.visible.d_feedforward),
-            dropout=float(model.visible.dropout),
+            latent_config=model.latent,
+            visible_config=model.visible,
             model_mode=str(model.mode),
             assignment_formulation=str(assignment.formulation),
             reasoning_enabled=bool(reasoning.enabled),
@@ -221,6 +230,8 @@ class JointEventModule(L.LightningModule):
                 "architecture_signature_version": ARCHITECTURE_SIGNATURE_VERSION,
                 "architecture_signature": signature,
                 "architecture_component_signatures": component_signatures,
+                "visible_encoder": str(model.visible.type),
+                "visible_encoder_config": _resolved(model.visible),
                 "model_mode": mode,
                 "assignment_formulation": assignment_formulation,
                 "input_features": list(schema.names),

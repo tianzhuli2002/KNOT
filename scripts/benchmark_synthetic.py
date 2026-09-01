@@ -118,7 +118,7 @@ def _train_benchmark(module, batch, *, device, warmup, iterations):
 
 
 def _inference_call(mode, module, batch, *, posterior_samples, flow_steps, joint_sample_chunk_size):
-    visible = module.event_model.visible(batch["tokens"], batch["type_ids"], batch["padding_mask"])
+    visible = module.event_model.encode_visible(batch)
     if mode == "visible":
         return module(batch), 1
     if mode == "cfm":

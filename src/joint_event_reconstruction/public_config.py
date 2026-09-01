@@ -253,15 +253,45 @@ def _resolve_invisible(public, defaults) -> dict:
     return invisible
 
 
+def _resolve_visible(public, latent: dict, defaults) -> dict:
+    _mapping(public, "model.encoder")
+    if "d_model" in public:
+        raise ValueError(
+            "model.encoder.d_model is obsolete; move shared latent settings to "
+            "model.latent"
+        )
+    backend = str(public.get("type", ""))
+    if backend != "transformer":
+        raise ValueError("model.encoder.type must currently be transformer")
+    allowed = {"type", "layers", "n_heads", "d_feedforward", "dropout"}
+    _unknown(public, allowed, "model.encoder (transformer)")
+    selected = _plain(_merge(defaults.encoder.transformer, public))
+    return {
+        "type": backend,
+        "d_model": int(latent["d_model"]),
+        "n_heads": int(selected.get("n_heads", latent["n_heads"])),
+        "layers": int(selected["layers"]),
+        "d_feedforward": int(
+            selected.get("d_feedforward", latent["d_feedforward"])
+        ),
+        "dropout": float(selected.get("dropout", latent["dropout"])),
+    }
+
+
 def _resolve_model(public, defaults) -> dict:
     _mapping(public, "model")
-    allowed = {"encoder", "assignment", "invisible", "joint_flow", "c2", "compatibility"}
+    allowed = {
+        "latent", "encoder", "assignment", "invisible", "joint_flow", "c2",
+        "compatibility",
+    }
     _unknown(public, allowed, "model")
-    _required(public, {"encoder"}, "model")
-    encoder = public.encoder
-    encoder_keys = {"d_model", "n_heads", "layers", "d_feedforward", "dropout"}
-    _unknown(encoder, encoder_keys, "model.encoder")
-    _required(encoder, encoder_keys, "model.encoder")
+    _required(public, {"latent", "encoder"}, "model")
+    _mapping(public.latent, "model.latent")
+    latent_keys = {"d_model", "n_heads", "d_feedforward", "dropout"}
+    _unknown(public.latent, latent_keys, "model.latent")
+    _required(public.latent, latent_keys, "model.latent")
+    latent = _plain(public.latent)
+    encoder = _resolve_visible(public.encoder, latent, defaults)
 
     joint_public = public.get("joint_flow")
     if joint_public is not None:
@@ -274,7 +304,8 @@ def _resolve_model(public, defaults) -> dict:
         recurrence = defaults.assignment.recurrence
         return {
             "mode": "joint_flow",
-            "visible": _plain(encoder),
+            "latent": latent,
+            "visible": encoder,
             "assignment": {
                 "formulation": "flow_matching",
                 "reasoning": {
@@ -395,7 +426,8 @@ def _resolve_model(public, defaults) -> dict:
 
     return {
         "mode": "factorized",
-        "visible": _plain(encoder),
+        "latent": latent,
+        "visible": encoder,
         "assignment": {
             "formulation": "flow_matching" if method == "dfm" else "discriminative",
             "reasoning": {
