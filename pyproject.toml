@@ -21,6 +21,9 @@ dependencies = [
   "torch",
 ]
 
+[project.optional-dependencies]
+lgatr = ["lgatr>=2,<3"]
+
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["joint_event_reconstruction*"]

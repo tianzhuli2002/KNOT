@@ -29,6 +29,7 @@ class JointEventModel(nn.Module):
         *,
         n_features: int,
         n_object_types: int,
+        token_schema,
         latent_config,
         visible_config,
         model_mode: str = "factorized",
@@ -73,6 +74,7 @@ class JointEventModel(nn.Module):
         dropout = float(latent_config.dropout)
         self.visible = build_visible_encoder(
             visible_config,
+            schema=token_schema,
             n_features=n_features,
             n_object_types=n_object_types,
         )

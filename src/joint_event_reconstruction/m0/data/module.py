@@ -1288,15 +1288,23 @@ class TransformerH5Dataset(Dataset):
 
     def _build_physics_vectors(self, event_idx):
         """Raw `(E,px,py,pz)` vectors aligned with model token positions."""
+        h5_file = self._h5_file()
+        source_rows = {
+            source: self._read_source_rows(h5_file, source, event_idx)
+            for source in _token_source_names(self.schema)
+            if source != "GLOBAL"
+        }
+        return self._build_physics_vectors_from_rows(source_rows)
+
+    def _build_physics_vectors_from_rows(self, source_rows):
         vectors = np.zeros((self.total_tokens, 4), dtype=np.float32)
         cursor = 0
-        h5_file = self._h5_file()
         for source_name in _token_source_names(self.schema):
             width = self.schema.sources[source_name].num_particles
             if source_name == "GLOBAL":
                 cursor += 1
                 continue
-            rows = self._read_source_rows(h5_file, source_name, event_idx)
+            rows = source_rows.get(source_name, [])
             for local, row in enumerate(rows[:width]):
                 fields = row.dtype.names or ()
                 if not {"pt", "phi"}.issubset(fields):
@@ -1591,6 +1599,7 @@ class CachedTransformerDataset(Dataset):
             "padding_mask": self.cache_payload["padding_mask"][pos],
             "labels": self.cache_payload["labels"][pos],
             "event_index": self.cache_payload["indices"][pos],
+            "physics_vectors": self.cache_payload["physics_vectors"][pos],
         }
         if self.reco_builder is not None:
             raw_labels = self.cache_payload["reco_raw_labels"][pos]
@@ -1612,6 +1621,7 @@ def _process_loaded_cache_chunk(dataset, output_positions, event_indices, source
     type_ids = np.empty((n_chunk, dataset.total_tokens), dtype=np.int64)
     padding_masks = np.empty((n_chunk, dataset.total_tokens), dtype=np.bool_)
     labels = np.asarray(label_values, dtype=np.float32).reshape(-1).copy()
+    physics_vectors = np.empty((n_chunk, dataset.total_tokens, 4), dtype=np.float32)
     reco_raw_labels = (
         np.empty((n_chunk, dataset.total_tokens), dtype=np.float32)
         if dataset.reconstruction_enabled else None
@@ -1627,6 +1637,7 @@ def _process_loaded_cache_chunk(dataset, output_positions, event_indices, source
         tokens[local_pos] = token_arr
         type_ids[local_pos] = type_arr
         padding_masks[local_pos] = mask_arr
+        physics_vectors[local_pos] = dataset._build_physics_vectors_from_rows(rows)
         if dataset.reconstruction_enabled:
             event_reco_labels = {
                 name: values[local_pos] for name, values in reco_label_arrays.items()
@@ -1634,7 +1645,10 @@ def _process_loaded_cache_chunk(dataset, output_positions, event_indices, source
             reco_raw_labels[local_pos] = dataset._build_reco_raw_labels_from_rows(
                 rows, event_reco_labels, mask_arr, int(event_idx)
             )
-    return output_positions, tokens, type_ids, padding_masks, labels, reco_raw_labels
+    return (
+        output_positions, tokens, type_ids, padding_masks, labels,
+        physics_vectors, reco_raw_labels,
+    )
 
 
 def _collate_transformer(batch):
@@ -2275,6 +2289,8 @@ class TransformerDataModule(L.LightningDataModule):
             "tokens_shape": list(payload["tokens"].shape),
             "type_ids_shape": list(payload["type_ids"].shape),
             "padding_mask_shape": padding_shape,
+            "physics_vectors_shape": list(payload["physics_vectors"].shape),
+            "physics_vector_representation": "E_px_py_pz_GeV_v1",
             "labels_shape": list(payload["labels"].shape),
             "reco_raw_labels_shape": reco_shape,
             "has_reco_raw_labels": bool(has_reco_raw_labels),
@@ -2477,6 +2493,7 @@ class TransformerDataModule(L.LightningDataModule):
             type_ids = payload["type_ids"]
             padding_mask = payload["padding_mask"]
             labels = payload["labels"]
+            physics_vectors = payload["physics_vectors"]
             indices = payload["indices"]
             payload_metadata = payload.get("metadata", {})
         except (TypeError, KeyError) as exc:
@@ -2495,6 +2512,11 @@ class TransformerDataModule(L.LightningDataModule):
             return False, f"type_ids shape {tuple(type_ids.shape)} != {expected_shape[:2]}"
         if tuple(padding_mask.shape) != expected_shape[:2]:
             return False, f"padding_mask shape {tuple(padding_mask.shape)} != {expected_shape[:2]}"
+        if tuple(physics_vectors.shape) != expected_shape[:2] + (4,):
+            return False, (
+                f"physics_vectors shape {tuple(physics_vectors.shape)} != "
+                f"{expected_shape[:2] + (4,)}"
+            )
         if type_ids.dtype not in (torch.int8, torch.int16, torch.int32, torch.int64):
             return False, f"type_ids must have an integer dtype, found {type_ids.dtype}"
         if padding_mask.dtype != torch.bool:
@@ -2507,6 +2529,12 @@ class TransformerDataModule(L.LightningDataModule):
             return False, "selected event indices differ"
         if not torch.isfinite(tokens).all():
             return False, "tokens contain non-finite values"
+        if not torch.isfinite(physics_vectors).all():
+            return False, "physics_vectors contain non-finite values"
+        if not torch.equal(
+            physics_vectors[padding_mask], torch.zeros_like(physics_vectors[padding_mask])
+        ):
+            return False, "padded physics vectors are not exactly zero"
         if not torch.isfinite(labels).all():
             return False, "labels contain non-finite values"
         has_reco = "reco_raw_labels" in payload
@@ -2584,13 +2612,20 @@ class TransformerDataModule(L.LightningDataModule):
         return source_arrays, label_values, reco_label_arrays
 
     @staticmethod
-    def _copy_cache_chunk(result, tokens, type_ids, padding_masks, labels, reco_raw_labels):
-        output_positions, chunk_tokens, chunk_type_ids, chunk_masks, chunk_labels, chunk_reco = result
+    def _copy_cache_chunk(
+        result, tokens, type_ids, padding_masks, labels, physics_vectors,
+        reco_raw_labels,
+    ):
+        (
+            output_positions, chunk_tokens, chunk_type_ids, chunk_masks,
+            chunk_labels, chunk_physics, chunk_reco,
+        ) = result
         output_positions = torch.as_tensor(output_positions, dtype=torch.long)
         tokens[output_positions] = torch.from_numpy(chunk_tokens)
         type_ids[output_positions] = torch.from_numpy(chunk_type_ids)
         padding_masks[output_positions] = torch.from_numpy(chunk_masks)
         labels[output_positions] = torch.from_numpy(chunk_labels)
+        physics_vectors[output_positions] = torch.from_numpy(chunk_physics)
         if reco_raw_labels is not None:
             reco_raw_labels[output_positions] = torch.from_numpy(chunk_reco)
         return len(output_positions)
@@ -2618,6 +2653,9 @@ class TransformerDataModule(L.LightningDataModule):
         type_ids = torch.empty((n_events, dataset.total_tokens), dtype=torch.long)
         padding_masks = torch.empty((n_events, dataset.total_tokens), dtype=torch.bool)
         labels = torch.empty(n_events, dtype=torch.float32)
+        physics_vectors = torch.empty(
+            (n_events, dataset.total_tokens, 4), dtype=torch.float32
+        )
         reco_raw_labels = (
             torch.empty((n_events, dataset.total_tokens), dtype=torch.float32)
             if self.reconstruction_enabled
@@ -2654,7 +2692,8 @@ class TransformerDataModule(L.LightningDataModule):
                         dataset, output_positions, event_indices, source_arrays, label_values, reco_label_arrays
                     )
                     self._copy_cache_chunk(
-                        result, tokens, type_ids, padding_masks, labels, reco_raw_labels
+                        result, tokens, type_ids, padding_masks, labels,
+                        physics_vectors, reco_raw_labels
                     )
                     logger.info(
                         "Transformer cache progress: events=%d/%d workers=1.", stop_pos, n_events
@@ -2668,6 +2707,7 @@ class TransformerDataModule(L.LightningDataModule):
             "type_ids": type_ids,
             "padding_mask": padding_masks,
             "labels": labels,
+            "physics_vectors": physics_vectors,
             "metadata": metadata,
         }
         if self.reconstruction_enabled:
@@ -2704,6 +2744,9 @@ class TransformerDataModule(L.LightningDataModule):
         type_ids = torch.empty((n_events, dataset.total_tokens), dtype=torch.long)
         padding_masks = torch.empty((n_events, dataset.total_tokens), dtype=torch.bool)
         labels = torch.empty(n_events, dtype=torch.float32)
+        physics_vectors = torch.empty(
+            (n_events, dataset.total_tokens, 4), dtype=torch.float32
+        )
         reco_raw_labels = (
             torch.empty((n_events, dataset.total_tokens), dtype=torch.float32)
             if self.reconstruction_enabled else None
@@ -2728,7 +2771,8 @@ class TransformerDataModule(L.LightningDataModule):
             for future in done:
                 try:
                     completed_events += self._copy_cache_chunk(
-                        future.result(), tokens, type_ids, padding_masks, labels, reco_raw_labels
+                        future.result(), tokens, type_ids, padding_masks, labels,
+                        physics_vectors, reco_raw_labels
                     )
                 except Exception as exc:
                     chunk_range = getattr(future, "chunk_range", "unknown")
@@ -2780,6 +2824,7 @@ class TransformerDataModule(L.LightningDataModule):
             "type_ids": type_ids,
             "padding_mask": padding_masks,
             "labels": labels,
+            "physics_vectors": physics_vectors,
             "metadata": metadata,
         }
         if self.reconstruction_enabled:

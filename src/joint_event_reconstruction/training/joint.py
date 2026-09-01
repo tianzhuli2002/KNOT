@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.metadata
 import json
 
 import lightning as L
@@ -180,6 +181,7 @@ class JointEventModule(L.LightningModule):
             self.spec,
             n_features=schema.dim,
             n_object_types=len(schema.source_type_ids),
+            token_schema=schema,
             latent_config=model.latent,
             visible_config=model.visible,
             model_mode=str(model.mode),
@@ -224,6 +226,9 @@ class JointEventModule(L.LightningModule):
             recurrent_representation = "persistent_topology_flow_state_v1"
         elif bool(reasoning.enabled):
             recurrent_representation = "shared_visible_topology_tokens_v1"
+        lgatr_package_version = None
+        if str(model.visible.type) in {"lgatr", "lgatr_slim"}:
+            lgatr_package_version = importlib.metadata.version("lgatr")
         self.save_hyperparameters(
             {
                 "topology_signature": self.spec.signature,
@@ -232,6 +237,7 @@ class JointEventModule(L.LightningModule):
                 "architecture_component_signatures": component_signatures,
                 "visible_encoder": str(model.visible.type),
                 "visible_encoder_config": _resolved(model.visible),
+                "lgatr_package_version": lgatr_package_version,
                 "model_mode": mode,
                 "assignment_formulation": assignment_formulation,
                 "input_features": list(schema.names),

@@ -261,21 +261,96 @@ def _resolve_visible(public, latent: dict, defaults) -> dict:
             "model.latent"
         )
     backend = str(public.get("type", ""))
-    if backend != "transformer":
-        raise ValueError("model.encoder.type must currently be transformer")
-    allowed = {"type", "layers", "n_heads", "d_feedforward", "dropout"}
-    _unknown(public, allowed, "model.encoder (transformer)")
-    selected = _plain(_merge(defaults.encoder.transformer, public))
-    return {
-        "type": backend,
-        "d_model": int(latent["d_model"]),
-        "n_heads": int(selected.get("n_heads", latent["n_heads"])),
-        "layers": int(selected["layers"]),
-        "d_feedforward": int(
-            selected.get("d_feedforward", latent["d_feedforward"])
-        ),
-        "dropout": float(selected.get("dropout", latent["dropout"])),
-    }
+    common = {"type", "layers", "n_heads", "d_feedforward", "dropout"}
+    if backend == "transformer":
+        _unknown(public, common, "model.encoder (transformer)")
+        selected = _plain(_merge(defaults.encoder.transformer, public))
+    elif backend == "physics_transformer":
+        allowed = common | {"momentum_scale_gev", "scalar_features", "pairwise"}
+        _unknown(public, allowed, "model.encoder (physics_transformer)")
+        selected = _plain(_merge(defaults.encoder.physics_transformer, public))
+        pairwise = selected["pairwise"]
+        _unknown(pairwise, {"hidden_dim", "features"}, "model.encoder.pairwise")
+        allowed_features = {
+            "delta_eta", "sin_delta_phi", "cos_delta_phi", "log_delta_r",
+            "minkowski_dot", "log_pair_mass",
+        }
+        if set(pairwise["features"]) != allowed_features:
+            raise ValueError(
+                "physics_transformer pairwise.features must contain the six "
+                "maintained physical relations exactly"
+            )
+        scalar_features = list(selected["scalar_features"])
+        if not set(scalar_features) <= {"btag", "charge"}:
+            raise ValueError("Physical scalar_features may contain only btag and charge")
+    elif backend == "lgatr":
+        allowed = {
+            "type", "blocks", "heads", "hidden_mv_channels",
+            "hidden_s_channels", "dropout", "momentum_scale_gev",
+            "scalar_features", "spurions",
+        }
+        _unknown(public, allowed, "model.encoder (lgatr)")
+        selected = _plain(_merge(defaults.encoder.lgatr, public))
+    elif backend == "lgatr_slim":
+        allowed = {
+            "type", "blocks", "heads", "hidden_vector_channels",
+            "hidden_scalar_channels", "dropout", "momentum_scale_gev",
+            "scalar_features", "spurions",
+        }
+        _unknown(public, allowed, "model.encoder (lgatr_slim)")
+        selected = _plain(_merge(defaults.encoder.lgatr_slim, public))
+    else:
+        raise ValueError(
+            "model.encoder.type must be transformer, physics_transformer, "
+            "lgatr or lgatr_slim"
+        )
+    result = {"type": backend, "d_model": int(latent["d_model"])}
+    if backend in {"transformer", "physics_transformer"}:
+        result.update(
+            {
+                "n_heads": int(selected.get("n_heads", latent["n_heads"])),
+                "layers": int(selected["layers"]),
+                "d_feedforward": int(
+                    selected.get("d_feedforward", latent["d_feedforward"])
+                ),
+                "dropout": float(selected.get("dropout", latent["dropout"])),
+            }
+        )
+        if backend == "physics_transformer":
+            result.update(
+                {
+                    "momentum_scale_gev": float(selected["momentum_scale_gev"]),
+                    "scalar_features": list(selected["scalar_features"]),
+                    "pairwise": selected["pairwise"],
+                }
+            )
+    else:
+        _unknown(selected["spurions"], {"beam", "time"}, "model.encoder.spurions")
+        if str(selected["spurions"]["beam"]) not in {"xyplane", "none"}:
+            raise ValueError("model.encoder.spurions.beam must be xyplane or none")
+        if not set(selected["scalar_features"]) <= {"btag", "charge"}:
+            raise ValueError("Physical scalar_features may contain only btag and charge")
+        result.update(
+            {
+                "blocks": int(selected["blocks"]),
+                "heads": int(selected["heads"]),
+                "dropout": float(selected["dropout"]),
+                "momentum_scale_gev": float(selected["momentum_scale_gev"]),
+                "scalar_features": list(selected["scalar_features"]),
+                "spurions": selected["spurions"],
+            }
+        )
+        if backend == "lgatr":
+            result.update(
+                hidden_mv_channels=int(selected["hidden_mv_channels"]),
+                hidden_s_channels=int(selected["hidden_s_channels"]),
+            )
+        else:
+            result.update(
+                hidden_vector_channels=int(selected["hidden_vector_channels"]),
+                hidden_scalar_channels=int(selected["hidden_scalar_channels"]),
+            )
+    return result
 
 
 def _resolve_model(public, defaults) -> dict:
@@ -508,7 +583,7 @@ def resolve_public_experiment(public: DictConfig, *, source_path: str | Path | N
     training_keys = {
         "learning_rate", "weight_decay", "epochs", "precision", "gradient_clip",
         "accumulate_grad_batches", "trainable", "loss_weights", "scheduler",
-        "early_stopping", "output",
+        "early_stopping", "runtime", "output",
     }
     _unknown(training_public, training_keys, "training")
     training = _merge(defaults.training, training_public)
@@ -597,6 +672,7 @@ def resolve_public_experiment(public: DictConfig, *, source_path: str | Path | N
                 "precision": str(training.precision),
                 "gradient_clip": float(training.gradient_clip),
                 "accumulate_grad_batches": int(training.accumulate_grad_batches),
+                "runtime": _plain(training.runtime),
                 "trainable": trainable,
                 "loss_weights": loss_weights,
                 "scheduler": _plain(training.scheduler),

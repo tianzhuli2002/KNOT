@@ -7,6 +7,31 @@ model:
   encoder:
     transformer:
       layers: 4
+    physics_transformer:
+      layers: 4
+      momentum_scale_gev: 100.0
+      scalar_features: [btag, charge]
+      pairwise:
+        hidden_dim: 32
+        features: [delta_eta, sin_delta_phi, cos_delta_phi, log_delta_r, minkowski_dot, log_pair_mass]
+    lgatr:
+      blocks: 4
+      heads: 4
+      hidden_mv_channels: 8
+      hidden_s_channels: 64
+      dropout: 0.0
+      momentum_scale_gev: 100.0
+      scalar_features: [btag, charge]
+      spurions: {beam: xyplane, time: true}
+    lgatr_slim:
+      blocks: 4
+      heads: 4
+      hidden_vector_channels: 16
+      hidden_scalar_channels: 64
+      dropout: 0.0
+      momentum_scale_gev: 100.0
+      scalar_features: [btag, charge]
+      spurions: {beam: xyplane, time: true}
   assignment:
     recurrence:
       block_layers: 2
@@ -66,6 +91,9 @@ training:
   precision: 16-mixed
   gradient_clip: 1.0
   accumulate_grad_batches: 1
+  runtime:
+    compile: false
+    activation_checkpointing: false
   scheduler:
     enabled: true
     factor: 0.8

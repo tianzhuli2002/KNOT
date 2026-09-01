@@ -148,24 +148,61 @@ def validate_experiment(config: DictConfig) -> None:
     if mode not in {"factorized", "joint_flow"}:
         raise ValueError("model.mode must resolve to factorized or joint_flow")
     _latent(model.latent, "model.latent")
-    _exact_keys(
-        model.visible,
-        {"type", "d_model", "n_heads", "layers", "d_feedforward", "dropout"},
-        "model.visible",
-    )
-    if str(model.visible.type) != "transformer":
-        raise ValueError("resolved model.visible.type must currently be transformer")
+    visible_type = str(model.visible.type)
+    visible_keys = {"type", "d_model", "n_heads", "layers", "d_feedforward", "dropout"}
+    if visible_type == "physics_transformer":
+        visible_keys |= {"momentum_scale_gev", "scalar_features", "pairwise"}
+    elif visible_type == "lgatr":
+        visible_keys = {
+            "type", "d_model", "blocks", "heads", "hidden_mv_channels",
+            "hidden_s_channels", "dropout", "momentum_scale_gev",
+            "scalar_features", "spurions",
+        }
+    elif visible_type == "lgatr_slim":
+        visible_keys = {
+            "type", "d_model", "blocks", "heads", "hidden_vector_channels",
+            "hidden_scalar_channels", "dropout", "momentum_scale_gev",
+            "scalar_features", "spurions",
+        }
+    elif visible_type != "transformer":
+        raise ValueError("resolved model.visible.type is invalid")
+    _exact_keys(model.visible, visible_keys, "model.visible")
     width = _positive_int(model.visible.d_model, "model.visible.d_model")
-    heads = _positive_int(model.visible.n_heads, "model.visible.n_heads")
-    if width % heads:
-        raise ValueError("model.visible.d_model must be divisible by n_heads")
-    _positive_int(model.visible.layers, "model.visible.layers")
-    _positive_int(model.visible.d_feedforward, "model.visible.d_feedforward")
+    if visible_type in {"transformer", "physics_transformer"}:
+        heads = _positive_int(model.visible.n_heads, "model.visible.n_heads")
+        if width % heads:
+            raise ValueError("model.visible.d_model must be divisible by n_heads")
+        _positive_int(model.visible.layers, "model.visible.layers")
+        _positive_int(model.visible.d_feedforward, "model.visible.d_feedforward")
+    else:
+        _positive_int(model.visible.blocks, "model.visible.blocks")
+        _positive_int(model.visible.heads, "model.visible.heads")
+        hidden_name = (
+            "hidden_mv_channels" if visible_type == "lgatr" else "hidden_vector_channels"
+        )
+        scalar_name = (
+            "hidden_s_channels" if visible_type == "lgatr" else "hidden_scalar_channels"
+        )
+        _positive_int(model.visible[hidden_name], f"model.visible.{hidden_name}")
+        _positive_int(model.visible[scalar_name], f"model.visible.{scalar_name}")
     visible_dropout = float(model.visible.dropout)
     if not math.isfinite(visible_dropout) or not 0 <= visible_dropout < 1:
         raise ValueError("model.visible.dropout must lie in [0,1)")
     if int(model.visible.d_model) != int(model.latent.d_model):
         raise ValueError("visible encoder output width must equal model.latent.d_model")
+    if visible_type == "physics_transformer":
+        _positive(model.visible.momentum_scale_gev, "model.visible.momentum_scale_gev")
+        if not set(model.visible.scalar_features) <= {"btag", "charge"}:
+            raise ValueError("model.visible.scalar_features contains an invalid feature")
+        _exact_keys(model.visible.pairwise, {"hidden_dim", "features"}, "model.visible.pairwise")
+        _positive_int(model.visible.pairwise.hidden_dim, "model.visible.pairwise.hidden_dim")
+    elif visible_type in {"lgatr", "lgatr_slim"}:
+        _positive(model.visible.momentum_scale_gev, "model.visible.momentum_scale_gev")
+        if not set(model.visible.scalar_features) <= {"btag", "charge"}:
+            raise ValueError("model.visible.scalar_features contains an invalid feature")
+        _exact_keys(model.visible.spurions, {"beam", "time"}, "model.visible.spurions")
+        if str(model.visible.spurions.beam) not in {"xyplane", "none"}:
+            raise ValueError("model.visible.spurions.beam is invalid")
 
     assignment = model.assignment
     _exact_keys(assignment, {"formulation", "reasoning", "feedback"}, "model.assignment")
@@ -315,7 +352,7 @@ def validate_experiment(config: DictConfig) -> None:
     training = config.training
     _exact_keys(
         training,
-        {"learning_rate", "weight_decay", "epochs", "precision", "gradient_clip", "accumulate_grad_batches", "trainable", "loss_weights", "scheduler", "early_stopping", "output"},
+        {"learning_rate", "weight_decay", "epochs", "precision", "gradient_clip", "accumulate_grad_batches", "trainable", "loss_weights", "scheduler", "early_stopping", "runtime", "output"},
         "training",
     )
     _positive(training.learning_rate, "training.learning_rate")
@@ -325,6 +362,15 @@ def validate_experiment(config: DictConfig) -> None:
     _positive_int(training.accumulate_grad_batches, "training.accumulate_grad_batches")
     if not str(training.precision).strip() or not str(training.output).strip():
         raise ValueError("training.precision and output must be non-empty")
+    _exact_keys(
+        training.runtime,
+        {"compile", "activation_checkpointing"},
+        "training.runtime",
+    )
+    if not isinstance(training.runtime.compile, bool) or not isinstance(
+        training.runtime.activation_checkpointing, bool
+    ):
+        raise ValueError("training.runtime settings must be boolean")
     trainable = [str(value) for value in training.trainable]
     if not trainable or len(set(trainable)) != len(trainable):
         raise ValueError("training.trainable must be non-empty and unique")
