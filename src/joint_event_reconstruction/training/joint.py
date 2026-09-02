@@ -263,6 +263,7 @@ class JointEventModule(L.LightningModule):
                 "assignment_formulation": assignment_formulation,
                 "input_features": list(schema.names),
                 "source_type_ids": dict(schema.source_type_ids),
+                "physics_vector_representation": "E_px_py_pz_GeV_v1",
                 "candidate_representation": "hierarchical_symmetric_v1",
                 "assignment_state_representation": (
                     "complete_feasible_states_v1"
@@ -382,7 +383,12 @@ class JointEventModule(L.LightningModule):
 
     def validate_checkpoint_metadata(self, checkpoint: dict) -> None:
         saved = checkpoint.get("hyper_parameters", {})
-        for key in ("topology_signature", "input_features", "source_type_ids"):
+        for key in (
+            "topology_signature",
+            "input_features",
+            "source_type_ids",
+            "physics_vector_representation",
+        ):
             if saved.get(key) != self.hparams.get(key):
                 raise ValueError(
                     f"Incompatible checkpoint metadata {key}: "

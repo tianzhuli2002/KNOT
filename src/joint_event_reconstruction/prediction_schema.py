@@ -56,8 +56,101 @@ def _require_finite_or_missing(values: np.ndarray, label: str) -> None:
         raise ValueError(f"{label} contains invalid non-finite values")
 
 
+def _optional_framework_metadata(source: h5py.File, label: str) -> None:
+    """Validate v2 provenance fields when present without rewriting old products."""
+    representation = source.attrs.get("physics_vector_representation")
+    if representation is not None:
+        if isinstance(representation, bytes):
+            representation = representation.decode("utf-8")
+        if str(representation) != "E_px_py_pz_GeV_v1":
+            raise ValueError(f"{label} has invalid physics_vector_representation")
+
+    coordinates = source.attrs.get("invisible_coordinates")
+    if coordinates is not None:
+        if isinstance(coordinates, bytes):
+            coordinates = coordinates.decode("utf-8")
+        if str(coordinates) not in {"disabled", "cartesian", "met_residual", "met_exact"}:
+            raise ValueError(f"{label} has invalid invisible_coordinates metadata")
+        metadata = source.attrs.get("invisible_coordinate_metadata")
+        if metadata is not None:
+            if isinstance(metadata, bytes):
+                metadata = metadata.decode("utf-8")
+            try:
+                parsed = json.loads(str(metadata))
+            except (TypeError, ValueError, json.JSONDecodeError) as error:
+                raise ValueError(
+                    f"{label} has invalid invisible_coordinate_metadata"
+                ) from error
+            if not isinstance(parsed, (dict, type(None))):
+                raise ValueError(f"{label} has invalid invisible_coordinate_metadata")
+
+    coupling = source.attrs.get("flow_coupling")
+    if coupling is not None:
+        if isinstance(coupling, bytes):
+            coupling = coupling.decode("utf-8")
+        try:
+            parsed = json.loads(str(coupling))
+        except (TypeError, ValueError, json.JSONDecodeError) as error:
+            raise ValueError(f"{label} has invalid flow_coupling metadata") from error
+        if parsed is not None and not isinstance(parsed, dict):
+            raise ValueError(f"{label} has invalid flow_coupling metadata")
+
+    if "visible_encoder_config" in source.attrs:
+        raw = source.attrs["visible_encoder_config"]
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8")
+        try:
+            parsed = json.loads(str(raw))
+        except (TypeError, ValueError, json.JSONDecodeError) as error:
+            raise ValueError(f"{label} has invalid visible_encoder_config") from error
+        if not isinstance(parsed, dict):
+            raise ValueError(f"{label} has invalid visible_encoder_config")
+
+
+def _validate_met_exact_projection(source: h5py.File, label: str, count: int) -> None:
+    path = "TRUTH/MET_EXACT_PROJECTION"
+    if path not in source:
+        return
+    coordinates = source.attrs.get("invisible_coordinates")
+    if isinstance(coordinates, bytes):
+        coordinates = coordinates.decode("utf-8")
+    if coordinates != "met_exact":
+        raise ValueError(f"{label} has MET_EXACT_PROJECTION without met_exact coordinates")
+    group = source[path]
+    required = {
+        "NEUTRINO_PROJECTED",
+        "px_shift",
+        "py_shift",
+        "per_role_transverse_magnitude",
+    }
+    if set(group) != required:
+        raise ValueError(f"{label} has incomplete MET_EXACT_PROJECTION datasets")
+    projected = group["NEUTRINO_PROJECTED"][:]
+    truth = source["TRUTH/NEUTRINO"][:]
+    if projected.shape != truth.shape or projected.shape[0] != count:
+        raise ValueError(f"{label} has invalid projected invisible truth shape")
+    shifts = group["px_shift"][:], group["py_shift"][:]
+    magnitudes = group["per_role_transverse_magnitude"][:]
+    if any(values.shape != (count,) for values in shifts):
+        raise ValueError(f"{label} has invalid MET-exact projection shifts")
+    if magnitudes.shape != truth.shape[:2]:
+        raise ValueError(f"{label} has invalid MET-exact projection magnitudes")
+    for name, values in (
+        ("NEUTRINO_PROJECTED", projected),
+        ("px_shift", shifts[0]),
+        ("py_shift", shifts[1]),
+        ("per_role_transverse_magnitude", magnitudes),
+    ):
+        _require_finite(values, f"{label} {path}/{name}")
+    if "OBSERVED/MET" in source:
+        met = source["OBSERVED/MET"][:, 1:3]
+        if not np.allclose(projected[..., :2].sum(axis=1), met, rtol=2e-5, atol=2e-5):
+            raise ValueError(f"{label} projected truth does not satisfy observed MET")
+
+
 def validate_prediction(path: str | Path) -> None:
     with h5py.File(path, "r") as source:
+        _optional_framework_metadata(source, "Prediction output")
         if source.attrs.get("schema_version") != PREDICTION_SCHEMA:
             raise ValueError(f"Invalid prediction schema in {path}")
         support = read_hdf5_support(source)
@@ -193,6 +286,7 @@ def validate_prediction(path: str | Path) -> None:
             )
             if branches not in {1, int(source.attrs["K"])}:
                 raise ValueError("Factorized invisible branch count must be 1 or K")
+            _validate_met_exact_projection(source, "Prediction output", count)
         if "OBSERVED/MET" in source:
             met = source["OBSERVED/MET"][:]
             if met.shape != (count, 4):
@@ -238,6 +332,7 @@ def validate_prediction(path: str | Path) -> None:
 
 def validate_discrete_prediction(path: str | Path) -> None:
     with h5py.File(path, "r") as source:
+        _optional_framework_metadata(source, "Discrete-flow prediction")
         if source.attrs.get("schema_version") != DISCRETE_PREDICTION_SCHEMA:
             raise ValueError(f"Invalid discrete-flow prediction schema in {path}")
         support = read_hdf5_support(source)
@@ -306,6 +401,7 @@ def validate_discrete_prediction(path: str | Path) -> None:
 
 def validate_joint_prediction(path: str | Path) -> None:
     with h5py.File(path, "r") as source:
+        _optional_framework_metadata(source, "Joint-flow prediction")
         if source.attrs.get("schema_version") != JOINT_PREDICTION_SCHEMA:
             raise ValueError(f"Invalid joint-flow prediction schema in {path}")
         support = read_hdf5_support(source)
@@ -358,6 +454,7 @@ def validate_joint_prediction(path: str | Path) -> None:
         if not np.isfinite(invisible).all():
             raise ValueError("Joint-flow invisible hypotheses contain non-finite values")
         _read_invisible_roles(source, invisible.shape[2], "Joint-flow prediction")
+        _validate_met_exact_projection(source, "Joint-flow prediction", count)
         _require_integer(states, "Joint-flow assignment states")
         _require_integer(truth_state, "Joint-flow truth states")
         for name in (

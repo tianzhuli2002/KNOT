@@ -193,9 +193,14 @@ class MetExactCoordinates(_ContrastCoordinates):
         return {
             "truth_projected_px_shift": shift[..., 0],
             "truth_projected_py_shift": shift[..., 1],
+            # The projection applies the same transverse shift to every
+            # invisible role.  Keep the role axis explicit in the diagnostic
+            # so consumers can validate one value per generated invisible
+            # object rather than accidentally treating an event-level value
+            # as a role vector.
             "per_role_transverse_projection_magnitude": torch.linalg.vector_norm(
-                shift, dim=-1
-            ),
+                shift, dim=-1, keepdim=True
+            ).expand(*shift.shape[:-1], self.role_count),
         }
 
 

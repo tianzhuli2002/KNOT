@@ -70,9 +70,27 @@ def _physics_hypotheses(module, batch, space, node_indices, invisible):
         for node, event_values in values.items()
     }
 
+    truth_supported = torch.stack(
+        [
+            batch["structured"]["pools"][role.node]["truth_index"] >= 0
+            for role in module.spec.invisible_roles
+        ],
+        dim=1,
+    ).all(dim=1)
     truth_indices = space.node_candidate_indices[space.truth_state]
     truth_values = {node: [] for node in module.spec.dag_order}
     for event in range(len(truth_indices)):
+        if not bool(truth_supported[event]):
+            for node in module.spec.dag_order:
+                truth_values[node].append(
+                    torch.full(
+                        (4,),
+                        float("nan"),
+                        dtype=invisible.dtype,
+                        device=invisible.device,
+                    )
+                )
+            continue
         invisible_map = {
             role.key: batch["invisible_truth"][event, role_index]
             for role_index, role in enumerate(module.spec.invisible_roles)
@@ -107,6 +125,25 @@ def _physics_hypotheses(module, batch, space, node_indices, invisible):
             .astype(np.float32)
         )
     return composites, truth_composites, observed_met
+
+
+def _met_exact_truth_projection(module, batch):
+    """Build the explicit MET-exact projected target for provenance/evaluation."""
+    coordinates = module.event_model.invisible.coordinates
+    if coordinates.coordinate_type != "met_exact":
+        return None
+    truth = batch["invisible_truth"]
+    state = coordinates.encode(truth, batch["met_xy"])
+    projected = coordinates.decode(state, batch["met_xy"])
+    diagnostics = coordinates.projection_diagnostics(truth, batch["met_xy"])
+    if diagnostics is None:
+        raise RuntimeError("MET-exact coordinates did not provide projection diagnostics")
+    return {
+        "projected": projected,
+        "px_shift": diagnostics["truth_projected_px_shift"],
+        "py_shift": diagnostics["truth_projected_py_shift"],
+        "per_role_magnitude": diagnostics["per_role_transverse_projection_magnitude"],
+    }
 
 
 def predict_joint_flow_hdf5(
@@ -188,6 +225,14 @@ def predict_joint_flow_hdf5(
                     module.hparams.invisible_coordinate_metadata
                 ),
                 "flow_coupling": json.dumps(module.hparams.flow_coupling),
+                "physics_vector_representation": "E_px_py_pz_GeV_v1",
+                "candidate_representation": module.hparams.candidate_representation,
+                "assignment_state_representation": module.hparams.assignment_state_representation,
+                "visible_encoder": module.hparams.visible_encoder,
+                "visible_encoder_config": json.dumps(
+                    module.hparams.visible_encoder_config
+                ),
+                "invisible_role_count": int(module.hparams.invisible_role_count),
                 "scaler": json.dumps(scaler.as_dict()),
                 "assignment_probabilities_are_exact_likelihoods": False,
                 "source_data": str(source_path),
@@ -223,6 +268,7 @@ def predict_joint_flow_hdf5(
             invisible = module.event_model.invisible.decode_state(
                 generated["invisible"], batch["met_xy"], scaler
             )
+            projection = _met_exact_truth_projection(module, batch)
             truth_hit = states == space.truth_state.unsqueeze(1)
             composites, truth_composites, observed_met = _physics_hypotheses(
                 module, batch, space, node_indices, invisible
@@ -280,6 +326,29 @@ def predict_joint_flow_hdf5(
                     ),
                     "njet": _create(observed, "njet", (), "<i2"),
                 }
+                if projection is not None:
+                    projection_group = truth.create_group("MET_EXACT_PROJECTION")
+                    projection_group.attrs["definition"] = (
+                        "orthogonal equal transverse shift to measured MET"
+                    )
+                    datasets["projected_truth"] = _create(
+                        projection_group,
+                        "NEUTRINO_PROJECTED",
+                        tuple(projection["projected"].shape[1:]),
+                        "<f4",
+                    )
+                    datasets["projection_px_shift"] = _create(
+                        projection_group, "px_shift", (), "<f4"
+                    )
+                    datasets["projection_py_shift"] = _create(
+                        projection_group, "py_shift", (), "<f4"
+                    )
+                    datasets["projection_per_role_magnitude"] = _create(
+                        projection_group,
+                        "per_role_transverse_magnitude",
+                        (projection["per_role_magnitude"].shape[1],),
+                        "<f4",
+                    )
                 if composites is not None:
                     composite_group = destination.create_group("COMPOSITES")
                     truth_composite_group = truth.create_group("COMPOSITES")
@@ -319,6 +388,26 @@ def predict_joint_flow_hdf5(
                 datasets["nu_truth"],
                 batch["invisible_truth"].cpu().numpy().astype(np.float32),
             )
+            if projection is not None:
+                _append(
+                    datasets["projected_truth"],
+                    projection["projected"].cpu().numpy().astype(np.float32),
+                )
+                _append(
+                    datasets["projection_px_shift"],
+                    projection["px_shift"].cpu().numpy().astype(np.float32),
+                )
+                _append(
+                    datasets["projection_py_shift"],
+                    projection["py_shift"].cpu().numpy().astype(np.float32),
+                )
+                _append(
+                    datasets["projection_per_role_magnitude"],
+                    projection["per_role_magnitude"]
+                    .cpu()
+                    .numpy()
+                    .astype(np.float32),
+                )
             _append(datasets["njet"], njet.cpu().numpy().astype(np.int16))
             if composites is not None:
                 for node in module.spec.dag_order:

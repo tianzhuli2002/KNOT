@@ -155,20 +155,19 @@ def _compose_physics(
             )
             for node in module.spec.dag_order:
                 composite_values[node].append(missing.clone())
-            truth_indices = _truth_node_indices(module.spec, batch, event)
-            truth_invisible = {
-                role.key: batch["invisible_truth"][event, role_index]
-                for role_index, role in enumerate(module.spec.invisible_roles)
-            }
-            truth_composed = compose_assignment_state(
-                module.spec,
-                batch["structured"]["pools"],
-                batch["physics_vectors"][event],
-                truth_indices,
-                truth_invisible,
-            )
             for node in module.spec.dag_order:
-                truth_values[node].append(truth_composed[node])
+                # A truth-oracle composite is undefined when any conditioned
+                # parent is absent from the retained visible input.  Never
+                # pass the -1 sentinel to the composition primitive: that
+                # would accidentally select the last candidate.
+                truth_values[node].append(
+                    torch.full(
+                        (4,),
+                        float("nan"),
+                        dtype=samples.dtype,
+                        device=samples.device,
+                    )
+                )
             continue
         hypotheses = range(samples.shape[1]) if truth_assignment else assignments[event]
         for hypothesis_index, hypothesis in enumerate(hypotheses):
@@ -199,20 +198,34 @@ def _compose_physics(
         for node in module.spec.dag_order:
             composite_values[node].append(torch.stack(event_values[node]))
 
-        truth_indices = _truth_node_indices(module.spec, batch, event)
-        truth_invisible = {
-            role.key: batch["invisible_truth"][event, role_index]
-            for role_index, role in enumerate(module.spec.invisible_roles)
-        }
-        truth_composed = compose_assignment_state(
-            module.spec,
-            batch["structured"]["pools"],
-            batch["physics_vectors"][event],
-            truth_indices,
-            truth_invisible,
-        )
-        for node in module.spec.dag_order:
-            truth_values[node].append(truth_composed[node])
+        if truth_supported:
+            truth_indices = _truth_node_indices(module.spec, batch, event)
+            truth_invisible = {
+                role.key: batch["invisible_truth"][event, role_index]
+                for role_index, role in enumerate(module.spec.invisible_roles)
+            }
+            truth_composed = compose_assignment_state(
+                module.spec,
+                batch["structured"]["pools"],
+                batch["physics_vectors"][event],
+                truth_indices,
+                truth_invisible,
+            )
+            for node in module.spec.dag_order:
+                truth_values[node].append(truth_composed[node])
+        else:
+            # Normal predicted-assignment products retain the event, but a
+            # physically undefined truth composite must remain explicitly
+            # undefined for downstream support-aware evaluation.
+            for node in module.spec.dag_order:
+                truth_values[node].append(
+                    torch.full(
+                        (4,),
+                        float("nan"),
+                        dtype=samples.dtype,
+                        device=samples.device,
+                    )
+                )
 
     composites = {
         node: torch.stack(values).cpu().numpy().astype(np.float32)
@@ -282,6 +295,25 @@ def _generate_invisible(
     # posterior branch; K contains repeated views and is not counted as new samples.
     scaled = generated.unsqueeze(1).expand(-1, top_k, -1, -1, -1)
     return scaled, nfe, 1
+
+
+def _met_exact_truth_projection(module, batch):
+    """Build the explicit MET-exact projected target for provenance/evaluation."""
+    coordinates = module.event_model.invisible.coordinates
+    if coordinates.coordinate_type != "met_exact":
+        return None
+    truth = batch["invisible_truth"]
+    state = coordinates.encode(truth, batch["met_xy"])
+    projected = coordinates.decode(state, batch["met_xy"])
+    diagnostics = coordinates.projection_diagnostics(truth, batch["met_xy"])
+    if diagnostics is None:
+        raise RuntimeError("MET-exact coordinates did not provide projection diagnostics")
+    return {
+        "projected": projected,
+        "px_shift": diagnostics["truth_projected_px_shift"],
+        "py_shift": diagnostics["truth_projected_py_shift"],
+        "per_role_magnitude": diagnostics["per_role_transverse_projection_magnitude"],
+    }
 
 
 def predict_hdf5(
@@ -360,6 +392,16 @@ def predict_hdf5(
                     module.hparams.invisible_coordinate_metadata
                 ),
                 "flow_coupling": json.dumps(module.hparams.flow_coupling),
+                "physics_vector_representation": "E_px_py_pz_GeV_v1",
+                "candidate_representation": module.hparams.candidate_representation,
+                "assignment_state_representation": (
+                    module.hparams.assignment_state_representation or "disabled"
+                ),
+                "visible_encoder": module.hparams.visible_encoder,
+                "visible_encoder_config": json.dumps(
+                    module.hparams.visible_encoder_config
+                ),
+                "invisible_role_count": int(module.hparams.invisible_role_count),
                 "scaler": (
                     json.dumps(scaler.as_dict()) if scaler is not None else "null"
                 ),
@@ -417,6 +459,7 @@ def predict_hdf5(
             ).sum(dim=1).cpu().numpy().astype(np.int16)
 
             samples = mean = std = None
+            projection = None
             composites = truth_composites = observed_met = None
             nfe = 0
             unique_branches = 0
@@ -437,6 +480,7 @@ def predict_hdf5(
                 samples = samples_tensor.cpu().numpy().astype(np.float32)
                 mean = samples.mean(axis=2)
                 std = samples.std(axis=2)
+                projection = _met_exact_truth_projection(module, batch)
                 composites, truth_composites, observed_met = _compose_physics(
                     module,
                     batch,
@@ -552,6 +596,31 @@ def predict_hdf5(
                         tuple(batch["invisible_truth"].shape[1:]),
                         "<f4",
                     )
+                    if projection is not None:
+                        projection_group = truth_group.create_group(
+                            "MET_EXACT_PROJECTION"
+                        )
+                        projection_group.attrs["definition"] = (
+                            "orthogonal equal transverse shift to measured MET"
+                        )
+                        datasets["projected_truth"] = _create(
+                            projection_group,
+                            "NEUTRINO_PROJECTED",
+                            tuple(projection["projected"].shape[1:]),
+                            "<f4",
+                        )
+                        datasets["projection_px_shift"] = _create(
+                            projection_group, "px_shift", (), "<f4"
+                        )
+                        datasets["projection_py_shift"] = _create(
+                            projection_group, "py_shift", (), "<f4"
+                        )
+                        datasets["projection_per_role_magnitude"] = _create(
+                            projection_group,
+                            "per_role_transverse_magnitude",
+                            (projection["per_role_magnitude"].shape[1],),
+                            "<f4",
+                        )
                     invisible_group.attrs["actual_nfe"] = nfe
                     invisible_group.attrs[
                         "unique_assignment_conditioning_branches"
@@ -648,6 +717,26 @@ def predict_hdf5(
                     datasets["nu_truth"],
                     batch["invisible_truth"].cpu().numpy().astype(np.float32),
                 )
+                if projection is not None:
+                    _append(
+                        datasets["projected_truth"],
+                        projection["projected"].cpu().numpy().astype(np.float32),
+                    )
+                    _append(
+                        datasets["projection_px_shift"],
+                        projection["px_shift"].cpu().numpy().astype(np.float32),
+                    )
+                    _append(
+                        datasets["projection_py_shift"],
+                        projection["py_shift"].cpu().numpy().astype(np.float32),
+                    )
+                    _append(
+                        datasets["projection_per_role_magnitude"],
+                        projection["per_role_magnitude"]
+                        .cpu()
+                        .numpy()
+                        .astype(np.float32),
+                    )
                 if composites is not None:
                     for node, values in composites.items():
                         _append(datasets[f"composite/{node}"], values)

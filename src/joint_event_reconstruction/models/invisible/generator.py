@@ -196,9 +196,15 @@ class InvisibleGenerator(nn.Module):
             context = context[event_mask]
             mask = mask[event_mask]
             parent_context = parent_context[event_mask]
-        condition = self.coupling_condition(visible, parent_context)
+        # ``target``, ``context`` and ``parent_context`` have already been
+        # restricted to supported events above.  Build the flow-matching
+        # condition from the same event subset; using the unfiltered pooled
+        # tensor here breaks truth-oracle training as soon as one event is
+        # unreconstructable.
+        condition_visible = visible
         if event_mask is not None:
-            condition = condition[event_mask]
+            condition_visible = {"pooled": visible["pooled"][event_mask]}
+        condition = self.coupling_condition(condition_visible, parent_context)
         if self.formulation_name == "flow_matching":
             result = self.formulation.loss(
                 target, context, mask, parent_context, condition=condition

@@ -110,6 +110,17 @@ def predict_discrete_flow_hdf5(
                 "network_calls_per_event": steps * posterior_samples,
                 "candidate_embeddings_reused_across_samples": True,
                 "sample_frequencies_are_exact_likelihoods": False,
+                "physics_vector_representation": "E_px_py_pz_GeV_v1",
+                "candidate_representation": module.hparams.candidate_representation,
+                "assignment_state_representation": module.hparams.assignment_state_representation,
+                "visible_encoder": module.hparams.visible_encoder,
+                "visible_encoder_config": json.dumps(
+                    module.hparams.visible_encoder_config
+                ),
+                "invisible_coordinates": "disabled",
+                "invisible_coordinate_metadata": "null",
+                "flow_coupling": "null",
+                "invisible_role_count": int(module.hparams.invisible_role_count),
                 "source_data": str(source_path),
                 "source_data_size_bytes": source_stat.st_size,
                 "source_data_mtime_ns": source_stat.st_mtime_ns,

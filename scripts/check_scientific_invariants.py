@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import json
 import copy
+import os
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -86,6 +88,205 @@ def check_architecture_signature_contract() -> None:
         raise AssertionError("Prediction sampler changed C2 architecture identity")
 
 
+def check_training_identity_contract() -> None:
+    """Training identity must ignore inference settings but include C2 semantics."""
+    from scripts.run_study import _training_config_identity
+
+    base = load_experiment("configs/experiments/ttbar2L.yaml")
+    changed_inference = copy.deepcopy(base)
+    changed_inference.inference.seed = int(base.inference.seed) + 1
+    changed_inference.inference.top_k_assignments = 5
+    changed_inference.inference.posterior_samples = 64
+    changed_inference.inference.joint_flow.sample_chunk_size = 2
+    changed_inference.training.runtime.compile = True
+    changed_inference.training.output = "results/another-location"
+    if _training_config_identity(base) != _training_config_identity(changed_inference):
+        raise AssertionError("Inference/runtime settings changed training identity")
+
+    c2_overrides = [
+        "model.assignment.recurrence.train_steps=[1,2]",
+        "model.assignment.recurrence.eval_steps=2",
+        "model.invisible.method=cfm",
+        "model.c2={}",
+    ]
+    c2_base = load_experiment("configs/experiments/ttbar2L.yaml", c2_overrides)
+    c2_changed = load_experiment(
+        "configs/experiments/ttbar2L.yaml",
+        [*c2_overrides, "model.c2.training_sampler.steps=9"],
+    )
+    if _training_config_identity(c2_base) == _training_config_identity(c2_changed):
+        raise AssertionError("C2 training sampler change was omitted from training identity")
+
+
+def check_coordinate_contract() -> None:
+    """All maintained coordinate systems must preserve their explicit contract."""
+    import torch
+
+    from scripts.smoke_synthetic import build_synthetic_batch
+    from joint_event_reconstruction.models.invisible.coordinates import (
+        build_invisible_coordinates,
+    )
+    from joint_event_reconstruction.topology.compiler import load_topology
+
+    base = load_experiment("configs/experiments/ttbar2L.yaml")
+    _, batch, _ = build_synthetic_batch(base, events=2, device="cpu")
+    role_names = tuple(
+        role.key for role in load_topology(base.topology_config).invisible_roles
+    )
+    # Keep the role ordering from the topology rather than deriving it from
+    # tensor dimensions; prediction metadata uses this exact ordering.
+    truth = batch["invisible_truth"]
+    met = batch["met_xy"]
+    for coordinate_type in ("cartesian", "met_residual", "met_exact"):
+        config = copy.deepcopy(base.model.invisible.coordinates)
+        config.type = coordinate_type
+        coordinates = build_invisible_coordinates(config, role_names)
+        state = coordinates.encode(truth, met)
+        inactive = ~coordinates.active_mask
+        if not torch.equal(state[..., inactive], torch.zeros_like(state[..., inactive])):
+            raise AssertionError(f"{coordinate_type} emitted non-zero inactive state components")
+        decoded = coordinates.decode(state, met)
+        if coordinate_type != "met_exact" and not torch.allclose(decoded, truth, atol=2.0e-5):
+            raise AssertionError(f"{coordinate_type} coordinate round-trip changed truth")
+        if coordinate_type == "met_exact":
+            shifted_met = met + torch.tensor([[1.0, -2.0], [0.5, 1.5]])
+            projected = coordinates.decode(coordinates.encode(truth, shifted_met), shifted_met)
+            if not torch.allclose(projected[..., :, :2].sum(dim=-2), shifted_met, atol=2.0e-5):
+                raise AssertionError("MET-exact projection did not close to measured MET")
+            diagnostics = coordinates.projection_diagnostics(truth, shifted_met)
+            if diagnostics["per_role_transverse_projection_magnitude"].shape != truth.shape[:2]:
+                raise AssertionError("MET-exact projection diagnostics lost the role axis")
+
+
+def check_slurm_snapshot_contract() -> None:
+    """Generated workers accept an unchanged snapshot and reject later edits."""
+    import scripts.submit_study_slurm as scheduler
+
+    with tempfile.TemporaryDirectory(prefix="jer-slurm-contract-") as directory:
+        root = Path(directory)
+        repository = root / "repo"
+        repository.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=repository, check=True)
+        subprocess.run(
+            ["git", "config", "user.email", "jer-contract@example.invalid"],
+            cwd=repository,
+            check=True,
+        )
+        subprocess.run(
+            ["git", "config", "user.name", "JER contract"],
+            cwd=repository,
+            check=True,
+        )
+        fake_runner = repository / "scripts" / "run_study.py"
+        fake_runner.parent.mkdir(parents=True)
+        fake_runner.write_text("#!/usr/bin/env python3\nraise SystemExit(0)\n")
+        experiment = repository / "configs" / "experiments" / "ttbar2L.yaml"
+        experiment.parent.mkdir(parents=True)
+        experiment.write_text("experiment: ttbar2L\n")
+        subprocess.run(["git", "add", "."], cwd=repository, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "initial"], cwd=repository, check=True)
+        initial_commit = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repository,
+            text=True,
+            capture_output=True,
+            check=True,
+        ).stdout.strip()
+
+        manifest = root / "study_manifest.yaml"
+        manifest.write_text("study: contract\n")
+        task_file = root / "tasks.tsv"
+        task_file.write_text("ttbar2L\tvariant\t42\n")
+        expected_manifest = scheduler._sha256_file(manifest)
+        expected_experiment = scheduler._sha256_file(experiment)
+        worker = root / "worker.sh"
+        original_root = scheduler.ROOT
+        scheduler.ROOT = repository
+        try:
+            scheduler._worker_script(
+                worker,
+                task_file=task_file,
+                study_path=manifest,
+                stage="train",
+                output_root=root / "results",
+                device="cpu",
+                global_overrides=(),
+                expected_commit=initial_commit,
+                expected_manifest_sha256=expected_manifest,
+                expected_experiments={
+                    "ttbar2L": {
+                        "path": str(experiment),
+                        "sha256": expected_experiment,
+                    }
+                },
+            )
+        finally:
+            scheduler.ROOT = original_root
+
+        environment = dict(os.environ, SLURM_ARRAY_TASK_ID="0")
+        accepted = subprocess.run(
+            [str(worker)], text=True, capture_output=True, env=environment, check=False
+        )
+        if accepted.returncode != 0:
+            raise AssertionError(f"Unchanged Slurm snapshot was rejected: {accepted.stderr}")
+
+        manifest.write_text("study: changed\n")
+        changed_manifest = subprocess.run(
+            [str(worker)], text=True, capture_output=True, env=environment, check=False
+        )
+        if changed_manifest.returncode != 3 or "manifest snapshot changed" not in changed_manifest.stderr:
+            raise AssertionError("Changed Slurm manifest was not rejected before work")
+
+        manifest.write_text("study: contract\n")
+        experiment.write_text("experiment: changed\n")
+        subprocess.run(["git", "add", "."], cwd=repository, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "changed experiment"], cwd=repository, check=True)
+        changed_commit = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repository,
+            text=True,
+            capture_output=True,
+            check=True,
+        ).stdout.strip()
+        changed_checkout = subprocess.run(
+            [str(worker)], text=True, capture_output=True, env=environment, check=False
+        )
+        if changed_checkout.returncode != 3 or "Checkout changed" not in changed_checkout.stderr:
+            raise AssertionError("Changed Git checkout was not rejected before work")
+
+        config_worker = root / "config-worker.sh"
+        scheduler.ROOT = repository
+        try:
+            scheduler._worker_script(
+                config_worker,
+                task_file=task_file,
+                study_path=manifest,
+                stage="train",
+                output_root=root / "results",
+                device="cpu",
+                global_overrides=(),
+                expected_commit=changed_commit,
+                expected_manifest_sha256=expected_manifest,
+                expected_experiments={
+                    "ttbar2L": {
+                        "path": str(experiment),
+                        "sha256": expected_experiment,
+                    }
+                },
+            )
+        finally:
+            scheduler.ROOT = original_root
+        changed_config = subprocess.run(
+            [str(config_worker)],
+            text=True,
+            capture_output=True,
+            env=environment,
+            check=False,
+        )
+        if changed_config.returncode != 3 or "Base experiment changed" not in changed_config.stderr:
+            raise AssertionError("Changed base experiment was not rejected before work")
+
+
 def _component_signatures(overrides: list[str] | None = None) -> dict[str, str]:
     config = load_experiment("configs/experiments/ttbar2L.yaml", overrides or [])
     from joint_event_reconstruction.training.joint import architecture_component_signatures
@@ -95,9 +296,13 @@ def _component_signatures(overrides: list[str] | None = None) -> dict[str, str]:
 
 def check_partial_checkpoint_contract() -> None:
     import torch
+    from scripts.smoke_synthetic import build_synthetic_batch
 
     base = load_experiment("configs/experiments/ttbar2L.yaml")
-    parent = JointEventModule(base, load_visible_config(base), synthetic_data=True)
+    visible, _, scaler = build_synthetic_batch(base, events=2, device="cpu")
+    parent = JointEventModule(
+        base, visible, invisible_scaler=scaler, synthetic_data=True
+    )
     with tempfile.TemporaryDirectory(prefix="jer-partial-checkpoint-") as directory:
         checkpoint_path = f"{directory}/parent.ckpt"
         torch.save(
@@ -113,7 +318,10 @@ def check_partial_checkpoint_contract() -> None:
             "configs/experiments/ttbar2L.yaml", ["model.invisible.method=cfm"]
         )
         target = JointEventModule(
-            target_config, load_visible_config(target_config), synthetic_data=True
+            target_config,
+            visible,
+            invisible_scaler=scaler,
+            synthetic_data=True,
         )
         unselected = {
             key: value.detach().clone()
@@ -135,7 +343,10 @@ def check_partial_checkpoint_contract() -> None:
             "configs/experiments/ttbar2L.yaml", ["model.encoder.dropout=0.2"]
         )
         changed = JointEventModule(
-            changed_config, load_visible_config(changed_config), synthetic_data=True
+            changed_config,
+            visible,
+            invisible_scaler=scaler,
+            synthetic_data=True,
         )
         try:
             _load_initial_components(changed, checkpoint_path, ("visible",))
@@ -518,16 +729,20 @@ def check_freeze_contract() -> None:
 
 def main() -> None:
     check_architecture_signature_contract()
+    check_training_identity_contract()
     check_component_signature_contract()
     check_partial_checkpoint_contract()
     check_nested_subsets()
     check_loader_split_seed_contract()
+    check_coordinate_contract()
     check_truth_oracle_unreconstructable_contract()
     check_exchange_and_permutation_contract()
     check_freeze_contract()
+    check_slurm_snapshot_contract()
     print(
-        "PASS: architecture, partial-checkpoint, split-seed, nested-subset, "
-        "exchange, permutation and freeze contracts"
+        "PASS: architecture, training-identity, partial-checkpoint, split-seed, "
+        "nested-subset, coordinate, truth-oracle, exchange, permutation, "
+        "freeze and Slurm-snapshot contracts"
     )
 
 

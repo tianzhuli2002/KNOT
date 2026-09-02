@@ -341,6 +341,12 @@ class StructuredDataModule(TransformerDataModule):
             "runtime_input_h5_path": str(Path(self.h5_path).expanduser().resolve()),
             "token_feature_dim": int(self.schema.dim),
             "token_features": list(self.schema.names),
+            "physics_vectors_shape": [
+                int(len(self.split_indices["selected"])),
+                int(self._configured_total_tokens()),
+                4,
+            ],
+            "physics_vector_representation": "E_px_py_pz_GeV_v1",
             "source_type_ids": dict(self.schema.source_type_ids),
             "widths": {
                 key: int(value) for key, value in self.configured_widths.items()
@@ -361,15 +367,37 @@ class StructuredDataModule(TransformerDataModule):
         payload = torch.load(
             self.tensor_cache, map_location="cpu", weights_only=False
         )
-        payload_indices = torch.as_tensor(
-            payload.get("indices"), dtype=torch.long
-        ).numpy()
+        required_payload = {
+            "indices", "tokens", "type_ids", "padding_mask", "labels",
+            "reco_raw_labels", "physics_vectors",
+        }
+        missing_payload = sorted(required_payload - set(payload))
+        if missing_payload:
+            raise ValueError(
+                "Explicit tensor cache is missing the required physical-vector "
+                f"payload fields {missing_payload}; rebuild the cache"
+            )
+        payload_indices = torch.as_tensor(payload["indices"], dtype=torch.long).numpy()
         selected = np.asarray(self.split_indices["selected"], dtype=np.int64)
         if not np.array_equal(payload_indices, selected):
             raise ValueError(
                 "Explicit tensor cache event indices do not equal the stable "
                 "selected split: "
                 f"cache={len(payload_indices)}, selected={len(selected)}"
+            )
+        expected_shape = (len(selected), self._configured_total_tokens())
+        vectors = payload["physics_vectors"]
+        if tuple(vectors.shape) != expected_shape + (4,):
+            raise ValueError(
+                "Explicit tensor cache has invalid physics_vectors shape: "
+                f"expected={expected_shape + (4,)}, observed={tuple(vectors.shape)}"
+            )
+        if not torch.isfinite(vectors).all():
+            raise ValueError("Explicit tensor cache physics_vectors contain non-finite values")
+        padding = payload["padding_mask"]
+        if not torch.equal(vectors[padding], torch.zeros_like(vectors[padding])):
+            raise ValueError(
+                "Explicit tensor cache padded physics_vectors must be exactly zero"
             )
 
         def selected_positions(indices):
@@ -485,6 +513,63 @@ class StructuredDataModule(TransformerDataModule):
                 },
                 self.schema,
             )
+
+        # The non-cached HDF5 dataset is used for the canonical real samples.
+        # Reading one structured row at a time makes train-only coordinate
+        # scaler fitting needlessly expensive at multi-million-event scale.
+        # Read only the MET rows in one batch while retaining the exact dataset
+        # ordering and the same physical (px, py) convention as the collator.
+        event_indices = getattr(dataset, "indices", None)
+        h5_path = getattr(dataset, "h5_path", None)
+        if event_indices is not None and h5_path is not None and "MET" in self.schema.sources:
+            event_indices = np.asarray(event_indices, dtype=np.int64)[positions]
+            with h5py.File(h5_path, "r") as source:
+                path = "/INPUTS/MET"
+                if path not in source:
+                    raise KeyError(f"MET source is missing from {h5_path}: {path}")
+                if event_indices.size:
+                    # h5py requires increasing, unique fancy indices.  Split
+                    # positions are normally ordered, but subset selection is
+                    # deliberately free to permute them, so restore the exact
+                    # requested order after one sorted read.
+                    order = np.argsort(event_indices, kind="stable")
+                    sorted_indices = event_indices[order]
+                    unique_indices, inverse = np.unique(
+                        sorted_indices, return_inverse=True
+                    )
+                    rows_sorted = source[path][unique_indices]
+                    rows_in_sorted_order = rows_sorted[inverse]
+                    rows = np.empty_like(rows_in_sorted_order)
+                    rows[order] = rows_in_sorted_order
+                else:
+                    rows = np.empty((0,), dtype=source[path].dtype)
+            if rows.dtype.names is None:
+                raise TypeError(f"MET source must have named fields: {h5_path}:{path}")
+            names = set(rows.dtype.names)
+            if {"px", "py"}.issubset(names):
+                met = np.stack(
+                    (np.asarray(rows["px"]).reshape(-1),
+                     np.asarray(rows["py"]).reshape(-1)),
+                    axis=-1,
+                )
+            else:
+                pt_name = "pt" if "pt" in names else "met" if "met" in names else None
+                if pt_name is None or "phi" not in names:
+                    raise ValueError(
+                        f"MET source lacks a physical (px,py) or (pt,phi) pair: "
+                        f"{h5_path}:{path} fields={sorted(names)}"
+                    )
+                pt = np.asarray(rows[pt_name], dtype=np.float64).reshape(-1)
+                phi = np.asarray(rows["phi"], dtype=np.float64).reshape(-1)
+                met = np.stack((pt * np.cos(phi), pt * np.sin(phi)), axis=-1)
+            met = np.asarray(met, dtype=np.float32)
+            if met.shape != (len(positions), 2) or not np.isfinite(met).all():
+                raise ValueError(
+                    f"MET source contains invalid physical px/py values: "
+                    f"{h5_path}:{path} rows={len(positions)}"
+                )
+            return torch.from_numpy(met)
+
         values = []
         for position in positions:
             item = dataset[int(position)]
