@@ -4,8 +4,11 @@
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import json
 from pathlib import Path
+import subprocess
+import sys
 
 import matplotlib
 
@@ -13,7 +16,10 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
-from scripts.analyze_recurrent_depth import _paired, _plots, _read, analyse
+if __package__:
+    from .analyze_recurrent_depth import _paired, _plots, _read, analyse
+else:
+    from analyze_recurrent_depth import _paired, _plots, _read, analyse
 from joint_event_reconstruction.study_metrics import assert_same_events
 
 
@@ -60,7 +66,89 @@ def _prediction(root: Path, topology: str, variant: str, seed: int, name: str) -
     )
 
 
-def analyze(root: Path, topology: str, seed: int) -> dict:
+def _mean_or_nan(values: np.ndarray) -> float:
+    finite = np.asarray(values)[np.isfinite(values)]
+    return float(finite.mean()) if finite.size else float("nan")
+
+
+def _model_summary(value: dict) -> dict:
+    return {
+        "events": int(len(value["correct"])),
+        "complete_assignment_accuracy": float(value["correct"].mean()),
+        "topk_truth_coverage": float(value["topk_truth"].mean()),
+        "mean_truth_probability": float(value["truth_probability"].mean()),
+        "mean_retained_assignment_mass": float(value["retained_mass"].mean()),
+        "mean_complete_top1_top2_margin": _mean_or_nan(value["complete_margin"]),
+        "mean_node_entropy": float(value["mean_node_entropy"].mean()),
+        "mean_node_margin": float(value["mean_node_margin"].mean()),
+        "per_role": value["per_role"],
+    }
+
+
+def _markdown(result: dict) -> str:
+    lines = [
+        "# Study 01 derived reanalysis",
+        "",
+        f"- topology: `{result['topology']}`",
+        f"- model seed: `{result['model_seed']}`",
+        f"- selection split: `{result['selection_split']}`",
+        f"- assignment support: `{result['assignment_support']}`",
+        "- scientific winner: **not selected**",
+        "",
+        "## Model and control metrics",
+        "",
+        "| model | complete accuracy | top-K truth coverage | truth probability | entropy | margin | retained mass |",
+        "|---|---:|---:|---:|---:|---:|---:|",
+    ]
+    for name, item in result["models"].items():
+        lines.append(
+            f"| {item['label']} | {item['complete_assignment_accuracy']:.6f} | "
+            f"{item['topk_truth_coverage']:.6f} | {item['mean_truth_probability']:.6f} | "
+            f"{item['mean_node_entropy']:.6f} | {item['mean_node_margin']:.6f} | "
+            f"{item['mean_retained_assignment_mass']:.6f} |"
+        )
+    lines.extend(["", "## Paired control comparisons", ""])
+    for name, item in result["paired_vs_controls"].items():
+        low, high = item["paired_bootstrap_95"]
+        lines.extend(
+            [
+                f"### {item['label']}",
+                "",
+                f"- delta accuracy: `{item['delta_accuracy']:.6f}` (paired 95% interval `{low:.6f}` to `{high:.6f}`)",
+                f"- wrong -> correct: `{item['wrong_to_correct']}`",
+                f"- correct -> wrong: `{item['correct_to_wrong']}`",
+                f"- stable correct: `{item['stable_correct']}`",
+                f"- stable wrong: `{item['stable_wrong']}`",
+                "",
+            ]
+        )
+    lines.extend(
+        [
+            "## Interpretation boundary",
+            "",
+            "These are mechanically derived one-seed validation results. They do not automatically select or lock an assignment model.",
+            "",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _git_commit() -> str:
+    return subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+
+def analyze(
+    root: Path,
+    topology: str,
+    seed: int,
+    destination: Path | None = None,
+    source_campaign: Path | None = None,
+) -> dict:
     recurrent = {}
     for variant in ("m2", "m3"):
         paths = [
@@ -130,15 +218,40 @@ def analyze(root: Path, topology: str, seed: int) -> dict:
         "assignment_support": values["one_pass"]["support"],
         "identical_ordered_event_ids": True,
         "recurrent_depth": recurrent,
+        "models": {
+            name: {"label": COMPARISONS[name][2], **_model_summary(value)}
+            for name, value in values.items()
+        },
         "paired_vs_one_pass": paired,
         "paired_vs_controls": paired_controls,
     }
 
-    destination = root / "visible_recurrence" / topology / "analysis" / f"seed_{seed}"
+    destination = destination or (
+        root / "visible_recurrence" / topology / "analysis" / f"seed_{seed}"
+    )
     destination.mkdir(parents=True, exist_ok=True)
     (destination / "study01.json").write_text(
         json.dumps(result, indent=2, sort_keys=True) + "\n"
     )
+    (destination / "summary.md").write_text(_markdown(result))
+    if source_campaign is not None:
+        submission_path = source_campaign / "submission.json"
+        submission = json.loads(submission_path.read_text())
+        provenance = {
+            "source_campaign": str(source_campaign),
+            "source_campaign_git_commit": submission["git_commit"],
+            "source_manifest_sha256": submission["study_manifest_snapshot_sha256"],
+            "analysis_git_commit": _git_commit(),
+            "analysis_timestamp": dt.datetime.now(dt.UTC).isoformat(),
+            "analysis_command": [sys.executable, *sys.argv],
+            "prediction_artifact_identities": {
+                name: value["artifact_identity_sha256"]
+                for name, value in _prediction_identities(paths).items()
+            },
+        }
+        (destination / "provenance.json").write_text(
+            json.dumps(provenance, indent=2, sort_keys=True) + "\n"
+        )
     for variant, depth_result in recurrent.items():
         _plots(depth_result, destination / variant)
 
@@ -164,13 +277,36 @@ def analyze(root: Path, topology: str, seed: int) -> dict:
     return result
 
 
+def _prediction_identities(paths: dict[str, Path]) -> dict[str, dict]:
+    import h5py
+
+    identities = {}
+    for name, path in paths.items():
+        with h5py.File(path, "r") as source:
+            identities[name] = {
+                "path": str(path),
+                "artifact_identity_sha256": str(
+                    source.attrs["artifact_identity_sha256"]
+                ),
+            }
+    return identities
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output-root", type=Path, default=Path("results/studies"))
     parser.add_argument("--topology", default="ttbar2L")
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--destination", type=Path)
+    parser.add_argument("--source-campaign", type=Path)
     args = parser.parse_args()
-    result = analyze(args.output_root.expanduser().resolve(), args.topology, args.seed)
+    result = analyze(
+        args.output_root.expanduser().resolve(),
+        args.topology,
+        args.seed,
+        args.destination.expanduser().resolve() if args.destination else None,
+        args.source_campaign.expanduser().resolve() if args.source_campaign else None,
+    )
     print(json.dumps(result, indent=2, sort_keys=True))
 
 

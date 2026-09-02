@@ -26,11 +26,35 @@ def _read(path: Path) -> dict:
         truth_topk = source["TRUTH/topk_assignment"][:].astype(bool)
         probabilities = source["VISIBLE/constrained_probabilities"][:]
         nodes = source["VISIBLE/nodes"]
-        entropy = np.stack([nodes[name]["entropy"][:] for name in nodes], axis=1)
-        margin = np.stack([nodes[name]["margin"][:] for name in nodes], axis=1)
+        root_order = json.loads(str(source.attrs["root_order"]))
+        entropy = np.stack(
+            [nodes[name]["entropy"][:] for name in root_order], axis=1
+        )
+        margin = np.stack([nodes[name]["margin"][:] for name in root_order], axis=1)
         reconstructable = np.stack(
-            [nodes[name]["reconstructable"][:] for name in nodes], axis=1
+            [nodes[name]["reconstructable"][:] for name in root_order], axis=1
         ).all(axis=1)
+        per_role = {}
+        for name in root_order:
+            node = nodes[name]
+            role_support = node["reconstructable"][:].astype(bool)
+            role_correct = node["selected_candidate"][:] == node["truth_candidate"][:]
+            supported = int(role_support.sum())
+            per_role[name] = {
+                "reconstructable_events": supported,
+                "accuracy_on_reconstructable": (
+                    float(role_correct[role_support].mean())
+                    if supported
+                    else float("nan")
+                ),
+                "mean_truth_probability_on_reconstructable": (
+                    float(node["truth_probability"][:][role_support].mean())
+                    if supported
+                    else float("nan")
+                ),
+                "mean_entropy": float(node["entropy"][:].mean()),
+                "mean_margin": float(node["margin"][:].mean()),
+            }
         complete_margin = (
             probabilities[:, 0] - probabilities[:, 1]
             if probabilities.shape[1] >= 2
@@ -45,6 +69,7 @@ def _read(path: Path) -> dict:
             "complete_margin": complete_margin,
             "mean_node_entropy": entropy.mean(axis=1),
             "mean_node_margin": margin.mean(axis=1),
+            "per_role": per_role,
             "njet": source["OBSERVED/njet"][:],
             "reconstructable": reconstructable,
             "support": str(source.attrs["assignment_support"]),
@@ -169,6 +194,7 @@ def analyse(paths: list[Path], depths: list[int]) -> dict:
                 "mean_complete_top1_top2_margin": float(item["complete_margin"].mean()),
                 "mean_node_entropy": float(item["mean_node_entropy"].mean()),
                 "mean_node_margin": float(item["mean_node_margin"].mean()),
+                "per_role": item["per_role"],
             }
         )
 
