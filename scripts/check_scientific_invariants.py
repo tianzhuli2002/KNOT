@@ -158,6 +158,70 @@ def check_coordinate_contract() -> None:
                 raise AssertionError("MET-exact projection diagnostics lost the role axis")
 
 
+def check_flow_coupling_context_contract() -> None:
+    """Conditional OT must use role contexts before coordinate-token expansion."""
+    import torch
+
+    from joint_event_reconstruction.models.invisible.generator import InvisibleGenerator
+    from joint_event_reconstruction.topology.compiler import load_topology
+
+    base = load_experiment("configs/experiments/ttbar2L.yaml")
+    base = copy.deepcopy(base)
+    base.model.invisible.enabled = True
+    base.model.invisible.formulation = "flow_matching"
+    base.model.invisible.flow_matching.coupling = {
+        "method": "conditional_ot",
+        "condition_weight": 1.0,
+    }
+    spec = load_topology(base.topology_config)
+    role_count = len(spec.invisible_roles)
+    width = int(base.model.latent.d_model)
+    pooled = torch.full((2, width), 3.0)
+    role_context = torch.arange(
+        1, 1 + 2 * role_count * width, dtype=torch.float32
+    ).reshape(2, role_count, width)
+    visible = {"pooled": pooled}
+
+    for coordinate_type in ("met_residual", "met_exact"):
+        config = copy.deepcopy(base)
+        config.model.invisible.coordinates.type = coordinate_type
+        generator = InvisibleGenerator(
+            spec,
+            width,
+            config.model.invisible,
+            config.inference.invisible,
+        )
+        coordinate_context = generator.coordinates.parent_context(
+            role_context, pooled
+        )
+        condition = generator.coupling_condition(
+            visible,
+            coordinate_context,
+            role_context=role_context,
+        )
+        expected = torch.cat((pooled, role_context.mean(dim=1)), dim=1)
+        if not torch.allclose(condition, expected):
+            raise AssertionError(
+                f"{coordinate_type} conditional-OT context did not use role mean"
+            )
+        expanded_mean = coordinate_context.mean(dim=1)
+        if coordinate_type == "met_residual" and torch.allclose(
+            condition[:, width:], expanded_mean
+        ):
+            raise AssertionError(
+                f"{coordinate_type} conditional-OT context still uses expanded tokens"
+            )
+        if generator.coordinates.token_count != role_count:
+            try:
+                generator.coupling_condition(visible, coordinate_context)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError(
+                    f"{coordinate_type} accepted expanded contexts without role contexts"
+                )
+
+
 def check_slurm_snapshot_contract() -> None:
     """Generated workers accept an unchanged snapshot and reject later edits."""
     import scripts.submit_study_slurm as scheduler
@@ -735,6 +799,7 @@ def main() -> None:
     check_nested_subsets()
     check_loader_split_seed_contract()
     check_coordinate_contract()
+    check_flow_coupling_context_contract()
     check_truth_oracle_unreconstructable_contract()
     check_exchange_and_permutation_contract()
     check_freeze_contract()

@@ -94,7 +94,7 @@ class InvisibleGenerator(nn.Module):
         )
         return context, torch.cat((cls_mask, visible["padding_mask"]), dim=1)
 
-    def parent_context(
+    def role_parent_context(
         self,
         reconstruction: dict,
         structured: dict,
@@ -144,7 +144,25 @@ class InvisibleGenerator(nn.Module):
                         f"Unknown assignment conditioning mode {mode!r}"
                     )
             contexts.append(base + summary)
-        role_context = torch.stack(contexts, dim=1)
+        return torch.stack(contexts, dim=1)
+
+    def parent_context(
+        self,
+        reconstruction: dict,
+        structured: dict,
+        pooled: torch.Tensor,
+        node_context: dict[str, torch.Tensor] | None = None,
+        *,
+        mode: str | None = None,
+    ) -> torch.Tensor:
+        """Build coordinate-token contexts from one context per invisible role."""
+        role_context = self.role_parent_context(
+            reconstruction,
+            structured,
+            pooled,
+            node_context,
+            mode=mode,
+        )
         return self.coordinates.parent_context(role_context, pooled)
 
     @staticmethod
@@ -165,10 +183,35 @@ class InvisibleGenerator(nn.Module):
         state = scaler.inverse(scaled_state)
         return self.coordinates.decode(state, self._expanded_met(met_xy, state))
 
-    @staticmethod
-    def coupling_condition(visible: dict, parent_context: torch.Tensor) -> torch.Tensor:
+    def coupling_condition(
+        self,
+        visible: dict,
+        parent_context: torch.Tensor,
+        *,
+        role_context: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Build the conditional-OT feature from role-level parent contexts.
+
+        Coordinate systems such as ``met_residual`` and ``met_exact`` expand
+        each role context into additional state-token contexts.  The coupling
+        condition is intentionally defined before that expansion as
+        ``[z_pooled, mean_r z_parent,r]``; using the expanded token mean would
+        make the condition depend on the coordinate parameterisation.
+        """
+        if parent_context.ndim != 3:
+            raise ValueError(
+                "Invisible parent context must be [B,T,D] for flow coupling"
+            )
+        if role_context is None:
+            role_context = parent_context
+        if role_context.ndim != 3 or role_context.shape[1] != len(self.spec.invisible_roles):
+            raise ValueError(
+                "Flow coupling requires one role parent context per invisible role"
+            )
+        if role_context.shape[0] != parent_context.shape[0] or role_context.shape[2] != parent_context.shape[2]:
+            raise ValueError("Role and coordinate parent contexts must share batch and width")
         return torch.cat(
-            (visible["pooled"], parent_context.mean(dim=1)), dim=1
+            (visible["pooled"], role_context.mean(dim=1)), dim=1
         )
 
     def loss(
@@ -177,6 +220,7 @@ class InvisibleGenerator(nn.Module):
         visible: dict,
         parent_context: torch.Tensor,
         *,
+        role_context: torch.Tensor | None = None,
         event_mask: torch.Tensor | None = None,
     ) -> dict:
         context, mask = self.visible_context(visible)
@@ -196,6 +240,8 @@ class InvisibleGenerator(nn.Module):
             context = context[event_mask]
             mask = mask[event_mask]
             parent_context = parent_context[event_mask]
+            if role_context is not None:
+                role_context = role_context[event_mask]
         # ``target``, ``context`` and ``parent_context`` have already been
         # restricted to supported events above.  Build the flow-matching
         # condition from the same event subset; using the unfiltered pooled
@@ -204,7 +250,11 @@ class InvisibleGenerator(nn.Module):
         condition_visible = visible
         if event_mask is not None:
             condition_visible = {"pooled": visible["pooled"][event_mask]}
-        condition = self.coupling_condition(condition_visible, parent_context)
+        condition = self.coupling_condition(
+            condition_visible,
+            parent_context,
+            role_context=role_context,
+        )
         if self.formulation_name == "flow_matching":
             result = self.formulation.loss(
                 target, context, mask, parent_context, condition=condition

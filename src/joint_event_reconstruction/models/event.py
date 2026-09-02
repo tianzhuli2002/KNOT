@@ -448,11 +448,14 @@ class JointEventModel(nn.Module):
     ) -> dict:
         if self.invisible is None:
             return result
-        parent = self.invisible.parent_context(
+        role_parent = self.invisible.role_parent_context(
             result,
             batch["structured"],
             visible["pooled"],
             node_context,
+        )
+        parent = self.invisible.coordinates.parent_context(
+            role_parent, visible["pooled"]
         )
         result["invisible_parent_context"] = parent
         event_mask = None
@@ -469,6 +472,7 @@ class JointEventModel(nn.Module):
             batch["invisible_truth_scaled"],
             visible,
             parent,
+            role_context=role_parent,
             event_mask=event_mask,
         )
         result["invisible_loss"] = invisible["loss"]

@@ -223,7 +223,11 @@ class JointFlow(nn.Module):
         coordinate_base = invisible.coordinates.parent_context(
             role_base, visible["pooled"]
         )
-        condition = invisible.coupling_condition(visible, coordinate_base)
+        condition = invisible.coupling_condition(
+            visible,
+            coordinate_base,
+            role_context=role_base,
+        )
         source = invisible.flow_source(target, condition=condition)
         invisible_state, target_velocity = linear_path(source, target, time)
         assignment_state = self.discrete_flow.training_state(
@@ -276,7 +280,11 @@ class JointFlow(nn.Module):
         coordinate_base = invisible.coordinates.parent_context(
             role_base, visible["pooled"]
         )
-        condition = invisible.coupling_condition(visible, coordinate_base)
+        condition = invisible.coupling_condition(
+            visible,
+            coordinate_base,
+            role_context=role_base,
+        )
         source = invisible.flow_source(target, condition=condition)
         reveal = torch.rand(len(target), device=target.device, dtype=target.dtype)
         target_velocity = target - source
