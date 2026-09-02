@@ -1,0 +1,4 @@
+method: aps
+coverages: [0.68, 0.90, 0.95]
+candidate_limit: 64
+split: validation

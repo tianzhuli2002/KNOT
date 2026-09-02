@@ -9,13 +9,24 @@ import h5py
 import numpy as np
 
 from joint_event_reconstruction.assignment_semantics import read_hdf5_support
+from joint_event_reconstruction.physics_observables import (
+    four_vector_observables,
+    met_closure,
+    root_system_observables,
+    wrapped_delta,
+)
 from joint_event_reconstruction.prediction_schema import validate_prediction
+from joint_event_reconstruction.reliability import (
+    reliability_scores,
+    selective_risk_curve,
+)
 
 
 COVERAGE_LEVELS = (0.50, 0.68, 0.90, 0.95)
 COVERAGE_CURVE_LEVELS = tuple(
     sorted(set(np.round(np.arange(0.1, 1.0, 0.1), 2)) | set(COVERAGE_LEVELS))
 )
+RELIABILITY_FRACTIONS = (0.50, 0.60, 0.70, 0.80, 0.90, 0.95, 1.00)
 
 
 def _normalised_weights(samples: np.ndarray, weights: np.ndarray | None) -> np.ndarray:
@@ -213,19 +224,68 @@ def _posterior_metrics(
     return result
 
 
+def _conditional_posterior_metrics(
+    samples: np.ndarray,
+    truth: np.ndarray,
+    role_names: list[str],
+    variables: dict[str, np.ndarray],
+    *,
+    weights: np.ndarray | None = None,
+    quantile_bins: int = 5,
+) -> dict:
+    result = {}
+    for name, raw in variables.items():
+        values = np.asarray(raw)
+        if values.shape != (len(samples),):
+            raise ValueError(f"Conditional variable {name} must have shape [N]")
+        if values.dtype == np.bool_:
+            edges = [False, True]
+            masks = [(str(value).lower(), values == value) for value in edges]
+            recorded_edges = edges
+        elif name == "njet":
+            unique = np.unique(values)
+            masks = [(str(int(value)), values == value) for value in unique]
+            recorded_edges = [int(value) for value in unique]
+        else:
+            if not np.isfinite(values).all():
+                raise ValueError(f"Conditional variable {name} contains non-finite values")
+            recorded_edges = np.unique(
+                np.quantile(values, np.linspace(0, 1, quantile_bins + 1))
+            ).tolist()
+            masks = []
+            for index, (low, high) in enumerate(
+                zip(recorded_edges[:-1], recorded_edges[1:])
+            ):
+                mask = (values >= low) & (
+                    values <= high if index == len(recorded_edges) - 2 else values < high
+                )
+                masks.append((str(index), mask))
+        bins = []
+        for label, selection in masks:
+            count = int(selection.sum())
+            row = {
+                "bin": label,
+                "events": count,
+                "small_sample_warning": count < 30,
+            }
+            if count:
+                row["posterior"] = _posterior_metrics(
+                    samples[selection],
+                    truth[selection],
+                    role_names,
+                    weights=None if weights is None else weights[selection],
+                )
+            bins.append(row)
+        result[name] = {"bin_edges": recorded_edges, "bins": bins}
+    return result
+
+
 def _kinematics(vectors: np.ndarray) -> dict[str, np.ndarray]:
-    momentum = vectors[..., 1:]
-    pt = np.linalg.norm(momentum[..., :2], axis=-1)
-    mass = np.sqrt(
-        np.maximum(vectors[..., 0] ** 2 - np.sum(momentum**2, axis=-1), 0)
-    )
-    eta = np.arcsinh(np.divide(momentum[..., 2], np.maximum(pt, 1.0e-12)))
-    phi = np.arctan2(momentum[..., 1], momentum[..., 0])
-    return {"mass": mass, "pt": pt, "eta": eta, "phi": phi}
+    return four_vector_observables(vectors)
 
 
 def _wrapped_delta(first: np.ndarray, second: np.ndarray) -> np.ndarray:
-    return np.arctan2(np.sin(first - second), np.cos(first - second))
+    return wrapped_delta(first, second)
 
 
 def _point_kinematic_metrics(predicted: np.ndarray, truth: np.ndarray) -> dict:
@@ -235,7 +295,7 @@ def _point_kinematic_metrics(predicted: np.ndarray, truth: np.ndarray) -> dict:
         return result
     predicted_kinematics = _kinematics(predicted[finite])
     truth_kinematics = _kinematics(truth[finite])
-    for observable in ("mass", "pt", "eta", "phi"):
+    for observable in ("mass", "pt", "eta", "rapidity", "phi"):
         residual = (
             _wrapped_delta(
                 predicted_kinematics[observable], truth_kinematics[observable]
@@ -312,13 +372,57 @@ def _posterior_kinematic_metrics(
     safe = np.where(local_valid[..., None], predicted[eligible], 0.0)
     predicted_kinematics = _kinematics(safe)
     truth_kinematics = _kinematics(truth[eligible])
-    for observable in ("mass", "pt"):
-        result[observable] = _scalar_posterior_metrics(
-            predicted_kinematics[observable],
-            truth_kinematics[observable],
-            local_weights,
-        )
+    for observable in ("mass", "pt", "eta", "rapidity", "phi"):
+        values = predicted_kinematics[observable]
+        target = truth_kinematics[observable]
+        valid = np.isfinite(target) & np.isfinite(values).all(axis=1)
+        if not valid.any():
+            result[observable] = {"events": 0}
+            continue
+        if observable == "phi":
+            values = _wrapped_delta(values, target[:, None])
+            target = np.zeros_like(target)
+        result[observable] = {
+            "events": int(valid.sum()),
+            **_scalar_posterior_metrics(
+                values[valid], target[valid], local_weights[valid]
+            ),
+        }
     return result
+
+
+def _met_exact_projection_metrics(source: h5py.File) -> dict | None:
+    """Summarise detector-MET projection without replacing the physical truth target."""
+    path = "TRUTH/MET_EXACT_PROJECTION"
+    if path not in source:
+        return None
+    group = source[path]
+    px = group["px_shift"][:].astype(np.float64)
+    py = group["py_shift"][:].astype(np.float64)
+    magnitude = group["per_role_transverse_magnitude"][:].astype(np.float64)
+    projected = group["NEUTRINO_PROJECTED"][:]
+
+    def summary(values: np.ndarray) -> dict:
+        return {
+            "mean": float(values.mean()),
+            "rmse": float(np.sqrt(np.mean(values**2))),
+            "maximum_absolute": float(np.max(np.abs(values))),
+        }
+
+    return {
+        "definition": str(group.attrs.get("definition", "")),
+        "events": int(len(px)),
+        "px_shift": summary(px),
+        "py_shift": summary(py),
+        "per_role_transverse_magnitude": {
+            "mean": float(magnitude.mean()),
+            "rmse": float(np.sqrt(np.mean(magnitude**2))),
+            "maximum": float(magnitude.max()),
+        },
+        "projected_target": "truth neutrino momenta after equal transverse MET projection",
+        "projected_sum_px": float(projected[..., 1].sum(axis=1).mean()),
+        "projected_sum_py": float(projected[..., 2].sum(axis=1).mean()),
+    }
 
 
 def bootstrap_mean_interval(
@@ -495,6 +599,17 @@ def evaluate_predictions(path: str | Path) -> dict:
                     metric_samples, metric_truth, roles
                 ),
             }
+            projection_metrics = _met_exact_projection_metrics(source)
+            if projection_metrics is not None:
+                projected_truth = source[
+                    "TRUTH/MET_EXACT_PROJECTION/NEUTRINO_PROJECTED"
+                ][:]
+                if conditioning == "truth":
+                    projected_truth = projected_truth[oracle_support]
+                invisible["truth_projection"] = projection_metrics
+                invisible["top1_assignment_conditioned_vs_projected_target"] = (
+                    _posterior_metrics(metric_samples, projected_truth, roles)
+                )
 
             if conditioning == "hypothesis":
                 batch_size, top_k, posterior_samples = samples.shape[:3]
@@ -535,11 +650,81 @@ def evaluate_predictions(path: str | Path) -> dict:
                             truth_branch_samples, truth[truth_in_topk], roles
                         ),
                     }
+                diagnostic_samples = flat
+                diagnostic_truth = truth
+                diagnostic_weights = weights
+                diagnostic_selection = np.ones(len(truth), dtype=bool)
             else:
                 invisible["truncated_assignment_weighted_mixture"] = {
                     "same_as_single_generator_posterior": True,
                     **_posterior_metrics(metric_samples, metric_truth, roles),
                 }
+                diagnostic_samples = metric_samples
+                diagnostic_truth = metric_truth
+                diagnostic_weights = None
+                diagnostic_selection = (
+                    oracle_support
+                    if conditioning == "truth"
+                    else np.ones(len(truth), dtype=bool)
+                )
+            node_entropy = np.stack(
+                [nodes[name]["entropy"][:] for name in nodes], axis=1
+            ).mean(axis=1)
+            node_margin = np.stack(
+                [nodes[name]["margin"][:] for name in nodes], axis=1
+            ).mean(axis=1)
+            reconstructable = np.stack(
+                [nodes[name]["reconstructable"][:] for name in nodes], axis=1
+            ).all(axis=1)
+            conditional_variables = {
+                "njet": njet[diagnostic_selection],
+                "assignment_entropy": node_entropy[diagnostic_selection],
+                "assignment_margin": node_margin[diagnostic_selection],
+                "retained_assignment_mass": retained_mass[diagnostic_selection],
+                "reconstructable": reconstructable[diagnostic_selection],
+            }
+            invisible["conditional_calibration"] = _conditional_posterior_metrics(
+                diagnostic_samples,
+                diagnostic_truth,
+                roles,
+                conditional_variables,
+                weights=diagnostic_weights,
+            )
+
+            normalised_weights = _normalised_weights(
+                diagnostic_samples, diagnostic_weights
+            )
+            posterior_mean = np.sum(
+                diagnostic_samples * normalised_weights[..., None, None], axis=1
+            )
+            posterior_width = np.sqrt(
+                np.sum(
+                    normalised_weights[..., None, None]
+                    * (diagnostic_samples - posterior_mean[:, None]) ** 2,
+                    axis=1,
+                )
+            ).mean(axis=(1, 2))
+            first_values = diagnostic_samples[:, :, 0, 0]
+            first_truth = diagnostic_truth[:, 0, 0]
+            low = _weighted_quantile_rows(first_values, normalised_weights, 0.16)
+            high = _weighted_quantile_rows(first_values, normalised_weights, 0.84)
+            covered = (first_truth >= low) & (first_truth <= high)
+            score_inputs = reliability_scores(
+                entropy=node_entropy[diagnostic_selection],
+                margin=node_margin[diagnostic_selection],
+                retained_mass=retained_mass[diagnostic_selection],
+                posterior_width=posterior_width,
+            )
+            assignment_correct = truth_topk[:, 0][diagnostic_selection]
+            result["reliability"] = {
+                name: selective_risk_curve(
+                    score,
+                    fractions=RELIABILITY_FRACTIONS,
+                    assignment_correct=assignment_correct,
+                    covered=covered,
+                )
+                for name, score in score_inputs.items()
+            }
             result["invisible"] = invisible
 
         if "COMPOSITES" in source and "TRUTH/COMPOSITES" in source:
@@ -593,29 +778,57 @@ def evaluate_predictions(path: str | Path) -> dict:
                     )
                 physics[node] = node_result
 
+            root_order = json.loads(source.attrs.get("root_order", "[]"))
+            if root_order and all(root in source["COMPOSITES"] for root in root_order):
+                root_samples = {
+                    root: source[f"COMPOSITES/{root}"][:, 0] for root in root_order
+                }
+                root_truth = {
+                    root: source[f"TRUTH/COMPOSITES/{root}"][:] for root in root_order
+                }
+                sample_observables = root_system_observables(root_samples, root_order)
+                truth_observables = root_system_observables(root_truth, root_order)
+                root_result = {}
+                unit_weights = np.full(
+                    next(iter(root_samples.values())).shape[:2],
+                    1.0 / next(iter(root_samples.values())).shape[1],
+                )
+                for observable, values in sample_observables.items():
+                    target = truth_observables[observable]
+                    valid = np.isfinite(target) & np.isfinite(values).all(axis=1)
+                    if observable in {"system_phi", "delta_phi"}:
+                        values = _wrapped_delta(values, target[:, None])
+                        target = np.zeros_like(target)
+                    root_result[observable] = (
+                        {"events": 0}
+                        if not valid.any()
+                        else {
+                            "events": int(valid.sum()),
+                            **_scalar_posterior_metrics(
+                                values[valid], target[valid], unit_weights[valid]
+                            ),
+                        }
+                    )
+                physics["root_system"] = root_result
+
             if "OBSERVED/MET" in source and "INVISIBLE/samples" in source:
                 invisible_samples = source["INVISIBLE/samples"][:]
                 if conditioning == "hypothesis":
                     branch = assignment_probabilities / retained_mass[:, None]
-                    predicted_px = np.sum(
-                        branch * invisible_samples[..., 0].sum(axis=3).mean(axis=2),
-                        axis=1,
+                    batch_size, branches, posterior = invisible_samples.shape[:3]
+                    closure_samples = invisible_samples.reshape(
+                        batch_size, branches * posterior, *invisible_samples.shape[3:]
                     )
-                    predicted_py = np.sum(
-                        branch * invisible_samples[..., 1].sum(axis=3).mean(axis=2),
-                        axis=1,
-                    )
+                    closure_weights = np.repeat(
+                        branch[:, :, None] / posterior, posterior, axis=2
+                    ).reshape(batch_size, branches * posterior)
                 else:
-                    predicted_px = invisible_samples[:, 0, ..., 0].sum(axis=2).mean(axis=1)
-                    predicted_py = invisible_samples[:, 0, ..., 1].sum(axis=2).mean(axis=1)
+                    closure_samples = invisible_samples[:, 0]
+                    closure_weights = None
                 met = source["OBSERVED/MET"][:]
-                dx = predicted_px - met[:, 1]
-                dy = predicted_py - met[:, 2]
-                physics["met_closure"] = {
-                    "px_bias": float(dx.mean()),
-                    "py_bias": float(dy.mean()),
-                    "transverse_rmse": float(np.sqrt(np.mean(dx**2 + dy**2))),
-                }
+                physics["met_closure"] = met_closure(
+                    closure_samples, met[:, 1:3], closure_weights
+                )
             result["physics"] = physics
 
         if "JOINT/final_score" in source:

@@ -1,0 +1,12 @@
+posterior:
+  coverage_levels: [0.50, 0.68, 0.90, 0.95]
+  rank_bins: 10
+physics:
+  node_observables: [mass, pt, eta, rapidity, phi]
+  root_system_observables: [mass, pt, eta, rapidity, phi, delta_eta, delta_y, delta_phi, delta_r]
+  met_closure: true
+conditional:
+  quantile_bins: 5
+  variables: [njet, assignment_entropy, assignment_margin, retained_assignment_mass, reconstructable]
+reliability:
+  acceptance_fractions: [0.50, 0.60, 0.70, 0.80, 0.90, 0.95, 1.00]
