@@ -1,6 +1,6 @@
 study:
   name: generator_formulations
-  description: Compare DDIM, EDM, CFM and OT-CFM with one frozen assignment-reference template after the Study 01 gate on ttbar2L.
+  description: Compare DDIM, EDM, CFM, OT-CFM and condition-aware OT CFM in Cartesian coordinates with one frozen visible-assignment reference.
   experiment_pattern: configs/experiments/{topology}.yaml
   topologies: [ttbar2L]
   seeds: [42]
@@ -28,7 +28,7 @@ variants:
         assignment:
           method: discriminative
           recurrence: {train_steps: [1, 2, 3, 4], eval_steps: 4, feedback: soft}
-        invisible: {method: ddim, conditioning: none}
+        invisible: {method: ddim, conditioning: none, coordinates: {type: cartesian}}
       training: {trainable: [invisible]}
     initialise_from: assignment_reference
     initialise_components: [visible, assignment]
@@ -43,7 +43,7 @@ variants:
         assignment:
           method: discriminative
           recurrence: {train_steps: [1, 2, 3, 4], eval_steps: 4, feedback: soft}
-        invisible: {method: edm, conditioning: none}
+        invisible: {method: edm, conditioning: none, coordinates: {type: cartesian}}
       training: {trainable: [invisible]}
     initialise_from: assignment_reference
     initialise_components: [visible, assignment]
@@ -58,7 +58,7 @@ variants:
         assignment:
           method: discriminative
           recurrence: {train_steps: [1, 2, 3, 4], eval_steps: 4, feedback: soft}
-        invisible: {method: cfm, conditioning: none}
+        invisible: {method: cfm, conditioning: none, coordinates: {type: cartesian}}
       training: {trainable: [invisible]}
     initialise_from: assignment_reference
     initialise_components: [visible, assignment]
@@ -73,9 +73,28 @@ variants:
         assignment:
           method: discriminative
           recurrence: {train_steps: [1, 2, 3, 4], eval_steps: 4, feedback: soft}
-        invisible: {method: cfm, conditioning: none, coupling: minibatch_ot}
+        invisible: {method: cfm, conditioning: none, coordinates: {type: cartesian}, coupling: minibatch_ot}
       training: {trainable: [invisible]}
     initialise_from: assignment_reference
     initialise_components: [visible, assignment]
     predictions:
       nfe17: {label: OT-CFM Euler NFE=17, patch: {prediction: {samples: 32, steps: 17, solver: euler}}, recurrent_steps: 4}
+
+  conditional_ot_cfm:
+    label: Condition-aware OT / C2OT-style CFM
+    reporting: primary
+    patch:
+      model:
+        assignment:
+          method: discriminative
+          recurrence: {train_steps: [1, 2, 3, 4], eval_steps: 4, feedback: soft}
+        invisible:
+          method: cfm
+          conditioning: none
+          coordinates: {type: cartesian}
+          coupling: {method: conditional_ot, condition_weight: 1.0}
+      training: {trainable: [invisible]}
+    initialise_from: assignment_reference
+    initialise_components: [visible, assignment]
+    predictions:
+      nfe17: {label: Condition-aware OT CFM Euler NFE=17, patch: {prediction: {samples: 32, steps: 17, solver: euler}}, recurrent_steps: 4}

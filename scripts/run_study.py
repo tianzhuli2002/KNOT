@@ -97,6 +97,12 @@ def _training_config_identity(resolved) -> dict:
     """Keep prediction-only settings out of the checkpoint identity."""
     config = OmegaConf.to_container(resolved, resolve=True)
     config.pop("inference", None)
+    training = config.get("training")
+    if isinstance(training, dict):
+        # These switches affect execution mechanics only.  They must not make
+        # an otherwise identical checkpoint scientifically incompatible.
+        training.pop("runtime", None)
+        training.pop("output", None)
     return config
 
 
@@ -206,6 +212,9 @@ def _training_identity(
     initial,
     git_commit,
 ) -> dict:
+    training_config = _training_config_identity(resolved)
+    data_subset = _data_subset_identity(resolved)
+    architecture_payload = training_config.get("model")
     return {
         "schema": ARTIFACT_IDENTITY_SCHEMA,
         "kind": "training",
@@ -217,11 +226,17 @@ def _training_identity(
         "variant_label": variant.label,
         "variant_patch": variant.patch,
         "model_seed": int(seed),
+        "architecture_signature": _identity_digest(architecture_payload),
         "topology_config": _file_identity(resolved.topology_config),
-        "data_subset": _data_subset_identity(resolved),
+        "data_subset": data_subset,
+        "training_event_fingerprint": data_subset["splits"]["train"][
+            "ordered_event_id_sha256"
+        ],
         "base_experiment": str(experiment),
         "base_experiment_sha256": _sha256_file(experiment),
-        "resolved_config": _training_config_identity(resolved),
+        "resolved_config": training_config,
+        "precision": str(resolved.training.precision),
+        "trainable_components": sorted(str(value) for value in resolved.training.trainable),
         "initial_checkpoint": None if initial is None else _file_identity(initial),
         "initial_components": list(variant.initialise_components),
     }
@@ -238,6 +253,7 @@ def _prediction_identity(
     recurrent_steps,
     git_commit,
 ) -> dict:
+    resolved_inference = OmegaConf.to_container(resolved.inference, resolve=True)
     return {
         "schema": ARTIFACT_IDENTITY_SCHEMA,
         "kind": "prediction",
@@ -252,7 +268,7 @@ def _prediction_identity(
         "data_subset": _data_subset_identity(resolved),
         "split": study.split,
         "checkpoint": _file_identity(checkpoint),
-        "resolved_config": OmegaConf.to_container(resolved, resolve=True),
+        "resolved_inference": resolved_inference,
         "prediction_seed": int(resolved.inference.seed),
         "recurrent_steps": recurrent_steps,
     }

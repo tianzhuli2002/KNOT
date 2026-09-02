@@ -12,7 +12,7 @@ data:
 
 model:
   latent: {d_model: 128, n_heads: 4, d_feedforward: 384, dropout: 0.05}
-  encoder: {type: transformer, layers: 4}
+  encoder: {type: transformer}
   assignment:
     method: discriminative
 

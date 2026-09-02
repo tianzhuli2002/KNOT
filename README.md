@@ -17,6 +17,28 @@ visible encoder
 
 The decay graph lives in `configs/topology/*.yaml`. Model code is topology-driven and does not branch on process names.
 
+The v2 framework keeps the shared JER latent contract separate from the visible
+input backbone.  Set `model.latent` for downstream topology reasoning and choose
+one `model.encoder.type`: `transformer` (the maintained baseline),
+`physics_transformer`, `lgatr`, or `lgatr_slim`.  Physics-aware backbones consume
+the token-aligned `(E,px,py,pz)` `physics_vectors` field; padded rows are zero and
+the physical MET token is the sole MET source.  L-GATr is optional:
+
+```bash
+pip install -e '.[lgatr]'
+```
+
+Invisible DDIM/EDM/CFM states are coordinate-agnostic.  `cartesian` preserves
+the original state, `met_residual` is an exactly invertible MET-aware basis, and
+diagnostic `met_exact` projects truth transversely to measured MET.  Prediction
+products always store Cartesian neutrino momenta and, for `met_exact`, the
+projected target and residual are recorded separately.  CFM coupling can be
+`independent`, `minibatch_ot`, or detached condition-aware `conditional_ot`.
+
+The full v2 seams, identity rules, calibration separation and human-gated study
+graph are in [docs/FRAMEWORK_V2.md](docs/FRAMEWORK_V2.md).  Study 12 and Study 13
+are defined templates and are not submitted automatically.
+
 ## Maintained scientific modes
 
 ### Factorized reconstruction

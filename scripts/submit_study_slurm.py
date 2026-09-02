@@ -208,6 +208,7 @@ def _worker_script(
     global_overrides: tuple[str, ...],
     expected_commit: str,
     expected_manifest_sha256: str,
+    expected_experiments: dict[str, dict[str, str]],
 ) -> None:
     command = [
         sys.executable,
@@ -226,6 +227,16 @@ def _worker_script(
         command += ["--set", override]
     rendered = " ".join(
         token if token.startswith('"$') else shlex.quote(token) for token in command
+    )
+    experiment_checks = "".join(
+        "if [[ \"$topology\" == "
+        + shlex.quote(topology)
+        + " ]]; then expected_experiment_path="
+        + shlex.quote(identity["path"])
+        + "; expected_experiment_sha256="
+        + shlex.quote(identity["sha256"])
+        + "; fi\n"
+        for topology, identity in sorted(expected_experiments.items())
     )
     path.write_text(
         "#!/usr/bin/env bash\n"
@@ -252,6 +263,18 @@ def _worker_script(
         'line=$(sed -n "$((SLURM_ARRAY_TASK_ID + 1))p" "$task_file")\n'
         "if [[ -z \"$line\" ]]; then echo \"Missing study task for index $SLURM_ARRAY_TASK_ID\" >&2; exit 2; fi\n"
         "IFS=$'\\t' read -r topology variant seed <<< \"$line\"\n"
+        'expected_experiment_path=""\n'
+        'expected_experiment_sha256=""\n'
+        + experiment_checks
+        + 'if [[ -z "$expected_experiment_path" ]]; then\n'
+        '    echo "Unknown topology in submitted task" >&2\n'
+        "    exit 2\n"
+        "fi\n"
+        'actual_experiment_sha256=$(sha256sum "$expected_experiment_path" | cut -d" " -f1)\n'
+        'if [[ "$actual_experiment_sha256" != "$expected_experiment_sha256" ]]; then\n'
+        '    echo "Base experiment changed after Slurm submission" >&2\n'
+        "    exit 3\n"
+        "fi\n"
         f"exec {rendered}\n"
     )
     path.chmod(0o755)
@@ -263,7 +286,20 @@ def _post_script(
     expected_commit: str,
     manifest_snapshot: Path,
     expected_manifest_sha256: str,
+    expected_experiments: dict[str, dict[str, str]],
 ) -> None:
+    experiment_checks = "".join(
+        "experiment_path="
+        + shlex.quote(identity["path"])
+        + "; expected_experiment_sha256="
+        + shlex.quote(identity["sha256"])
+        + "; actual_experiment_sha256=$(sha256sum \"$experiment_path\" | cut -d\" \" -f1); "
+        + "if [[ \"$actual_experiment_sha256\" != \"$expected_experiment_sha256\" ]]; then "
+        + "echo \"Base experiment changed after Slurm submission: "
+        + topology
+        + "\" >&2; exit 3; fi\n"
+        for topology, identity in sorted(expected_experiments.items())
+    )
     path.write_text(
         "#!/usr/bin/env bash\n"
         "set -euo pipefail\n"
@@ -285,6 +321,7 @@ def _post_script(
         '    echo "Study manifest snapshot changed after submission" >&2\n'
         "    exit 3\n"
         "fi\n"
+        + experiment_checks
         + " && ".join(shlex.join(command) for command in commands)
         + "\n"
     )
@@ -441,6 +478,13 @@ def main() -> None:
     git_commit, git_dirty = _git_state()
     if git_dirty and not args.dry_run:
         raise RuntimeError("Study submission requires a clean committed checkout")
+    base_experiments = {
+        topology: {
+            "path": str(study.experiment_path(ROOT, topology)),
+            "sha256": _sha256_file(study.experiment_path(ROOT, topology)),
+        }
+        for topology in topologies
+    }
 
     submitted: dict[str, object] = {
         "campaign_id": campaign_id,
@@ -458,11 +502,7 @@ def main() -> None:
         "log_directory": str(log_dir),
         "topologies": list(topologies),
         "base_experiments": {
-            topology: {
-                "path": str(study.experiment_path(ROOT, topology)),
-                "sha256": _sha256_file(study.experiment_path(ROOT, topology)),
-            }
-            for topology in topologies
+            topology: identity for topology, identity in base_experiments.items()
         },
         "requested_variants": [variant.name for variant in requested],
         "training_closure": [variant.name for variant in training],
@@ -510,6 +550,7 @@ def main() -> None:
             global_overrides=overrides,
             expected_commit=git_commit,
             expected_manifest_sha256=manifest_sha256,
+            expected_experiments=base_experiments,
         )
         job_id = _submit(
             _sbatch_array(
@@ -565,6 +606,7 @@ def main() -> None:
             global_overrides=overrides,
             expected_commit=git_commit,
             expected_manifest_sha256=manifest_sha256,
+            expected_experiments=base_experiments,
         )
         prediction_job = _submit(
             _sbatch_array(
@@ -610,6 +652,7 @@ def main() -> None:
                 git_commit,
                 manifest_snapshot,
                 manifest_sha256,
+                base_experiments,
             )
             post_job = _submit(
                 [

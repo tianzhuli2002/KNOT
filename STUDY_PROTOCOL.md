@@ -216,3 +216,33 @@ metrics are final held-out evaluation, not a further selection loop.
 External ReconstructionAndSB/VyPER/conventional kinematic baselines and a
 later ttbar1L/ttH1L compact generalisation check are planned before publication;
 they are not part of the current mechanism-discovery campaigns.
+
+## v2 framework extensions
+
+Study 12 (`configs/studies/12_encoder_backbone.yaml`) is the controlled visible
+backbone template: Transformer, physics Transformer, L-GATr and L-GATr-Slim all
+share the resolved `model.latent` and topology-reasoner contract. It requires
+the human-reviewed `assignment_reasoning` gate and does not select a winner by
+argmax in code.
+
+Study 13 (`configs/studies/13_invisible_coordinates.yaml`) compares Cartesian,
+MET-residual and diagnostic MET-exact states after the upstream assignment and
+generator decisions. MET-residual preserves the physical truth exactly;
+MET-exact keeps the original truth as the primary metric target and reports the
+equal-shift projected target and residual separately. It is a template only.
+
+Analysis 14 is the offline validation-split APS assignment-set calibration in
+`src/joint_event_reconstruction/calibration/`; calibration never changes model
+training or prediction probabilities and test data is rejected as a fit source.
+
+The maintained human gates are `assignment_reasoning`, `visible_assignment`,
+`invisible_generator`, `invisible_coordinates`, and `joint_model` in
+`configs/studies/UPSTREAM_SELECTIONS.yaml`. The scientific order is Study 01 →
+assignment reasoning → Study 12 → visible assignment; Study 02 and Study 05/11
+then become available as their individual prerequisites are reviewed. No gate
+is locked automatically and no v2 study is submitted by this framework pass.
+
+Study 01 historical products may use architecture signature v4. Study 12/v2
+uses signature v5 and trains from scratch under its selected visible-backbone
+configuration; a human decision transfers the reasoning choice rather than
+blindly loading an incompatible full checkpoint.

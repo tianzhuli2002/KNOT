@@ -335,7 +335,9 @@ def run_mode(base, visible, batch, scaler, mode, device):
                 role_order = [role.key for role in module.spec.invisible_roles]
                 if role_order != ["top_e.nu", "top_mu.nu"] or contexts.shape[2] != 2:
                     raise RuntimeError(f"Dilepton invisible role association is wrong: {role_order}")
-                embedding = module.event_model.invisible.formulation.denoiser.role_embedding
+                embedding = (
+                    module.event_model.invisible.formulation.denoiser.state_token_embedding
+                )
                 if torch.equal(embedding[0], embedding[1]):
                     raise RuntimeError("Electron and muon neutrinos do not have distinct role embeddings")
             generated, nfe = module.event_model.invisible.sample_hypotheses(
