@@ -37,10 +37,19 @@ class ContinuousFlowMatching(nn.Module):
         visible: torch.Tensor,
         mask: torch.Tensor,
         parent: torch.Tensor,
+        *,
+        visible_fourmomenta: torch.Tensor | None = None,
+        met_xy: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        return self.denoiser(state, time, visible, mask, parent) * self.active_mask.to(
-            dtype=state.dtype
-        )
+        return self.denoiser(
+            state,
+            time,
+            visible,
+            mask,
+            parent,
+            visible_fourmomenta=visible_fourmomenta,
+            met_xy=met_xy,
+        ) * self.active_mask.to(dtype=state.dtype)
 
     def loss(
         self,
@@ -51,13 +60,23 @@ class ContinuousFlowMatching(nn.Module):
         *,
         generator: torch.Generator | None = None,
         condition: torch.Tensor | None = None,
+        visible_fourmomenta: torch.Tensor | None = None,
+        met_xy: torch.Tensor | None = None,
     ) -> dict:
         source = self.source(target, generator=generator, condition=condition)
         time = torch.rand(
             len(target), device=target.device, dtype=target.dtype, generator=generator
         )
         state, target_velocity = linear_path(source, target, time)
-        prediction = self.velocity(state, time, visible, mask, parent)
+        prediction = self.velocity(
+            state,
+            time,
+            visible,
+            mask,
+            parent,
+            visible_fourmomenta=visible_fourmomenta,
+            met_xy=met_xy,
+        )
         return {
             "loss": (prediction - target_velocity).square().sum()
             / (len(target) * self.active_mask.sum()),
@@ -71,7 +90,7 @@ class ContinuousFlowMatching(nn.Module):
     @torch.no_grad()
     def sample(
         self,
-        shape: tuple[int, int, int],
+        shape: tuple[int, ...],
         visible: torch.Tensor,
         mask: torch.Tensor,
         parent: torch.Tensor,
@@ -79,6 +98,8 @@ class ContinuousFlowMatching(nn.Module):
         steps: int,
         solver: str,
         generator: torch.Generator | None = None,
+        visible_fourmomenta: torch.Tensor | None = None,
+        met_xy: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, int]:
         active = self.active_mask.to(device=visible.device, dtype=visible.dtype)
         initial = torch.randn(
@@ -89,7 +110,15 @@ class ContinuousFlowMatching(nn.Module):
         ) * active
 
         def velocity_fn(state: torch.Tensor, time: torch.Tensor) -> torch.Tensor:
-            return self.velocity(state, time, visible, mask, parent)
+            return self.velocity(
+                state,
+                time,
+                visible,
+                mask,
+                parent,
+                visible_fourmomenta=visible_fourmomenta,
+                met_xy=met_xy,
+            )
 
         values, nfe = integrate(initial, velocity_fn, steps=steps, solver=solver)
         return values * active, nfe

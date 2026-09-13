@@ -1,6 +1,7 @@
 study:
   name: invisible_coordinates
-  description: Compare Cartesian, MET-residual and diagnostic MET-exact invisible coordinates with selected visible and generator semantics.
+  title: 13 — How Should the Invisible State Respect MET?
+  description: Compare Cartesian and MET-residual invisible coordinates, retaining MET-exact as a diagnostic projection.
   experiment_pattern: configs/experiments/{topology}.yaml
   topologies: [ttbar2L]
   seeds: [42, 43, 44]

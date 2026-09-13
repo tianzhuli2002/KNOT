@@ -1,5 +1,6 @@
 study:
   name: compatibility_reranking
+  title: 10 — Can Physics Compatibility Select the Correct Event Hypothesis?
   description: Reuse selected factorised components, generate one posterior, and scan explicit compatibility weights offline.
   experiment_pattern: configs/experiments/{topology}.yaml
   topologies: [ttbar2L]

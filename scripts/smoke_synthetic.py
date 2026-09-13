@@ -159,7 +159,9 @@ def build_synthetic_batch(experiment, *, events: int, device: str):
     batch["met_xy"] = met_xy_from_batch(batch, schema)
     role_names = tuple(role.key for role in spec.invisible_roles)
     coordinates = build_invisible_coordinates(
-        experiment.model.invisible.coordinates, role_names
+        experiment.model.invisible.coordinates,
+        role_names,
+        experiment.model.invisible.mass_shell,
     )
     state = coordinates.encode(invisible_truth, batch["met_xy"])
     scaler = InvisibleScaler.fit(

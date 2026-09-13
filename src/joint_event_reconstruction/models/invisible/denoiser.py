@@ -55,15 +55,18 @@ class InvisibleDenoiserBlock(nn.Module):
 
 class InvisibleDenoiser(nn.Module):
     def __init__(
-        self, state_token_count: int, *, visible_dim: int, parent_dim: int, d_model: int,
+        self, state_token_count: int, *, state_dim: int = 3, visible_dim: int, parent_dim: int, d_model: int,
         n_heads: int, layers: int, d_feedforward: int, dropout: float,
         zero_init_output: bool = True,
     ):
         super().__init__()
         if state_token_count <= 0:
             raise ValueError("InvisibleDenoiser requires at least one state token")
+        if state_dim <= 0:
+            raise ValueError("InvisibleDenoiser state_dim must be positive")
         self.state_token_count = state_token_count
-        self.input_projection = nn.Linear(3, d_model)
+        self.state_dim = state_dim
+        self.input_projection = nn.Linear(state_dim, d_model)
         self.state_token_embedding = nn.Parameter(
             torch.empty(state_token_count, d_model)
         )
@@ -75,18 +78,19 @@ class InvisibleDenoiser(nn.Module):
             InvisibleDenoiserBlock(d_model, n_heads, d_feedforward, dropout) for _ in range(layers)
         ])
         self.output_norm = nn.LayerNorm(d_model)
-        self.output_projection = nn.Linear(d_model, 3)
+        self.output_projection = nn.Linear(d_model, state_dim)
         if zero_init_output:
             nn.init.zeros_(self.output_projection.weight)
             nn.init.zeros_(self.output_projection.bias)
 
     def forward(
         self, noisy: torch.Tensor, noise_level: torch.Tensor, visible: torch.Tensor,
-        visible_padding_mask: torch.Tensor, parent_context: torch.Tensor,
+        visible_padding_mask: torch.Tensor, parent_context: torch.Tensor, **kwargs,
     ) -> torch.Tensor:
-        if noisy.ndim != 3 or noisy.shape[1:] != (self.state_token_count, 3):
+        del kwargs
+        if noisy.ndim != 3 or noisy.shape[1:] != (self.state_token_count, self.state_dim):
             raise ValueError(
-                f"Noisy invisible state must be [B,{self.state_token_count},3], "
+                f"Noisy invisible state must be [B,{self.state_token_count},{self.state_dim}], "
                 f"found {tuple(noisy.shape)}"
             )
         if parent_context.shape[:2] != noisy.shape[:2]:

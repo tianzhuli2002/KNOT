@@ -102,6 +102,82 @@ def _latent(section, name: str) -> None:
         raise ValueError(f"{name}.dropout must lie in [0,1)")
 
 
+def _mass_shell(section, name: str) -> None:
+    _exact_keys(section, {"enforcement", "mass", "roles"}, name)
+
+    def validate_entry(entry, entry_name: str) -> None:
+        _exact_keys(entry, {"enforcement", "mass", "roles"}, entry_name)
+        enforcement = str(entry.enforcement)
+        mass = entry.mass
+        _exact_keys(mass, {"mode", "value", "parameterization"}, f"{entry_name}.mass")
+        mode = str(mass.mode)
+        if mode not in {"fixed", "generated", "unconstrained"}:
+            raise ValueError(f"{entry_name}.mass.mode is invalid")
+        if mode == "unconstrained":
+            if enforcement not in {"unconstrained", "learned"}:
+                raise ValueError(
+                    f"{entry_name} unconstrained mode requires learned or unconstrained enforcement"
+                )
+            if mass.value is not None or mass.parameterization is not None:
+                raise ValueError(f"{entry_name} unconstrained mode has mass settings")
+        elif enforcement != "exact":
+            raise ValueError(f"{entry_name} exact mass modes require exact enforcement")
+        elif mode == "fixed":
+            if mass.value is None or not math.isfinite(float(mass.value)) or float(mass.value) < 0:
+                raise ValueError(f"{entry_name}.mass.value must be finite and non-negative")
+            if mass.parameterization is not None:
+                raise ValueError(f"{entry_name} fixed mass must not have parameterization")
+        elif mass.value is not None or str(mass.parameterization) not in {"log_mass", "softplus"}:
+            raise ValueError(
+                f"{entry_name} generated mass requires log_mass or softplus and no fixed value"
+            )
+        roles = entry.roles
+        if not isinstance(roles, (dict, DictConfig)):
+            raise ValueError(f"{entry_name}.roles must be a mapping")
+        for role_name, role_entry in roles.items():
+            validate_entry(role_entry, f"{entry_name}.roles.{role_name}")
+
+    validate_entry(section, name)
+
+
+def _invisible_backbone(section, name: str) -> None:
+    backend = str(section.type)
+    if backend == "transformer":
+        _exact_keys(section, {"type"}, name)
+        return
+    if backend != "lgatr":
+        raise ValueError(f"{name}.type must be transformer or lgatr")
+    _exact_keys(
+        section,
+        {
+            "type",
+            "layers",
+            "n_heads",
+            "hidden",
+            "dropout",
+            "momentum_scale_gev",
+            "symmetry_breaking",
+        },
+        name,
+    )
+    _positive_int(section.layers, f"{name}.layers")
+    _positive_int(section.n_heads, f"{name}.n_heads")
+    _exact_keys(
+        section.hidden,
+        {"multivector_channels", "scalar_channels"},
+        f"{name}.hidden",
+    )
+    _positive_int(section.hidden.multivector_channels, f"{name}.hidden.multivector_channels")
+    _positive_int(section.hidden.scalar_channels, f"{name}.hidden.scalar_channels")
+    dropout = float(section.dropout)
+    if not math.isfinite(dropout) or not 0 <= dropout < 1:
+        raise ValueError(f"{name}.dropout must lie in [0,1)")
+    _positive(section.momentum_scale_gev, f"{name}.momentum_scale_gev")
+    _exact_keys(section.symmetry_breaking, {"beam", "time"}, f"{name}.symmetry_breaking")
+    if str(section.symmetry_breaking.beam) not in {"xyplane", "none"}:
+        raise ValueError(f"{name}.symmetry_breaking.beam is invalid")
+
+
 def load_experiment(
     path: str | Path,
     overrides: list[str] | tuple[str, ...] | None = None,
@@ -236,7 +312,18 @@ def validate_experiment(config: DictConfig) -> None:
     invisible = model.invisible
     _exact_keys(
         invisible,
-        {"enabled", "formulation", "conditioning", "coordinates", "denoiser", "standard", "edm", "flow_matching"},
+        {
+            "enabled",
+            "formulation",
+            "conditioning",
+            "coordinates",
+            "mass_shell",
+            "backbone",
+            "denoiser",
+            "standard",
+            "edm",
+            "flow_matching",
+        },
         "model.invisible",
     )
     if str(invisible.formulation) not in {"standard", "edm", "flow_matching"}:
@@ -247,6 +334,8 @@ def validate_experiment(config: DictConfig) -> None:
         raise ValueError("resolved invisible conditioning is invalid")
     if (conditioning == "truth") != bool(invisible.conditioning.allow_truth_oracle):
         raise ValueError("truth conditioning and oracle permission must agree")
+    _mass_shell(invisible.mass_shell, "model.invisible.mass_shell")
+    _invisible_backbone(invisible.backbone, "model.invisible.backbone")
     _exact_keys(
         invisible.coordinates,
         {"type", "version", "basis_convention"},

@@ -186,7 +186,6 @@ def _gate_checkpoint(
         "variant": entry["variant"],
         "topology": topology,
         "model_seed": int(entry["model_seed"]),
-        "data_subset_seed": int(entry["data_subset_seed"]),
         "architecture_signature": entry["architecture_identity"],
     }
     mismatches = {
@@ -194,6 +193,15 @@ def _gate_checkpoint(
         for key, value in expected_identity.items()
         if identity.get(key) != value
     }
+    observed_subset = identity.get("data_subset")
+    observed_subset_seed = (
+        observed_subset.get("subset_seed") if isinstance(observed_subset, dict) else None
+    )
+    if observed_subset_seed != int(entry["data_subset_seed"]):
+        mismatches["data_subset.subset_seed"] = (
+            observed_subset_seed,
+            int(entry["data_subset_seed"]),
+        )
     if mismatches:
         raise RuntimeError(
             f"Selected gate artifact identity mismatch for {gate_name}:{topology}:seed_{seed}: "
@@ -223,6 +231,8 @@ def _prediction_checkpoint(
     seed: int,
     root: Path,
 ) -> Path:
+    if variant.checkpoint_from_gate is not None:
+        return _gate_checkpoint(study, variant.checkpoint_from_gate, topology, seed)
     if variant.checkpoint_from is None:
         return _checkpoint(root, study, topology, variant.name, seed)
     source_study_name, source_variant = variant.checkpoint_from
@@ -666,7 +676,7 @@ def _predict_one(study, topology, variant, prediction, seed, *, root, global_ove
     identity_path = target.with_suffix(".identity.json")
     if not dry_run:
         git_commit = _require_clean_git()
-        if variant.checkpoint_from is None:
+        if variant.checkpoint_from is None and variant.checkpoint_from_gate is None:
             training_identity_path = run_dir / "train/artifact_identity.json"
             training_experiment, _, training_resolved = _public_run_config(
                 study, topology, variant, seed, root, global_overrides
@@ -693,7 +703,14 @@ def _predict_one(study, topology, variant, prediction, seed, *, root, global_ove
                 "training checkpoint",
             )
         else:
-            source_study_name, source_variant = variant.checkpoint_from
+            if variant.checkpoint_from_gate is not None:
+                gate_artifact = study.gate_artifact(
+                    variant.checkpoint_from_gate, topology, seed
+                )
+                source_study_name = gate_artifact["source_study"]
+                source_variant = gate_artifact["variant"]
+            else:
+                source_study_name, source_variant = variant.checkpoint_from
             source_record = checkpoint.parent.parent / "artifact_identity.json"
             if not source_record.is_file():
                 raise FileNotFoundError(
@@ -1268,13 +1285,18 @@ def main() -> None:
     requested_names = _selected(args.variants, names, "variants")
     requested = tuple(study.variant_map[name] for name in requested_names)
     if args.variants == "all":
-        training = study.dependency_order() if study.training else ()
+        training = study.training_order() if study.training else ()
     elif not study.training:
         training = ()
     elif args.exact_variants:
-        training = requested
+        training = tuple(
+            variant
+            for variant in requested
+            if variant.checkpoint_from is None
+            and variant.checkpoint_from_gate is None
+        )
     else:
-        training = study.dependency_closure(requested_names)
+        training = study.training_order(requested_names)
 
     seeds = (
         study.seeds

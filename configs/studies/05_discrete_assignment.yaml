@@ -1,5 +1,6 @@
 study:
   name: discrete_assignment
+  title: 05 — Should Jet Assignment Be Discriminative or Generative?
   description: Compare the selected visible encoder with one-pass discriminative assignment and complete-state DFM assignment on matched events.
   experiment_pattern: configs/experiments/{topology}.yaml
   topologies: [ttbar2L]

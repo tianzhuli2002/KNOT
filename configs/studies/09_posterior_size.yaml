@@ -1,5 +1,6 @@
 study:
   name: posterior_size
+  title: 09 — How Many Reconstruction Hypotheses Are Enough?
   description: Generate maximum selected factorised/joint posteriors once, then evaluate deterministic nested prefixes offline.
   experiment_pattern: configs/experiments/{topology}.yaml
   topologies: [ttbar2L]

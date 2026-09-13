@@ -364,9 +364,9 @@ def main() -> None:
     if not study.training:
         training = ()
     elif args.variants == "all":
-        training = study.dependency_order()
+        training = study.training_order()
     else:
-        training = study.dependency_closure(requested_names)
+        training = study.training_order(requested_names)
     seeds = (
         study.seeds
         if args.seeds == "all"

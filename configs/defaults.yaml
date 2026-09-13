@@ -39,6 +39,10 @@ model:
         gate_initial_bias: -2.0
   invisible:
     coordinates: {type: cartesian}
+    mass_shell:
+      enforcement: exact
+      mass: {mode: fixed, value: 0.0, parameterization: null}
+      roles: {}
     network:
       d_model: 128
       n_heads: 4

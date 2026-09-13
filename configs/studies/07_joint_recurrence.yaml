@@ -1,5 +1,6 @@
 study:
   name: joint_recurrence
+  title: 07 — Does Iterative Joint Co-Refinement Add Anything?
   description: Conditional diagnostic for persistent joint topology state after the joint-model gate; final recurrence design remains a human scientific choice.
   experiment_pattern: configs/experiments/{topology}.yaml
   topologies: [ttbar2L]

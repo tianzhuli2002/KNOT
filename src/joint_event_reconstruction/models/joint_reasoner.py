@@ -12,7 +12,16 @@ from joint_event_reconstruction.topology.spec import TopologySpec
 class TopologyFlowReasoner(nn.Module):
     """One shared reasoning block; only topology tokens persist between flow steps."""
 
-    def __init__(self, spec: TopologySpec, d_model: int, n_heads: int, block_layers: int, d_feedforward: int, dropout: float):
+    def __init__(
+        self,
+        spec: TopologySpec,
+        d_model: int,
+        n_heads: int,
+        block_layers: int,
+        d_feedforward: int,
+        dropout: float,
+        invisible_state_dim: int = 3,
+    ):
         super().__init__()
         if d_model % n_heads:
             raise ValueError(f"d_model={d_model} must be divisible by n_heads={n_heads}")
@@ -21,7 +30,10 @@ class TopologyFlowReasoner(nn.Module):
         self.topology_tokens = nn.Parameter(torch.empty(len(spec.recurrent_tokens), d_model))
         nn.init.normal_(self.topology_tokens, std=0.02)
         self.time_projection = nn.Sequential(nn.Linear(d_model, d_model), nn.SiLU(), nn.Linear(d_model, d_model))
-        self.invisible_projection = nn.Linear(3, d_model)
+        if invisible_state_dim <= 0:
+            raise ValueError("invisible_state_dim must be positive")
+        self.invisible_state_dim = int(invisible_state_dim)
+        self.invisible_projection = nn.Linear(self.invisible_state_dim, d_model)
         self.invisible_role_embedding = nn.Parameter(torch.empty(len(spec.invisible_roles), d_model))
         nn.init.normal_(self.invisible_role_embedding, std=0.02)
         layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=n_heads, dim_feedforward=d_feedforward, dropout=dropout, activation="gelu", batch_first=True, norm_first=True)
@@ -48,8 +60,12 @@ class TopologyFlowReasoner(nn.Module):
         for index, name in enumerate(self.spec.recurrent_tokens):
             dynamic[:, index] = dynamic[:, index] + assignment_context[name]
         if invisible_state is not None:
-            if invisible_state.shape != (batch, len(self.spec.invisible_roles), 3):
-                raise ValueError(f"Invisible flow state must be [B,{len(self.spec.invisible_roles)},3], found {tuple(invisible_state.shape)}")
+            expected = (batch, len(self.spec.invisible_roles), self.invisible_state_dim)
+            if invisible_state.shape != expected:
+                raise ValueError(
+                    "Invisible flow state must be "
+                    f"[B,{expected[1]},{expected[2]}], found {tuple(invisible_state.shape)}"
+                )
             for role_index, role in enumerate(self.spec.invisible_roles):
                 node_index = self.spec.recurrent_tokens.index(role.node)
                 invisible = self.invisible_projection(invisible_state[:, role_index]) + self.invisible_role_embedding[role_index]

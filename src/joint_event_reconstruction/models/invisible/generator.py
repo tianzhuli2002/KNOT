@@ -26,20 +26,39 @@ class InvisibleGenerator(nn.Module):
         self.assignment_mode = str(config.conditioning.assignment)
         self.scaler = scaler
         role_names = tuple(role.key for role in spec.invisible_roles)
-        self.coordinates = build_invisible_coordinates(config.coordinates, role_names)
+        self.coordinates = build_invisible_coordinates(
+            config.coordinates, role_names, getattr(config, "mass_shell", None)
+        )
         active_mask = self.coordinates.active_mask
         denoiser_config = config.denoiser
-        denoiser = InvisibleDenoiser(
-            self.coordinates.token_count,
-            visible_dim=visible_dim,
-            parent_dim=visible_dim,
-            d_model=int(denoiser_config.d_model),
-            n_heads=int(denoiser_config.n_heads),
-            layers=int(denoiser_config.layers),
-            d_feedforward=int(denoiser_config.d_feedforward),
-            dropout=float(denoiser_config.dropout),
-            zero_init_output=bool(denoiser_config.zero_init_output),
-        )
+        backbone = getattr(config, "backbone", None)
+        if backbone is not None and str(backbone.type) == "lgatr":
+            from joint_event_reconstruction.models.invisible.lgatr import (
+                ConditionalLGATrInvisibleDenoiser,
+            )
+
+            denoiser = ConditionalLGATrInvisibleDenoiser(
+                self.coordinates.token_count,
+                state_dim=self.coordinates.state_dim,
+                visible_dim=visible_dim,
+                parent_dim=visible_dim,
+                d_model=int(denoiser_config.d_model),
+                backbone_config=backbone,
+                zero_init_output=bool(denoiser_config.zero_init_output),
+            )
+        else:
+            denoiser = InvisibleDenoiser(
+                self.coordinates.token_count,
+                state_dim=self.coordinates.state_dim,
+                visible_dim=visible_dim,
+                parent_dim=visible_dim,
+                d_model=int(denoiser_config.d_model),
+                n_heads=int(denoiser_config.n_heads),
+                layers=int(denoiser_config.layers),
+                d_feedforward=int(denoiser_config.d_feedforward),
+                dropout=float(denoiser_config.dropout),
+                zero_init_output=bool(denoiser_config.zero_init_output),
+            )
 
         self.formulation_name = str(config.formulation)
         if self.formulation_name == "standard":
@@ -93,6 +112,23 @@ class InvisibleGenerator(nn.Module):
             (len(context), 1), dtype=torch.bool, device=context.device
         )
         return context, torch.cat((cls_mask, visible["padding_mask"]), dim=1)
+
+    @staticmethod
+    def visible_fourmomenta_context(
+        visible: dict,
+    ) -> torch.Tensor | None:
+        """Align token-level physical vectors with the prepended pooled token."""
+        vectors = visible.get("physics_vectors")
+        if vectors is None:
+            return None
+        expected = visible["tokens"].shape[:2] + (4,)
+        if vectors.shape != expected:
+            raise ValueError(
+                "Visible physical vectors must align with visible tokens; "
+                f"expected={expected}, found={tuple(vectors.shape)}"
+            )
+        pooled = vectors.new_zeros((len(vectors), 1, 4))
+        return torch.cat((pooled, vectors), dim=1)
 
     def role_parent_context(
         self,
@@ -175,13 +211,19 @@ class InvisibleGenerator(nn.Module):
         shape = (leading[0],) + (1,) * (len(leading) - 1) + (2,)
         return met_xy.reshape(shape).expand(leading + (2,))
 
-    def encode_target(self, momenta, met_xy, scaler):
-        state = self.coordinates.encode(momenta, met_xy)
+    def encode_target(self, momenta, met_xy, scaler, masses=None):
+        state = self.coordinates.encode(momenta, met_xy, masses=masses)
         return scaler.transform(state)
 
     def decode_state(self, scaled_state, met_xy, scaler):
         state = scaler.inverse(scaled_state)
         return self.coordinates.decode(state, self._expanded_met(met_xy, state))
+
+    def decode_physical_state(self, scaled_state, met_xy, scaler):
+        state = scaler.inverse(scaled_state)
+        return self.coordinates.decode_physical(
+            state, self._expanded_met(met_xy, state)
+        )
 
     def coupling_condition(
         self,
@@ -255,12 +297,32 @@ class InvisibleGenerator(nn.Module):
             parent_context,
             role_context=role_context,
         )
+        visible_fourmomenta = self.visible_fourmomenta_context(visible)
+        met_xy = visible.get("met_xy")
+        if event_mask is not None:
+            if visible_fourmomenta is not None:
+                visible_fourmomenta = visible_fourmomenta[event_mask]
+            if met_xy is not None:
+                met_xy = met_xy[event_mask]
         if self.formulation_name == "flow_matching":
             result = self.formulation.loss(
-                target, context, mask, parent_context, condition=condition
+                target,
+                context,
+                mask,
+                parent_context,
+                condition=condition,
+                visible_fourmomenta=visible_fourmomenta,
+                met_xy=met_xy,
             )
         else:
-            result = self.formulation.loss(target, context, mask, parent_context)
+            result = self.formulation.loss(
+                target,
+                context,
+                mask,
+                parent_context,
+                visible_fourmomenta=visible_fourmomenta,
+                met_xy=met_xy,
+            )
         result["valid_events"] = len(target)
         return result
 
@@ -287,8 +349,16 @@ class InvisibleGenerator(nn.Module):
         if self.formulation_name != "flow_matching":
             raise RuntimeError("Invisible velocity is only defined for Flow Matching")
         context, mask = self.visible_context(visible)
+        visible_fourmomenta = self.visible_fourmomenta_context(visible)
+        met_xy = visible.get("met_xy")
         return self.formulation.velocity(
-            state, time, context, mask, parent_context
+            state,
+            time,
+            context,
+            mask,
+            parent_context,
+            visible_fourmomenta=visible_fourmomenta,
+            met_xy=met_xy,
         )
 
     def sample(
@@ -304,11 +374,20 @@ class InvisibleGenerator(nn.Module):
         if samples <= 0:
             raise ValueError("Posterior sample count must be positive")
         context, mask = self.visible_context(visible)
+        visible_fourmomenta = self.visible_fourmomenta_context(visible)
+        met_xy = visible.get("met_xy")
+        if visible_fourmomenta is not None:
+            visible_fourmomenta = visible_fourmomenta.repeat_interleave(
+                samples, dim=0
+            )
+        if met_xy is not None:
+            met_xy = met_xy.repeat_interleave(samples, dim=0)
         batch, state_tokens, _ = parent_context.shape
         context = context.repeat_interleave(samples, dim=0)
         mask = mask.repeat_interleave(samples, dim=0)
         parent = parent_context.repeat_interleave(samples, dim=0)
-        shape = (batch * samples, state_tokens, 3)
+        state_dim = self.coordinates.state_dim
+        shape = (batch * samples, state_tokens, state_dim)
         selected_budget = self.inference_budget if budget is None else int(budget)
         if selected_budget <= 0:
             raise ValueError("Invisible inference budget must be positive")
@@ -321,6 +400,8 @@ class InvisibleGenerator(nn.Module):
                 parent,
                 inference_steps=selected_budget,
                 generator=generator,
+                visible_fourmomenta=visible_fourmomenta,
+                met_xy=met_xy,
             )
         elif self.formulation_name == "edm":
             values, nfe = self.formulation.sample(
@@ -330,6 +411,8 @@ class InvisibleGenerator(nn.Module):
                 parent,
                 nfe=selected_budget,
                 generator=generator,
+                visible_fourmomenta=visible_fourmomenta,
+                met_xy=met_xy,
             )
         else:
             selected_sampler = self.sampler if sampler is None else str(sampler)
@@ -343,8 +426,10 @@ class InvisibleGenerator(nn.Module):
                 steps=selected_budget,
                 solver=selected_sampler,
                 generator=generator,
+                visible_fourmomenta=visible_fourmomenta,
+                met_xy=met_xy,
             )
-        return values.reshape(batch, samples, state_tokens, 3), nfe
+        return values.reshape(batch, samples, state_tokens, state_dim), nfe
 
     def assignment_parent_context(
         self,
@@ -425,6 +510,11 @@ class InvisibleGenerator(nn.Module):
                 hypotheses, dim=0
             ),
         }
+        for key in ("physics_vectors", "met_xy"):
+            if key in visible:
+                repeated_visible[key] = visible[key].repeat_interleave(
+                    hypotheses, dim=0
+                )
         generated, nfe = self.sample(
             repeated_visible,
             parent_context.reshape(batch * hypotheses, state_tokens, width),
@@ -433,5 +523,5 @@ class InvisibleGenerator(nn.Module):
             generator=generator,
         )
         return generated.reshape(
-            batch, hypotheses, samples, state_tokens, 3
+            batch, hypotheses, samples, state_tokens, self.coordinates.state_dim
         ), nfe

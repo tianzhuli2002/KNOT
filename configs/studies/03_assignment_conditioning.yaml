@@ -1,6 +1,7 @@
 study:
   name: assignment_conditioning
-  description: Measure how selected assignment information changes invisible reconstruction, including wrong-assignment damage and top-K headroom.
+  title: 03 — Does Jet-Assignment Uncertainty Matter for Invisible Reconstruction?
+  description: Measure whether preserving assignment uncertainty improves invisible reconstruction with none, soft, top-K and truth-oracle conditioning; hard top-1 is diagnostic only.
   experiment_pattern: configs/experiments/{topology}.yaml
   topologies: [ttbar2L]
   seeds: [42, 43, 44]
@@ -41,7 +42,7 @@ variants:
       default: {label: soft, patch: {inference: {invisible: {samples_per_assignment: 32, flow: {steps: 17, solver: euler}}}}, recurrent_steps: null}
 
   hypothesis:
-    label: predicted-hypothesis factorisation
+    label: top-K assignment hypotheses
     reporting: primary
     patch:
       model:
@@ -57,7 +58,7 @@ variants:
       k5_m32: {label: hypothesis K=5 M=32, patch: {inference: {assignment: {top_k: 5}, invisible: {samples_per_assignment: 32, flow: {steps: 17, solver: euler}}}}, recurrent_steps: null}
 
   hard:
-    label: hard local assignment diagnostic
+    label: hard top-1 assignment diagnostic
     reporting: diagnostic
     patch:
       model:

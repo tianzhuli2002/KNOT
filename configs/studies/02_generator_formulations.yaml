@@ -1,6 +1,7 @@
 study:
   name: generator_formulations
-  description: Compare DDIM, EDM, CFM, OT-CFM and condition-aware OT CFM with the human-selected visible system.
+  title: 02 — What Generative Objective Best Models the Invisible Posterior?
+  description: Compare EDM, CFM, OT-CFM and condition-aware OT CFM with the human-selected visible system.
   experiment_pattern: configs/experiments/{topology}.yaml
   topologies: [ttbar2L]
   seeds: [42, 43, 44]
@@ -10,24 +11,6 @@ study:
   training: true
 
 variants:
-  ddim:
-    label: DDIM
-    reporting: primary
-    patch:
-      model:
-        invisible:
-          conditioning: {assignment: none}
-          coordinates: {type: cartesian}
-          generator: {type: ddim}
-        mode: factorized
-      training: {trainable: [invisible]}
-    initialise_from:
-    initialise_from_gate: visible_assignment
-    initialise_components: [visible, assignment]
-    checkpoint_from:
-    predictions:
-      nfe17: {label: DDIM steps=17, patch: {inference: {invisible: {samples_per_assignment: 32, ddim: {steps: 17}}}}, recurrent_steps: null}
-
   edm:
     label: EDM
     reporting: primary

@@ -1,5 +1,6 @@
 study:
   name: c2_feedback
+  title: 04 — Can Invisible Reconstruction Correct the Jet Assignment?
   description: Test one explicitly defined detached invisible-posterior assignment correction against matched continued one-pass training.
   experiment_pattern: configs/experiments/{topology}.yaml
   topologies: [ttbar2L]

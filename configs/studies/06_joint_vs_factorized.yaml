@@ -1,5 +1,6 @@
 study:
   name: joint_vs_factorized
+  title: 06 — Explicit Hypothesis Mixture or Native Joint Model?
   description: Compare the strongest gate-resolved factorised p(A|X)p(nu|A,X) baseline with native joint DFM+CFM inference; invisible_feedback is a prerequisite evidence gate, not silently folded into the factorised hypothesis.
   experiment_pattern: configs/experiments/{topology}.yaml
   topologies: [ttbar2L]

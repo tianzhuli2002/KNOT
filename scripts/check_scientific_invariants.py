@@ -162,6 +162,217 @@ def check_coordinate_contract() -> None:
                 raise AssertionError("MET-exact projection diagnostics lost the role axis")
 
 
+def check_mass_shell_contract() -> None:
+    """Physical p4 conversion is explicit, differentiable and coordinate-agnostic."""
+    from joint_event_reconstruction.models.invisible.coordinates import (
+        build_invisible_coordinates,
+    )
+    from joint_event_reconstruction.models.invisible.mass_shell import (
+        InvisibleMassShell,
+    )
+
+    torch.manual_seed(713)
+    spatial = torch.randn(3, 2, 3, dtype=torch.float64, requires_grad=True)
+    massless = InvisibleMassShell(mode="fixed", value=0.0)
+    massless_p4 = massless.to_four_vector(spatial)
+    spatial_norm = spatial.square().sum(dim=-1).sqrt()
+    if not torch.allclose(massless_p4[..., 0], spatial_norm, atol=1.0e-12):
+        raise AssertionError("Fixed massless energy is not |p|")
+    if not torch.allclose(
+        massless_p4[..., 0].square() - massless_p4[..., 1:].square().sum(dim=-1),
+        torch.zeros_like(spatial_norm),
+        atol=1.0e-12,
+    ):
+        raise AssertionError("Fixed massless invisible vector is not on shell")
+
+    massive = InvisibleMassShell(mode="fixed", value=4.5)
+    massive_p4 = massive.to_four_vector(spatial.detach())
+    massive_shell = massive_p4[..., 0].square() - massive_p4[..., 1:].square().sum(dim=-1)
+    if not torch.allclose(massive_shell, torch.full_like(massive_shell, 4.5**2), atol=1.0e-10):
+        raise AssertionError("Fixed massive invisible vector is not on shell")
+
+    generated = InvisibleMassShell(
+        mode="generated", value=None, parameterization="log_mass"
+    )
+    generated_latent = torch.cat(
+        (spatial.detach(), torch.randn(3, 2, 1, dtype=torch.float64)), dim=-1
+    ).requires_grad_()
+    generated_p4 = generated.to_four_vector(generated_latent)
+    generated_mass = generated.raw_to_mass(generated_latent[..., 3])
+    generated_shell = generated_p4[..., 0].square() - generated_p4[..., 1:].square().sum(dim=-1)
+    if (generated_mass <= 0).any() or not torch.allclose(
+        generated_shell, generated_mass.square(), atol=1.0e-10
+    ):
+        raise AssertionError("Generated positive mass is not represented on shell")
+    generated_p4.square().sum().backward()
+    if generated_latent.grad is None or not torch.isfinite(generated_latent.grad).all():
+        raise AssertionError("Generated mass-shell conversion lost finite gradients")
+    if generated_p4.device != generated_latent.device or generated_p4.dtype != generated_latent.dtype:
+        raise AssertionError("Mass-shell conversion changed device or dtype")
+
+    unconstrained = InvisibleMassShell(
+        mode="unconstrained", value=None, parameterization=None, enforcement="unconstrained"
+    )
+    arbitrary_p4 = torch.tensor(
+        [[-2.0, 3.0, 4.0, 5.0], [1.0, 2.0, 3.0, 4.0]], dtype=torch.float64
+    )
+    if not torch.equal(unconstrained.to_four_vector(arbitrary_p4), arbitrary_p4):
+        raise AssertionError("Unconstrained invisible p4 was projected")
+
+    role_names = ("invisible_a", "invisible_b")
+    momenta = torch.randn(4, 2, 3, dtype=torch.float64)
+    met = torch.randn(4, 2, dtype=torch.float64)
+    fixed_config = {
+        "enforcement": "exact",
+        "mass": {"mode": "fixed", "value": 2.0},
+        "roles": {},
+    }
+    cartesian = build_invisible_coordinates(
+        {"type": "cartesian"}, role_names, fixed_config
+    )
+    physical = cartesian.decode_physical(cartesian.encode(momenta, met), met)
+    fixed_shell = physical["four_vector"][..., 0].square() - physical["four_vector"][..., 1:].square().sum(dim=-1)
+    if not torch.allclose(fixed_shell, torch.full_like(fixed_shell, 4.0), atol=1.0e-10):
+        raise AssertionError("Cartesian coordinates did not preserve a fixed massive shell")
+
+    residual = build_invisible_coordinates(
+        {"type": "met_residual"}, role_names, massless
+    )
+    residual_state = residual.encode(momenta, met)
+    if not torch.allclose(residual.decode(residual_state, met), momenta, atol=1.0e-10):
+        raise AssertionError("MET-residual coordinates did not compose with mass shells")
+
+    generated_config = {
+        "enforcement": "exact",
+        "mass": {"mode": "fixed", "value": 0.0},
+        "roles": {
+            "invisible_b": {
+                "mass": {"mode": "generated", "parameterization": "softplus"}
+            }
+        },
+    }
+    generated_coordinates = build_invisible_coordinates(
+        {"type": "cartesian"}, role_names, generated_config
+    )
+    physical_masses = torch.tensor(
+        [[0.0, 2.0], [0.0, 2.5], [0.0, 3.0], [0.0, 3.5]], dtype=torch.float64
+    )
+    generated_state = generated_coordinates.encode(
+        momenta, met, masses=physical_masses
+    )
+    generated_output = generated_coordinates.decode_physical(generated_state, met)
+    if not torch.allclose(generated_output["mass"], physical_masses, atol=1.0e-10):
+        raise AssertionError("Generated mass coordinate did not round-trip its positive mass")
+    generated_shell = (
+        generated_output["four_vector"][..., 0].square()
+        - generated_output["four_vector"][..., 1:].square().sum(dim=-1)
+    )
+    if not torch.allclose(generated_shell, physical_masses.square(), atol=1.0e-10):
+        raise AssertionError("Generated coordinate output is not on its generated shell")
+
+
+def check_conditional_lgatr_contract() -> None:
+    """CFM keeps its objective while swapping in the conditional L-GATr backbone."""
+    from joint_event_reconstruction.data.invisible import InvisibleScaler
+    from joint_event_reconstruction.models.invisible.generator import InvisibleGenerator
+    from joint_event_reconstruction.topology.compiler import load_topology
+
+    base_overrides = ["model.invisible.generator.type=cfm"]
+    lgatr_overrides = [
+        *base_overrides,
+        "model.invisible.generator.backbone.type=lgatr",
+        "model.invisible.generator.backbone.layers=1",
+        "model.invisible.generator.backbone.n_heads=1",
+        "model.invisible.generator.backbone.hidden.multivector_channels=2",
+        "model.invisible.generator.backbone.hidden.scalar_channels=8",
+    ]
+    base = load_experiment("configs/experiments/ttbar2L.yaml", base_overrides)
+    spec = load_topology(
+        base.topology_config,
+        OmegaConf.to_container(base.data.truth_bindings, resolve=True),
+    )
+    role_names = tuple(role.key for role in spec.invisible_roles)
+    batch_size = 2
+    width = int(base.model.latent.d_model)
+    target = torch.randn(batch_size, len(role_names), 3)
+    met = torch.randn(batch_size, 2)
+    scaler = InvisibleScaler.fit(target, role_names)
+    visible = {
+        "pooled": torch.randn(batch_size, width),
+        "tokens": torch.randn(batch_size, 4, width),
+        "padding_mask": torch.tensor(
+            [[False, False, False, True], [False, False, True, True]]
+        ),
+        "physics_vectors": torch.randn(batch_size, 4, 4) * 20.0,
+        "met_xy": met,
+    }
+    parent = torch.randn(batch_size, len(role_names), width)
+    target_scaled = scaler.transform(target)
+
+    for overrides in (base_overrides, lgatr_overrides):
+        config = load_experiment("configs/experiments/ttbar2L.yaml", overrides)
+        generator = InvisibleGenerator(
+            spec,
+            width,
+            config.model.invisible,
+            config.inference.invisible,
+            scaler=scaler,
+        )
+        result = generator.loss(target_scaled, visible, parent)
+        if not torch.isfinite(result["loss"]):
+            raise AssertionError("CFM invisible generator loss is non-finite")
+        result["loss"].backward()
+        gradients = [parameter.grad for parameter in generator.parameters() if parameter.grad is not None]
+        if not gradients or not all(torch.isfinite(gradient).all() for gradient in gradients):
+            raise AssertionError("CFM invisible generator backward is non-finite")
+
+        with tempfile.TemporaryDirectory(prefix="jer-invisible-backbone-") as directory:
+            checkpoint = Path(directory) / "generator.pt"
+            torch.save(generator.state_dict(), checkpoint)
+            restored = InvisibleGenerator(
+                spec,
+                width,
+                config.model.invisible,
+                config.inference.invisible,
+                scaler=scaler,
+            )
+            restored.load_state_dict(torch.load(checkpoint, map_location="cpu", weights_only=True))
+            generator.eval()
+            restored.eval()
+            first_seed = torch.Generator().manual_seed(981)
+            second_seed = torch.Generator().manual_seed(981)
+            first, first_nfe = generator.sample(
+                visible, parent, samples=2, budget=2, generator=first_seed
+            )
+            second, second_nfe = restored.sample(
+                visible, parent, samples=2, budget=2, generator=second_seed
+            )
+            if first_nfe != 4 or second_nfe != 4 or not torch.isfinite(first).all():
+                raise AssertionError("CFM generator prediction smoke failed")
+            if not torch.allclose(first, second):
+                raise AssertionError("Reloaded CFM generator changed deterministic prediction")
+            physical = restored.decode_physical_state(first, met, scaler)["four_vector"]
+            if physical.shape != (batch_size, 2, len(role_names), 4) or not torch.isfinite(physical).all():
+                raise AssertionError("CFM generator did not expose finite physical p4 output")
+
+    massive_config = load_experiment(
+        "configs/experiments/ttbar2L.yaml",
+        [*base_overrides, "model.invisible.mass_shell.mass.value=3.0"],
+    )
+    massive_coordinates = InvisibleGenerator(
+        spec,
+        width,
+        massive_config.model.invisible,
+        massive_config.inference.invisible,
+        scaler=scaler,
+    ).coordinates
+    massive_state = massive_coordinates.encode(target, met)
+    massive_p4 = massive_coordinates.decode_physical(massive_state, met)["four_vector"]
+    massive_shell = massive_p4[..., 0].square() - massive_p4[..., 1:].square().sum(dim=-1)
+    if not torch.allclose(massive_shell, torch.full_like(massive_shell, 9.0), atol=1.0e-5):
+        raise AssertionError("Non-zero fixed-mass CFM smoke is not on shell")
+
+
 def check_flow_coupling_context_contract() -> None:
     """Conditional OT must use role contexts before coordinate-token expansion."""
     import torch
@@ -359,7 +570,7 @@ def check_slurm_snapshot_contract() -> None:
 
 
 def check_campaign_gate_contract() -> None:
-    """The current gate state resolves Study 12 and blocks downstream science."""
+    """Pending gates block while the human-selected visible gate resolves."""
     from joint_event_reconstruction.studies import (
         ScientificGatePending,
         load_scientific_gates,
@@ -388,6 +599,59 @@ def check_campaign_gate_contract() -> None:
     ):
         raise AssertionError("Study-01 assignment_reasoning gate is not locked to m1")
 
+    visible = gates["visible_assignment"]
+    if (
+        visible["status"] != "locked"
+        or visible["selected_variant"] != "lgatr"
+        or visible["validated_sha"] != "e00d3ea351e6850e31da610bcb5a79eb1cfed273"
+    ):
+        raise AssertionError("Study-12 visible_assignment gate is not locked to lgatr")
+    expected_visible_patch = {
+        "model": {
+            "mode": "factorized",
+            "encoder": {
+                "type": "lgatr",
+                "layers": 4,
+                "n_heads": 4,
+                "hidden": {"multivector_channels": 8, "scalar_channels": 64},
+                "symmetry_breaking": {"beam": "xyplane", "time": True},
+            },
+            "assignment": {"formulation": "discriminative"},
+        }
+    }
+    if visible["selected_patch"] != expected_visible_patch:
+        raise AssertionError("Study-12 visible_assignment selected patch changed")
+    if any(
+        token in json.dumps(visible["selected_patch"])
+        for token in ("train_iterations", "inference_iterations", "feedback", "trainable")
+    ):
+        raise AssertionError("Visible-assignment gate contains training or recurrent settings")
+
+    with tempfile.TemporaryDirectory(prefix="jer-pending-gate-") as directory:
+        pending_path = Path(directory) / "gates.yaml"
+        pending = copy.deepcopy(gates)
+        pending["visible_assignment"].update(
+            {
+                "status": "pending",
+                "selected_variant": None,
+                "validated_sha": None,
+                "selected_patch": {},
+                "artifacts": {},
+            }
+        )
+        pending_path.write_text(OmegaConf.to_yaml(OmegaConf.create(pending)))
+        try:
+            resolve_study(
+                "configs/studies/02_generator_formulations.yaml", pending_path
+            )
+        except ScientificGatePending as error:
+            if "visible_assignment" not in str(error):
+                raise AssertionError(
+                    f"Pending visible gate raised the wrong barrier: {error}"
+                ) from error
+        else:
+            raise AssertionError("A pending visible_assignment gate resolved Study 02")
+
     study12 = resolve_study("configs/studies/12_encoder_backbone.yaml")
     if study12.seeds != (42, 43, 44):
         raise AssertionError("Study 12 must use model seeds 42, 43 and 44")
@@ -397,13 +661,92 @@ def check_campaign_gate_contract() -> None:
             raise AssertionError(f"Study 12 inherited visible recurrence: {variant.name}")
         if any(prediction.recurrent_steps is not None for prediction in variant.predictions):
             raise AssertionError(f"Study 12 has recurrent prediction steps: {variant.name}")
-    try:
-        resolve_study("configs/studies/02_generator_formulations.yaml")
-    except ScientificGatePending as error:
-        if "visible_assignment" not in str(error):
-            raise AssertionError(f"Unexpected Study-02 gate barrier: {error}") from error
-    else:
-        raise AssertionError("Study 02 resolved while visible_assignment is pending")
+    study_paths = {
+        load_study(path).name: path
+        for path in sorted((ROOT / "configs/studies").glob("[0-9][0-9]_*.yaml"))
+    }
+    study02 = resolve_study(study_paths["generator_formulations"])
+    if {variant.name for variant in study02.variants} != {
+        "edm",
+        "cfm",
+        "ot_cfm",
+        "conditional_ot_cfm",
+    }:
+        raise AssertionError("Study 02 does not contain exactly the streamlined objectives")
+    from scripts.run_study import _gate_checkpoint, _public_run_config
+
+    for variant in study02.variants:
+        if "ddim" in variant.name.lower() or "ddim" in json.dumps(variant.patch).lower():
+            raise AssertionError(f"Study 02 retained DDIM: {variant.name}")
+        if variant.patch.get("model", {}).get("mode") != "factorized":
+            raise AssertionError(f"Study 02:{variant.name} is not factorized")
+        for seed in study02.seeds:
+            _, _, resolved = _public_run_config(
+                study02,
+                "ttbar2L",
+                variant,
+                seed,
+                ROOT / "results/engineering/invariant-study02",
+                (),
+            )
+            model = resolved.model
+            if str(model.visible.type) != "lgatr":
+                raise AssertionError(f"Study 02:{variant.name}:seed_{seed} did not resolve L-GATr")
+            if str(model.assignment.formulation) != "discriminative":
+                raise AssertionError(f"Study 02:{variant.name}:seed_{seed} did not resolve M1")
+            if bool(model.assignment.reasoning.enabled) or bool(model.assignment.feedback.enabled):
+                raise AssertionError(f"Study 02:{variant.name}:seed_{seed} resolved recurrence")
+            if list(str(value) for value in resolved.training.trainable) != ["invisible"]:
+                raise AssertionError(f"Study 02:{variant.name}:seed_{seed} trains more than invisible")
+            _gate_checkpoint(study02, "visible_assignment", "ttbar2L", seed)
+            artifact = study02.gate_artifact("visible_assignment", "ttbar2L", seed)
+            if int(artifact["model_seed"]) != seed or f"seed_{seed}" not in artifact["checkpoint"]:
+                raise AssertionError(f"Study 02:{variant.name} used the wrong visible seed artifact")
+        if any(prediction.recurrent_steps == 4 for prediction in variant.predictions):
+            raise AssertionError(f"Study 02:{variant.name} has recurrent prediction steps")
+
+    study11 = resolve_study(study_paths["data_scaling"])
+    if {variant.name for variant in study11.variants} != {"n500k", "m3_n500k"}:
+        raise AssertionError("Study 11 is not reduced to the two 500k stress-test variants")
+    if any("500000" not in json.dumps(variant.patch) for variant in study11.variants):
+        raise AssertionError("Study 11 has a non-500k variant")
+
+    study15 = load_study(study_paths["lgatr_invisible_generator"])
+    if {variant.name for variant in study15.training_order()} != {"conditional_lgatr"}:
+        raise AssertionError(
+            "Study 15 must train only Conditional L-GATr and reuse the conventional gate checkpoint"
+        )
+    if study15.variant_map["conventional"].checkpoint_from_gate != "invisible_generator":
+        raise AssertionError("Study 15 conventional arm does not consume the generator gate checkpoint")
+    if study15.variant_map["conditional_lgatr"].checkpoint_from_gate is not None:
+        raise AssertionError("Study 15 Conditional L-GATr arm unexpectedly consumes a gate checkpoint")
+
+    for study_name in (
+        "generator_formulations",
+        "discrete_assignment",
+        "data_scaling",
+        "generator_inference",
+    ):
+        study = resolve_study(study_paths[study_name])
+        for variant in study.variants:
+            model = variant.patch.get("model", {})
+            if model.get("mode") != "factorized":
+                raise AssertionError(f"{study_name}:{variant.name} is not factorized")
+            if model.get("encoder", {}).get("type") != "lgatr":
+                raise AssertionError(f"{study_name}:{variant.name} did not inherit L-GATr")
+
+        if study_name == "discrete_assignment":
+            m1 = study.variant_map["m1"]
+            if (
+                m1.patch.get("model", {}).get("assignment", {}).get("formulation")
+                != "discriminative"
+            ):
+                raise AssertionError("Study 05 M1 did not inherit one-pass discriminative assignment")
+        elif study_name in {"generator_formulations", "data_scaling", "generator_inference"}:
+            for variant in study.variants:
+                assignment = variant.patch.get("model", {}).get("assignment", {})
+                if variant.reporting == "primary" and "refinement" in assignment:
+                    raise AssertionError(f"{study_name}:{variant.name} inherited visible recurrence")
 
     for path in sorted((ROOT / "configs/studies").glob("[0-9][0-9]_*.yaml")):
         study = load_study(path)
@@ -1008,6 +1351,8 @@ def main() -> None:
     check_public_schema_and_inputs_contract()
     check_same_flavour_role_contract()
     check_coordinate_contract()
+    check_mass_shell_contract()
+    check_conditional_lgatr_contract()
     check_flow_coupling_context_contract()
     check_truth_oracle_unreconstructable_contract()
     check_exchange_and_permutation_contract()
@@ -1020,7 +1365,7 @@ def main() -> None:
         "PASS: architecture, training-identity, partial-checkpoint, split-seed, "
         "nested-subset, coordinate, truth-oracle, exchange, permutation, "
         "freeze, public-input, same-flavour-role, campaign-gate, Slurm-option, "
-        "campaign-identity and Slurm-snapshot contracts"
+        "campaign-identity, mass-shell, Conditional-L-GATr and Slurm-snapshot contracts"
     )
 
 

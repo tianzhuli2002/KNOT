@@ -6,20 +6,35 @@ from collections.abc import Mapping
 
 import torch
 
+from joint_event_reconstruction.models.invisible.mass_shell import InvisibleMassShell
 from joint_event_reconstruction.topology.spec import TopologySpec
 
 
+def invisible_four_vector(
+    coordinates: torch.Tensor,
+    mass_shell: InvisibleMassShell | None = None,
+    *,
+    generated_mass: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """Convert one native invisible state to physical ``(E,px,py,pz)``."""
+    if mass_shell is None:
+        mass_shell = InvisibleMassShell()
+    return mass_shell.to_four_vector(coordinates, generated_mass=generated_mass)
+
+
 def massless_invisible_four_vector(momentum: torch.Tensor) -> torch.Tensor:
-    if momentum.shape[-1] != 3:
-        raise ValueError("Invisible momentum must end in Cartesian [px,py,pz]")
-    energy = momentum.square().sum(dim=-1, keepdim=True).sqrt()
-    return torch.cat((energy, momentum), dim=-1)
+    """Backward-compatible massless Cartesian conversion."""
+    return invisible_four_vector(momentum)
 
 
 def compose_four_vectors(
     spec: TopologySpec,
     visible_leaves: Mapping[str, torch.Tensor],
     invisible_momenta: Mapping[str, torch.Tensor],
+    *,
+    invisible_four_vectors: Mapping[str, torch.Tensor] | None = None,
+    invisible_mass_shells: Mapping[str, InvisibleMassShell] | None = None,
+    invisible_masses: Mapping[str, torch.Tensor] | None = None,
 ) -> dict[str, torch.Tensor]:
     """Recursively sum `(E,px,py,pz)` leaves without topology-name branches."""
     nodes: dict[str, torch.Tensor] = {}
@@ -30,7 +45,33 @@ def compose_four_vectors(
             if role.invisible:
                 if role.key not in invisible_momenta:
                     raise KeyError(f"Missing invisible four-vector input {role.key}")
-                pieces.append(massless_invisible_four_vector(invisible_momenta[role.key]))
+                direct = (
+                    None
+                    if invisible_four_vectors is None
+                    else invisible_four_vectors.get(role.key)
+                )
+                if direct is not None:
+                    if direct.shape[-1] != 4 or not torch.isfinite(direct).all():
+                        raise ValueError(
+                            f"Invisible four-vector input {role.key} must end in finite [E,px,py,pz]"
+                        )
+                    pieces.append(direct)
+                    continue
+                shell = (
+                    None
+                    if invisible_mass_shells is None
+                    else invisible_mass_shells.get(role.key)
+                )
+                mass = (
+                    None
+                    if invisible_masses is None
+                    else invisible_masses.get(role.key)
+                )
+                pieces.append(
+                    invisible_four_vector(
+                        invisible_momenta[role.key], shell, generated_mass=mass
+                    )
+                )
             else:
                 if role.key not in visible_leaves:
                     raise KeyError(f"Missing visible four-vector input {role.key}")
@@ -55,6 +96,10 @@ def compose_assignment_state(
     physics_vectors: torch.Tensor,
     node_candidate_indices: torch.Tensor,
     invisible_momenta: Mapping[str, torch.Tensor],
+    *,
+    invisible_four_vectors: Mapping[str, torch.Tensor] | None = None,
+    invisible_mass_shells: Mapping[str, InvisibleMassShell] | None = None,
+    invisible_masses: Mapping[str, torch.Tensor] | None = None,
 ) -> dict[str, torch.Tensor]:
     """Compose one complete assignment state, preserving physical NULL branches.
 
@@ -86,8 +131,30 @@ def compose_assignment_state(
             if role.invisible:
                 if role.key not in invisible_momenta:
                     raise KeyError(f"Missing invisible four-vector input {role.key}")
+                direct = (
+                    None
+                    if invisible_four_vectors is None
+                    else invisible_four_vectors.get(role.key)
+                )
+                if direct is not None:
+                    if direct.shape[-1] != 4 or not torch.isfinite(direct).all():
+                        raise ValueError(
+                            f"Invisible four-vector input {role.key} must end in finite [E,px,py,pz]"
+                        )
+                    pieces.append(direct)
+                    continue
                 pieces.append(
-                    massless_invisible_four_vector(invisible_momenta[role.key])
+                    invisible_four_vector(
+                        invisible_momenta[role.key],
+                        None
+                        if invisible_mass_shells is None
+                        else invisible_mass_shells.get(role.key),
+                        generated_mass=(
+                            None
+                            if invisible_masses is None
+                            else invisible_masses.get(role.key)
+                        ),
+                    )
                 )
             else:
                 indices = pool["leaf_indices"][role.key][candidate_index]

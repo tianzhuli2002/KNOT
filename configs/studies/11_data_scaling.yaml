@@ -1,6 +1,7 @@
 study:
   name: data_scaling
-  description: Measure selected visible-encoder M1 scaling from 10k to 500k events, with a limited labelled M3 recurrence diagnostic.
+  title: 11 — Does Visible Recurrence Recover With Much More Training Data?
+  description: Compare selected L-GATr M1 and M3 only at 500k training events as a non-blocking recurrence stress test.
   experiment_pattern: configs/experiments/{topology}.yaml
   topologies: [ttbar2L]
   seeds: [42, 43, 44]
@@ -10,56 +11,6 @@ study:
   training: true
 
 variants:
-  n10k:
-    label: M1 10k train events
-    reporting: primary
-    patch: {data: {events: {train: 10000, validation: 50000, test: 50000}}, training: {epochs: 100, early_stopping: {enabled: true, patience: 10}, scheduler: {enabled: true, factor: 0.8, patience: 5, min_lr: 1.0e-6}, trainable: [visible, assignment]}}
-    initialise_from:
-    initialise_from_gate:
-    initialise_components: []
-    checkpoint_from:
-    predictions: {default: {label: M1 10k, patch: {}, recurrent_steps: null}}
-
-  n25k:
-    label: M1 25k train events
-    reporting: primary
-    patch: {data: {events: {train: 25000, validation: 50000, test: 50000}}, training: {epochs: 100, early_stopping: {enabled: true, patience: 10}, scheduler: {enabled: true, factor: 0.8, patience: 5, min_lr: 1.0e-6}, trainable: [visible, assignment]}}
-    initialise_from:
-    initialise_from_gate:
-    initialise_components: []
-    checkpoint_from:
-    predictions: {default: {label: M1 25k, patch: {}, recurrent_steps: null}}
-
-  n50k:
-    label: M1 50k train events
-    reporting: primary
-    patch: {data: {events: {train: 50000, validation: 50000, test: 50000}}, training: {epochs: 100, early_stopping: {enabled: true, patience: 10}, scheduler: {enabled: true, factor: 0.8, patience: 5, min_lr: 1.0e-6}, trainable: [visible, assignment]}}
-    initialise_from:
-    initialise_from_gate:
-    initialise_components: []
-    checkpoint_from:
-    predictions: {default: {label: M1 50k, patch: {}, recurrent_steps: null}}
-
-  n100k:
-    label: M1 100k train events
-    reporting: primary
-    patch: {data: {events: {train: 100000, validation: 50000, test: 50000}}, training: {epochs: 100, early_stopping: {enabled: true, patience: 10}, scheduler: {enabled: true, factor: 0.8, patience: 5, min_lr: 1.0e-6}, trainable: [visible, assignment]}}
-    initialise_from:
-    initialise_from_gate:
-    initialise_components: []
-    checkpoint_from:
-    predictions: {default: {label: M1 100k, patch: {}, recurrent_steps: null}}
-
-  n250k:
-    label: M1 250k train events
-    reporting: primary
-    patch: {data: {events: {train: 250000, validation: 50000, test: 50000}}, training: {epochs: 100, early_stopping: {enabled: true, patience: 10}, scheduler: {enabled: true, factor: 0.8, patience: 5, min_lr: 1.0e-6}, trainable: [visible, assignment]}}
-    initialise_from:
-    initialise_from_gate:
-    initialise_components: []
-    checkpoint_from:
-    predictions: {default: {label: M1 250k, patch: {}, recurrent_steps: null}}
-
   n500k:
     label: M1 500k train events
     reporting: primary
@@ -69,26 +20,6 @@ variants:
     initialise_components: []
     checkpoint_from:
     predictions: {default: {label: M1 500k, patch: {}, recurrent_steps: null}}
-
-  m3_n100k:
-    label: M3 recurrence diagnostic at 100k
-    reporting: diagnostic
-    patch: {model: {assignment: {refinement: {train_iterations: [1, 2, 3, 4], inference_iterations: 4, feedback: soft}}}, data: {events: {train: 100000, validation: 50000, test: 50000}}, training: {epochs: 100, early_stopping: {enabled: true, patience: 10}, scheduler: {enabled: true, factor: 0.8, patience: 5, min_lr: 1.0e-6}, trainable: [visible, assignment]}}
-    initialise_from:
-    initialise_from_gate:
-    initialise_components: []
-    checkpoint_from:
-    predictions: {r4: {label: M3 diagnostic 100k, patch: {}, recurrent_steps: 4}}
-
-  m3_n250k:
-    label: M3 recurrence diagnostic at 250k
-    reporting: diagnostic
-    patch: {model: {assignment: {refinement: {train_iterations: [1, 2, 3, 4], inference_iterations: 4, feedback: soft}}}, data: {events: {train: 250000, validation: 50000, test: 50000}}, training: {epochs: 100, early_stopping: {enabled: true, patience: 10}, scheduler: {enabled: true, factor: 0.8, patience: 5, min_lr: 1.0e-6}, trainable: [visible, assignment]}}
-    initialise_from:
-    initialise_from_gate:
-    initialise_components: []
-    checkpoint_from:
-    predictions: {r4: {label: M3 diagnostic 250k, patch: {}, recurrent_steps: 4}}
 
   m3_n500k:
     label: M3 recurrence diagnostic at 500k

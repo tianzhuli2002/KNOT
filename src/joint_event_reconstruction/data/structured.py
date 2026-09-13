@@ -300,6 +300,7 @@ class StructuredDataModule(TransformerDataModule):
         build_assignments: bool = False,
         max_assignment_states: int | None = None,
         coordinates_config=None,
+        mass_shell_config=None,
     ):
         self.tensor_cache = (
             None if tensor_cache is None else Path(tensor_cache).expanduser().resolve()
@@ -323,7 +324,7 @@ class StructuredDataModule(TransformerDataModule):
         if coordinates_config is None:
             coordinates_config = OmegaConf.create({"type": "cartesian"})
         self.invisible_coordinates = build_invisible_coordinates(
-            coordinates_config, role_names
+            coordinates_config, role_names, mass_shell_config
         )
         self.structured_collator.invisible_coordinates = self.invisible_coordinates
         self._joint_setup_done = False

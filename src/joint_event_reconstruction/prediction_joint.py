@@ -42,7 +42,15 @@ def _move(value, device):
     return value
 
 
-def _physics_hypotheses(module, batch, space, node_indices, invisible):
+def _physics_hypotheses(
+    module,
+    batch,
+    space,
+    node_indices,
+    invisible,
+    physical_invisible=None,
+    truth_physical=None,
+):
     if "physics_vectors" not in batch:
         return None, None, None
 
@@ -54,12 +62,19 @@ def _physics_hypotheses(module, batch, space, node_indices, invisible):
                 role.key: invisible[event, sample, role_index]
                 for role_index, role in enumerate(module.spec.invisible_roles)
             }
+            physical_map = None
+            if physical_invisible is not None:
+                physical_map = {
+                    role.key: physical_invisible[event, sample, role_index]
+                    for role_index, role in enumerate(module.spec.invisible_roles)
+                }
             composed = compose_assignment_state(
                 module.spec,
                 batch["structured"]["pools"],
                 batch["physics_vectors"][event],
                 node_indices[event, sample],
                 invisible_map,
+                invisible_four_vectors=physical_map,
             )
             for node in module.spec.dag_order:
                 event_values[node].append(composed[node])
@@ -95,12 +110,19 @@ def _physics_hypotheses(module, batch, space, node_indices, invisible):
             role.key: batch["invisible_truth"][event, role_index]
             for role_index, role in enumerate(module.spec.invisible_roles)
         }
+        truth_map = None
+        if truth_physical is not None:
+            truth_map = {
+                role.key: truth_physical[event, role_index]
+                for role_index, role in enumerate(module.spec.invisible_roles)
+            }
         composed = compose_assignment_state(
             module.spec,
             batch["structured"]["pools"],
             batch["physics_vectors"][event],
             truth_indices[event],
             invisible_map,
+            invisible_four_vectors=truth_map,
         )
         for node in module.spec.dag_order:
             truth_values[node].append(composed[node])
@@ -224,6 +246,12 @@ def predict_joint_flow_hdf5(
                 "invisible_coordinate_metadata": json.dumps(
                     module.hparams.invisible_coordinate_metadata
                 ),
+                "invisible_mass_shell": json.dumps(
+                    getattr(module.hparams, "invisible_mass_shell", None)
+                ),
+                "invisible_generator_backbone": json.dumps(
+                    getattr(module.hparams, "invisible_generator_backbone", None)
+                ),
                 "flow_coupling": json.dumps(module.hparams.flow_coupling),
                 "physics_vector_representation": "E_px_py_pz_GeV_v1",
                 "candidate_representation": module.hparams.candidate_representation,
@@ -268,10 +296,25 @@ def predict_joint_flow_hdf5(
             invisible = module.event_model.invisible.decode_state(
                 generated["invisible"], batch["met_xy"], scaler
             )
+            physical_invisible = module.event_model.invisible.decode_physical_state(
+                generated["invisible"], batch["met_xy"], scaler
+            )["four_vector"]
+            truth_state = module.event_model.invisible.coordinates.encode(
+                batch["invisible_truth"], batch["met_xy"]
+            )
+            truth_physical = module.event_model.invisible.coordinates.decode_physical(
+                truth_state, batch["met_xy"]
+            )["four_vector"]
             projection = _met_exact_truth_projection(module, batch)
             truth_hit = states == space.truth_state.unsqueeze(1)
             composites, truth_composites, observed_met = _physics_hypotheses(
-                module, batch, space, node_indices, invisible
+                module,
+                batch,
+                space,
+                node_indices,
+                invisible,
+                physical_invisible,
+                truth_physical,
             )
 
             jet_type = data.schema.source_type_ids.get("JET")
@@ -308,6 +351,12 @@ def predict_joint_flow_hdf5(
                         (posterior_samples, len(module.spec.invisible_roles), 3),
                         "<f4",
                     ),
+                    "invisible_four_vectors": _create(
+                        hypotheses,
+                        "invisible_four_vectors",
+                        (posterior_samples, len(module.spec.invisible_roles), 4),
+                        "<f4",
+                    ),
                     "truth_state": _create(truth, "assignment_state", (), "<i4"),
                     "truth_roots": _create(
                         truth,
@@ -322,6 +371,12 @@ def predict_joint_flow_hdf5(
                         truth,
                         "NEUTRINO",
                         (len(module.spec.invisible_roles), 3),
+                        "<f4",
+                    ),
+                    "truth_four_vector": _create(
+                        truth,
+                        "INVISIBLE_FOUR_VECTOR",
+                        (len(module.spec.invisible_roles), 4),
                         "<f4",
                     ),
                     "njet": _create(observed, "njet", (), "<i2"),
@@ -376,6 +431,10 @@ def predict_joint_flow_hdf5(
                 datasets["invisible"], invisible.cpu().numpy().astype(np.float32)
             )
             _append(
+                datasets["invisible_four_vectors"],
+                physical_invisible.cpu().numpy().astype(np.float32),
+            )
+            _append(
                 datasets["truth_state"],
                 space.truth_state.cpu().numpy().astype(np.int32),
             )
@@ -387,6 +446,10 @@ def predict_joint_flow_hdf5(
             _append(
                 datasets["nu_truth"],
                 batch["invisible_truth"].cpu().numpy().astype(np.float32),
+            )
+            _append(
+                datasets["truth_four_vector"],
+                truth_physical.cpu().numpy().astype(np.float32),
             )
             if projection is not None:
                 _append(

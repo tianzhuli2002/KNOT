@@ -1,5 +1,6 @@
 study:
   name: generator_inference
+  title: 08 — How Much Inference Compute Is Enough?
   description: Scan generator solver and NFE cost from Study-02 checkpoints without retraining.
   experiment_pattern: configs/experiments/{topology}.yaml
   topologies: [ttbar2L]

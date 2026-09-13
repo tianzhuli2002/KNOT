@@ -43,6 +43,11 @@ model:
   assignment:
     formulation: discriminative
   mode: factorized
+  invisible:
+    mass_shell:
+      enforcement: exact
+      mass: {mode: fixed, value: 0.0, parameterization: null}
+      roles: {}
 
 training:
   batch_size: 512

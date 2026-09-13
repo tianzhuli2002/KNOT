@@ -122,11 +122,11 @@ class InvisibleTruthStore:
 
 @dataclass(frozen=True)
 class InvisibleScaler:
-    mean: tuple[tuple[float, float, float], ...]
-    std: tuple[tuple[float, float, float], ...]
+    mean: tuple[tuple[float, ...], ...]
+    std: tuple[tuple[float, ...], ...]
     role_names: tuple[str, ...]
     representation: str = "cartesian_px_py_pz_v1"
-    active_mask: tuple[tuple[bool, bool, bool], ...] | None = None
+    active_mask: tuple[tuple[bool, ...], ...] | None = None
 
     @classmethod
     def fit(
@@ -139,19 +139,17 @@ class InvisibleScaler:
     ) -> "InvisibleScaler":
         if (
             values.ndim != 3
-            or values.shape[-1] != 3
+            or values.shape[-1] <= 0
             or not torch.isfinite(values).all()
         ):
-            raise ValueError(
-                f"Scaler input must be finite [N,Rnu,3], found {tuple(values.shape)}"
-            )
+            raise ValueError(f"Scaler input must be finite [N,T,D], found {tuple(values.shape)}")
         values = values.to(torch.float64)
         mean = values.mean(dim=0)
         if active_mask is None:
             active_mask = torch.ones(values.shape[1:], dtype=torch.bool)
         active_mask = torch.as_tensor(active_mask, dtype=torch.bool)
         if tuple(active_mask.shape) != tuple(values.shape[1:]):
-            raise ValueError("Invisible scaler active_mask must have shape [T,3]")
+            raise ValueError("Invisible scaler active_mask must have shape [T,D]")
         active_mask = active_mask.to(values.device)
         if not torch.equal(
             values[..., ~active_mask], torch.zeros_like(values[..., ~active_mask])
@@ -201,25 +199,25 @@ class InvisibleScaler:
             tuple(float(component) for component in row) for row in values["std"]
         )
         raw_active = values.get("active_mask")
+        if len(mean) != len(role_names) or len(std) != len(role_names):
+            raise ValueError("Invisible scaler role and statistic counts differ")
+        dimensions = {len(row) for row in (*mean, *std)}
+        if len(dimensions) != 1 or not dimensions or next(iter(dimensions)) <= 0:
+            raise ValueError("Invisible scaler statistics must have a consistent positive state width")
+        width = next(iter(dimensions))
         active_mask = (
             tuple(tuple(bool(component) for component in row) for row in raw_active)
             if raw_active is not None
-            else tuple((True, True, True) for _ in role_names)
+            else tuple(tuple(True for _ in range(width)) for _ in role_names)
         )
-        if len(mean) != len(role_names) or len(std) != len(role_names):
-            raise ValueError("Invisible scaler role and statistic counts differ")
-        if any(len(row) != 3 for row in (*mean, *std)):
-            raise ValueError(
-                "Invisible scaler statistics must contain px, py and pz for every role"
-            )
         if any(component <= 0 for row in std for component in row):
             raise ValueError(
                 "Invisible scaler standard deviations must be positive"
             )
         if len(active_mask) != len(role_names) or any(
-            len(row) != 3 for row in active_mask
+            len(row) != next(iter(dimensions)) for row in active_mask
         ):
-            raise ValueError("Invisible scaler active_mask must be [T,3]")
+            raise ValueError("Invisible scaler active_mask must match [T,D] statistics")
         if any(
             not np.isfinite(component)
             for row in (*mean, *std)

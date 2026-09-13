@@ -148,6 +148,7 @@ class JointEventModel(nn.Module):
                 train_steps=tuple(int(step) for step in joint_flow_config.train_steps),
                 assignment_loss_weight=assignment_loss_weight,
                 invisible_loss_weight=invisible_loss_weight,
+                invisible_state_dim=self.invisible.coordinates.state_dim,
             )
 
         self.posterior_feedback = None
@@ -178,6 +179,7 @@ class JointEventModel(nn.Module):
             self.compatibility = CompatibilityHead(
                 d_model,
                 self.invisible.coordinates.token_count,
+                invisible_state_dim=self.invisible.coordinates.state_dim,
                 include_invisible=bool(compatibility_config.include_invisible),
             )
 
@@ -459,7 +461,15 @@ class JointEventModel(nn.Module):
         return result
 
     def encode_visible(self, batch: dict) -> dict:
-        return self.visible(batch)
+        encoded = self.visible(batch)
+        # Keep physical conditioning alongside the learned visible embedding.
+        # Conventional invisible backbones ignore these optional fields; the
+        # Conditional L-GATr backbone consumes the p4 and MET channels.
+        if "physics_vectors" in batch:
+            encoded["physics_vectors"] = batch["physics_vectors"]
+        if "met_xy" in batch:
+            encoded["met_xy"] = batch["met_xy"]
+        return encoded
 
     def _hypothesis_training_mask(self, batch: dict) -> torch.Tensor:
         valid = torch.ones(

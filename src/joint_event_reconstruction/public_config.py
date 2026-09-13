@@ -8,6 +8,9 @@ from pathlib import Path
 from omegaconf import DictConfig, OmegaConf
 
 from joint_event_reconstruction.topology.compiler import load_topology
+from joint_event_reconstruction.models.invisible.mass_shell import (
+    mass_shell_config as canonical_mass_shell_config,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -313,12 +316,86 @@ def _coordinate_config(coordinate_type: str) -> dict:
     }
 
 
-def _resolve_invisible(public, defaults) -> dict:
+def _mass_shell_config(public=None) -> dict:
+    """Validate and normalise one shared or per-role mass-shell declaration."""
+    if public is None:
+        return canonical_mass_shell_config()
+    _mapping(public, "model.invisible.mass_shell")
+    _unknown(public, {"enforcement", "mass", "roles"}, "model.invisible.mass_shell")
+    mass = public.get("mass")
+    if mass is not None:
+        _mapping(mass, "model.invisible.mass_shell.mass")
+        _unknown(
+            mass,
+            {"mode", "value", "parameterization"},
+            "model.invisible.mass_shell.mass",
+        )
+    roles = public.get("roles", {})
+    _mapping(roles, "model.invisible.mass_shell.roles")
+    for role, role_config in roles.items():
+        _mapping(role_config, f"model.invisible.mass_shell.roles.{role}")
+        _unknown(
+            role_config,
+            {"enforcement", "mass"},
+            f"model.invisible.mass_shell.roles.{role}",
+        )
+        role_mass = role_config.get("mass")
+        if role_mass is not None:
+            _mapping(role_mass, f"model.invisible.mass_shell.roles.{role}.mass")
+            _unknown(
+                role_mass,
+                {"mode", "value", "parameterization"},
+                f"model.invisible.mass_shell.roles.{role}.mass",
+            )
+    # The physics-level class performs the numerical checks (finite values,
+    # positive generated mass transforms and exact-mode compatibility).
+    return canonical_mass_shell_config(public)
+
+
+def _invisible_backbone_config(public, defaults) -> dict:
+    if public is None:
+        return {"type": "transformer"}
+    _mapping(public, "model.invisible.generator.backbone")
+    _required(public, {"type"}, "model.invisible.generator.backbone")
+    backend = str(public.type)
+    if backend == "transformer":
+        _unknown(public, {"type"}, "model.invisible.generator.backbone")
+        return {"type": backend}
+    if backend != "lgatr":
+        raise ValueError("Invisible generator backbone must be transformer or lgatr")
+    _unknown(
+        public,
+        {
+            "type",
+            "layers",
+            "n_heads",
+            "hidden",
+            "dropout",
+            "momentum_scale_gev",
+            "symmetry_breaking",
+        },
+        "model.invisible.generator.backbone",
+    )
+    selected = _plain(_merge(defaults.encoder.lgatr, public))
+    return {
+        "type": backend,
+        "layers": int(selected["layers"]),
+        "n_heads": int(selected["n_heads"]),
+        "hidden": selected["hidden"],
+        "dropout": float(selected["dropout"]),
+        "momentum_scale_gev": float(selected["momentum_scale_gev"]),
+        "symmetry_breaking": selected["symmetry_breaking"],
+    }
+
+
+def _resolve_invisible(public, defaults, *, backbone_defaults=None) -> dict:
     invisible = {
         "enabled": False,
         "formulation": "edm",
         "conditioning": {"assignment": "none", "allow_truth_oracle": False},
         "coordinates": _coordinate_config(str(defaults.coordinates.type)),
+        "mass_shell": _mass_shell_config(getattr(defaults, "mass_shell", None)),
+        "backbone": {"type": "transformer"},
         "denoiser": _plain(defaults.network),
         "standard": _plain(defaults.standard),
         "edm": _plain(defaults.edm),
@@ -335,14 +412,22 @@ def _resolve_invisible(public, defaults) -> dict:
     _mapping(public, "model.invisible")
     _unknown(
         public,
-        {"generator", "conditioning", "coordinates", "network", "training"},
+        {"generator", "conditioning", "coordinates", "network", "training", "mass_shell"},
         "model.invisible",
     )
     if "method" in public:
         raise ValueError("model.invisible.method is obsolete; use model.invisible.generator")
-    _required(public, {"generator"}, "model.invisible")
+    invisible["mass_shell"] = _mass_shell_config(public.get("mass_shell"))
+    if "generator" not in public:
+        if set(public) == {"mass_shell"}:
+            return invisible
+        _required(public, {"generator"}, "model.invisible")
     _mapping(public.generator, "model.invisible.generator")
-    _unknown(public.generator, {"type", "coupling", "network"}, "model.invisible.generator")
+    _unknown(
+        public.generator,
+        {"type", "coupling", "network", "backbone"},
+        "model.invisible.generator",
+    )
     _required(public.generator, {"type"}, "model.invisible.generator")
     method = str(public.generator.type)
     method_map = {"ddim": "standard", "edm": "edm", "cfm": "flow_matching"}
@@ -363,6 +448,10 @@ def _resolve_invisible(public, defaults) -> dict:
         "assignment": "truth" if conditioning == "truth_oracle" else conditioning,
         "allow_truth_oracle": conditioning == "truth_oracle",
     }
+    invisible["backbone"] = _invisible_backbone_config(
+        public.generator.get("backbone"),
+        defaults if backbone_defaults is None else backbone_defaults,
+    )
     coordinates = public.get("coordinates", defaults.coordinates)
     _mapping(coordinates, "model.invisible.coordinates")
     _unknown(coordinates, {"type"}, "model.invisible.coordinates")
@@ -551,7 +640,7 @@ def _resolve_model(public, defaults) -> dict:
         _mapping(joint_public, "model.joint")
         _unknown(
             joint_public,
-            {"recurrent", "block_layers", "train_steps", "coordinates", "coupling"},
+            {"recurrent", "block_layers", "train_steps", "coordinates", "coupling", "mass_shell"},
             "model.joint",
         )
         joint = _plain(_merge(defaults.joint_flow, joint_public))
@@ -570,6 +659,9 @@ def _resolve_model(public, defaults) -> dict:
             raise ValueError("model.joint.coupling.type is invalid")
         if coupling_method != "conditional_ot" and coupling_weight != 0.0:
             raise ValueError("condition_weight must be zero unless coupling.type=conditional_ot")
+        mass_shell = _mass_shell_config(
+            joint_public.get("mass_shell", getattr(defaults.invisible, "mass_shell", None))
+        )
         recurrence = defaults.assignment.recurrence
         return {
             "mode": "joint_flow",
@@ -595,6 +687,8 @@ def _resolve_model(public, defaults) -> dict:
                 "formulation": "flow_matching",
                 "conditioning": {"assignment": "none", "allow_truth_oracle": False},
                 "coordinates": _coordinate_config(coordinate_type),
+                "mass_shell": mass_shell,
+                "backbone": {"type": "transformer"},
                 "denoiser": _plain(defaults.invisible.network),
                 "standard": _plain(defaults.invisible.standard),
                 "edm": _plain(defaults.invisible.edm),
@@ -646,7 +740,11 @@ def _resolve_model(public, defaults) -> dict:
     if method == "discrete_flow" and recurrent:
         raise ValueError("Factorized DFM has its own time-conditioned reasoner; omit recurrence")
 
-    invisible = _resolve_invisible(public.get("invisible"), defaults.invisible)
+    invisible = _resolve_invisible(
+        public.get("invisible"),
+        defaults.invisible,
+        backbone_defaults=defaults,
+    )
     if method == "discrete_flow" and invisible["enabled"]:
         raise ValueError("Factorized DFM is assignment-only; omit model.invisible or use joint_flow")
 

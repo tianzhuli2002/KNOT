@@ -1,5 +1,6 @@
 study:
   name: visible_recurrence
+  title: 01 — Does Iterative Jet-Assignment Reasoning Help?
   description: Compare one-pass assignment with recurrent refinement, soft feedback, and fixed capacity/compute controls on ttbar2L validation data.
   experiment_pattern: configs/experiments/{topology}.yaml
   topologies: [ttbar2L]

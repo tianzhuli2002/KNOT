@@ -37,9 +37,9 @@ class JointStepOutput:
 
 def _repeat_visible(visible: dict, repeats: int) -> dict:
     return {
-        "pooled": visible["pooled"].repeat_interleave(repeats, dim=0),
-        "tokens": visible["tokens"].repeat_interleave(repeats, dim=0),
-        "padding_mask": visible["padding_mask"].repeat_interleave(repeats, dim=0),
+        key: value.repeat_interleave(repeats, dim=0)
+        for key, value in visible.items()
+        if torch.is_tensor(value)
     }
 
 
@@ -80,6 +80,7 @@ class JointFlow(nn.Module):
         train_steps: tuple[int, ...],
         assignment_loss_weight: float = 1.0,
         invisible_loss_weight: float = 1.0,
+        invisible_state_dim: int = 3,
     ):
         super().__init__()
         if not train_steps or any(step <= 0 for step in train_steps):
@@ -93,6 +94,7 @@ class JointFlow(nn.Module):
             block_layers,
             d_feedforward,
             dropout,
+            invisible_state_dim=invisible_state_dim,
         )
         self.discrete_flow = MaskedDiscreteFlow()
         self.recurrent_state = recurrent_state
@@ -365,10 +367,10 @@ class JointFlow(nn.Module):
         reconstruction: nn.Module,
         invisible: nn.Module,
     ) -> dict:
-        expected = (invisible.coordinates.token_count, 3)
+        expected = (invisible.coordinates.token_count, invisible.coordinates.state_dim)
         if target.ndim != 3 or target.shape[1:] != expected:
             raise ValueError(
-                f"Joint invisible target must be [B,{expected[0]},3], "
+                f"Joint invisible target must be [B,{expected[0]},{expected[1]}], "
                 f"found {tuple(target.shape)}"
             )
         space = AssignmentSpace.from_structured(structured)
@@ -452,7 +454,11 @@ class JointFlow(nn.Module):
                     device=visible["tokens"].device,
                 ),
                 invisible=torch.randn(
-                    (expanded_batch, invisible.coordinates.token_count, 3),
+                    (
+                        expanded_batch,
+                        invisible.coordinates.token_count,
+                        invisible.coordinates.state_dim,
+                    ),
                     device=visible["tokens"].device,
                     dtype=visible["tokens"].dtype,
                     generator=generator,
@@ -496,7 +502,10 @@ class JointFlow(nn.Module):
             assignment_chunks.append(state.assignment.reshape(batch, width))
             invisible_chunks.append(
                 state.invisible.reshape(
-                    batch, width, invisible.coordinates.token_count, 3
+                    batch,
+                    width,
+                    invisible.coordinates.token_count,
+                    invisible.coordinates.state_dim,
                 )
             )
             last_output = output

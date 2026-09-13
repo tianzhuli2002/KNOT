@@ -1,5 +1,6 @@
 study:
   name: encoder_backbone
+  title: 12 — What Event Representation Best Solves Jet Assignment?
   description: Compare five visible encoders at fixed M1 one-pass assignment reasoning and identical physical inputs.
   experiment_pattern: configs/experiments/{topology}.yaml
   topologies: [ttbar2L]

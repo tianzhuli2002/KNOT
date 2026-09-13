@@ -19,14 +19,26 @@ class StandardDiffusion(nn.Module):
         self.denoiser = denoiser
         self.training_steps = training_steps
         if active_mask is None:
-            active_mask = torch.ones(denoiser.state_token_count, 3, dtype=torch.bool)
+            active_mask = torch.ones(
+                denoiser.state_token_count, denoiser.state_dim, dtype=torch.bool
+            )
         self.register_buffer("active_mask", torch.as_tensor(active_mask, dtype=torch.bool))
         t = torch.linspace(0.0, 1.0, training_steps + 1, dtype=torch.float64)
         values = torch.cos(((t + cosine_offset) / (1 + cosine_offset)) * math.pi / 2).square()
         values = (values / values[0]).clamp(1.0e-8, 1.0)
         self.register_buffer("alpha_bar", values.to(torch.float32))
 
-    def loss(self, target: torch.Tensor, visible: torch.Tensor, mask: torch.Tensor, parent: torch.Tensor) -> dict:
+    def loss(
+        self,
+        target: torch.Tensor,
+        visible: torch.Tensor,
+        mask: torch.Tensor,
+        parent: torch.Tensor,
+        *,
+        visible_fourmomenta: torch.Tensor | None = None,
+        met_xy: torch.Tensor | None = None,
+    ) -> dict:
+        del visible_fourmomenta, met_xy
         batch = len(target)
         timestep = torch.randint(1, self.training_steps + 1, (batch,), device=target.device)
         active = self.active_mask.to(dtype=target.dtype)
@@ -41,9 +53,12 @@ class StandardDiffusion(nn.Module):
 
     @torch.no_grad()
     def sample(
-        self, shape: tuple[int, int, int], visible: torch.Tensor, mask: torch.Tensor,
+        self, shape: tuple[int, ...], visible: torch.Tensor, mask: torch.Tensor,
         parent: torch.Tensor, *, inference_steps: int, generator: torch.Generator | None = None,
+        visible_fourmomenta: torch.Tensor | None = None,
+        met_xy: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, int]:
+        del visible_fourmomenta, met_xy
         if inference_steps <= 0 or inference_steps > self.training_steps:
             raise ValueError("DDIM inference_steps must be in [1, training_steps]")
         active = self.active_mask.to(device=visible.device, dtype=visible.dtype)

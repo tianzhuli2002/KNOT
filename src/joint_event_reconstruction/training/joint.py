@@ -60,6 +60,9 @@ def active_architecture(model) -> dict:
             "enabled": True,
             "formulation": invisible_formulation,
             "denoiser": _resolved(model.invisible.denoiser),
+            "coordinates": _resolved(model.invisible.coordinates),
+            "mass_shell": _resolved(model.invisible.mass_shell),
+            "backbone": _resolved(model.invisible.backbone),
         }
         if mode == "factorized":
             invisible["conditioning"] = {
@@ -289,6 +292,14 @@ class JointEventModule(L.LightningModule):
                 ),
                 "invisible_coordinates": (
                     str(model.invisible.coordinates.type)
+                    if model.invisible.enabled else None
+                ),
+                "invisible_mass_shell": (
+                    _resolved(model.invisible.mass_shell)
+                    if model.invisible.enabled else None
+                ),
+                "invisible_generator_backbone": (
+                    _resolved(model.invisible.backbone)
                     if model.invisible.enabled else None
                 ),
                 "invisible_coordinate_metadata": (

@@ -132,6 +132,8 @@ def _compose_physics(
     assignments,
     samples: torch.Tensor,
     *,
+    physical_samples: torch.Tensor | None = None,
+    truth_physical: torch.Tensor | None = None,
     truth_assignment: bool = False,
 ):
     if "physics_vectors" not in batch:
@@ -184,12 +186,21 @@ def _compose_physics(
                     ]
                     for role_index, role in enumerate(module.spec.invisible_roles)
                 }
+                physical = None
+                if physical_samples is not None:
+                    physical = {
+                        role.key: physical_samples[
+                            event, hypothesis_index, sample_index, role_index
+                        ]
+                        for role_index, role in enumerate(module.spec.invisible_roles)
+                    }
                 composed = compose_assignment_state(
                     module.spec,
                     batch["structured"]["pools"],
                     batch["physics_vectors"][event],
                     indices,
                     invisible,
+                    invisible_four_vectors=physical,
                 )
                 for node in module.spec.dag_order:
                     hypothesis_values[node].append(composed[node])
@@ -204,12 +215,19 @@ def _compose_physics(
                 role.key: batch["invisible_truth"][event, role_index]
                 for role_index, role in enumerate(module.spec.invisible_roles)
             }
+            truth_direct = None
+            if truth_physical is not None:
+                truth_direct = {
+                    role.key: truth_physical[event, role_index]
+                    for role_index, role in enumerate(module.spec.invisible_roles)
+                }
             truth_composed = compose_assignment_state(
                 module.spec,
                 batch["structured"]["pools"],
                 batch["physics_vectors"][event],
                 truth_indices,
                 truth_invisible,
+                invisible_four_vectors=truth_direct,
             )
             for node in module.spec.dag_order:
                 truth_values[node].append(truth_composed[node])
@@ -391,6 +409,12 @@ def predict_hdf5(
                 "invisible_coordinate_metadata": json.dumps(
                     module.hparams.invisible_coordinate_metadata
                 ),
+                "invisible_mass_shell": json.dumps(
+                    getattr(module.hparams, "invisible_mass_shell", None)
+                ),
+                "invisible_generator_backbone": json.dumps(
+                    getattr(module.hparams, "invisible_generator_backbone", None)
+                ),
                 "flow_coupling": json.dumps(module.hparams.flow_coupling),
                 "physics_vector_representation": "E_px_py_pz_GeV_v1",
                 "candidate_representation": module.hparams.candidate_representation,
@@ -459,6 +483,7 @@ def predict_hdf5(
             ).sum(dim=1).cpu().numpy().astype(np.int16)
 
             samples = mean = std = None
+            physical_samples = physical_mean = physical_std = truth_physical = None
             projection = None
             composites = truth_composites = observed_met = None
             nfe = 0
@@ -477,15 +502,28 @@ def predict_hdf5(
                 samples_tensor = module.event_model.invisible.decode_state(
                     scaled, batch["met_xy"], scaler
                 )
+                physical_samples = module.event_model.invisible.decode_physical_state(
+                    scaled, batch["met_xy"], scaler
+                )["four_vector"]
+                truth_state = module.event_model.invisible.coordinates.encode(
+                    batch["invisible_truth"], batch["met_xy"]
+                )
+                truth_physical = module.event_model.invisible.coordinates.decode_physical(
+                    truth_state, batch["met_xy"]
+                )["four_vector"]
                 samples = samples_tensor.cpu().numpy().astype(np.float32)
                 mean = samples.mean(axis=2)
                 std = samples.std(axis=2)
+                physical_mean = physical_samples.mean(dim=2).cpu().numpy().astype(np.float32)
+                physical_std = physical_samples.std(dim=2).cpu().numpy().astype(np.float32)
                 projection = _met_exact_truth_projection(module, batch)
                 composites, truth_composites, observed_met = _compose_physics(
                     module,
                     batch,
                     assignments,
                     samples_tensor,
+                    physical_samples=physical_samples,
+                    truth_physical=truth_physical,
                     truth_assignment=assignment_mode == "truth",
                 )
 
@@ -590,10 +628,34 @@ def predict_hdf5(
                     datasets["std"] = _create(
                         invisible_group, "std", std.shape[1:], "<f4"
                     )
+                    datasets["four_vectors"] = _create(
+                        invisible_group,
+                        "four_vectors",
+                        physical_samples.shape[1:],
+                        "<f4",
+                    )
+                    datasets["four_vector_mean"] = _create(
+                        invisible_group,
+                        "four_vector_mean",
+                        physical_mean.shape[1:],
+                        "<f4",
+                    )
+                    datasets["four_vector_std"] = _create(
+                        invisible_group,
+                        "four_vector_std",
+                        physical_std.shape[1:],
+                        "<f4",
+                    )
                     datasets["nu_truth"] = _create(
                         truth_group,
                         "NEUTRINO",
                         tuple(batch["invisible_truth"].shape[1:]),
+                        "<f4",
+                    )
+                    datasets["truth_four_vector"] = _create(
+                        truth_group,
+                        "INVISIBLE_FOUR_VECTOR",
+                        tuple(truth_physical.shape[1:]),
                         "<f4",
                     )
                     if projection is not None:
@@ -714,8 +776,18 @@ def predict_hdf5(
                 _append(datasets["mean"], mean)
                 _append(datasets["std"], std)
                 _append(
+                    datasets["four_vectors"],
+                    physical_samples.cpu().numpy().astype(np.float32),
+                )
+                _append(datasets["four_vector_mean"], physical_mean)
+                _append(datasets["four_vector_std"], physical_std)
+                _append(
                     datasets["nu_truth"],
                     batch["invisible_truth"].cpu().numpy().astype(np.float32),
+                )
+                _append(
+                    datasets["truth_four_vector"],
+                    truth_physical.cpu().numpy().astype(np.float32),
                 )
                 if projection is not None:
                     _append(

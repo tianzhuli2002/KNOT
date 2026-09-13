@@ -1,0 +1,50 @@
+study:
+  name: lgatr_invisible_generator
+  title: 15 — Does Lorentz-Equivariant Generation Improve Invisible Reconstruction?
+  description: Compare the selected conventional invisible generator with a Conditional L-GATr backbone after the objective and coordinate gates are locked.
+  experiment_pattern: configs/experiments/{topology}.yaml
+  topologies: [ttbar2L]
+  seeds: [42, 43, 44]
+  split: validation
+  requires: [visible_assignment, invisible_generator, invisible_coordinates, assignment_formulation]
+  inherit: [visible_assignment, invisible_generator, invisible_coordinates, assignment_formulation]
+  training: true
+
+variants:
+  conventional:
+    label: Selected conventional generator backbone
+    reporting: primary
+    patch:
+      model:
+        mode: factorized
+    initialise_from:
+    initialise_from_gate:
+    initialise_components: []
+    checkpoint_from:
+    checkpoint_from_gate: invisible_generator
+    predictions:
+      default: {label: Conventional generator, patch: {inference: {invisible: {samples_per_assignment: 32, flow: {steps: 17, solver: euler}}}}, recurrent_steps: null}
+
+  conditional_lgatr:
+    label: Conditional L-GATr invisible generator
+    reporting: primary
+    patch:
+      model:
+        mode: factorized
+        invisible:
+          generator:
+            backbone:
+              type: lgatr
+              layers: 4
+              n_heads: 4
+              hidden: {multivector_channels: 8, scalar_channels: 64}
+              dropout: 0.0
+              symmetry_breaking: {beam: xyplane, time: true}
+      training: {trainable: [invisible]}
+    initialise_from:
+    initialise_from_gate: visible_assignment
+    initialise_components: [visible, assignment]
+    checkpoint_from:
+    checkpoint_from_gate:
+    predictions:
+      default: {label: Conditional L-GATr generator, patch: {inference: {invisible: {samples_per_assignment: 32, flow: {steps: 17, solver: euler}}}}, recurrent_steps: null}

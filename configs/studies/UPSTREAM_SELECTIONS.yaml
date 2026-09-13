@@ -48,20 +48,68 @@ assignment_reasoning:
         identity_sha256: 9082fc05c259a5a9282651c28cd4d52b89e1497a14213218f619d4afedb49f60
 
 visible_assignment:
-  status: pending
+  status: locked
   source_study: encoder_backbone
-  selected_variant:
-  validated_sha:
-  required_by: [generator_formulations, discrete_assignment, data_scaling, assignment_conditioning, c2_feedback, joint_vs_factorized, joint_recurrence, generator_inference, posterior_size, compatibility_reranking, invisible_coordinates]
-  selected_patch: {}
-  artifacts: {}
+  selected_variant: lgatr
+  validated_sha: e00d3ea351e6850e31da610bcb5a79eb1cfed273
+  required_by: [generator_formulations, discrete_assignment, data_scaling, assignment_conditioning, c2_feedback, joint_vs_factorized, joint_recurrence, generator_inference, posterior_size, compatibility_reranking, invisible_coordinates, lgatr_invisible_generator]
+  selected_patch:
+    model:
+      mode: factorized
+      encoder:
+        type: lgatr
+        layers: 4
+        n_heads: 4
+        hidden:
+          multivector_channels: 8
+          scalar_channels: 64
+        symmetry_breaking:
+          beam: xyplane
+          time: true
+      assignment:
+        formulation: discriminative
+  artifacts:
+    ttbar2L:
+      seed_42:
+        source_study: encoder_backbone
+        variant: lgatr
+        model_seed: 42
+        data_subset_seed: 42
+        git_sha: e00d3ea351e6850e31da610bcb5a79eb1cfed273
+        architecture_identity: 751cd43fb7091c90a3eda10421fa8fe7c0eabe80083dbf4ae54e08c3a2d767fe
+        checkpoint: /net/scratch/w00238tl/JointEventReconstruction/results/studies/encoder_backbone/ttbar2L/lgatr/seed_42/train/checkpoints/best-loss.ckpt
+        checkpoint_sha256: 7dbd8f9b03c250bfdda3ce58ff0a8c6693868a261714da72f302e70a86a7263b
+        identity_file: /net/scratch/w00238tl/JointEventReconstruction/results/studies/encoder_backbone/ttbar2L/lgatr/seed_42/train/artifact_identity.json
+        identity_sha256: 47c6f52f38dd4ec8d9e3a29eb92126679c183703480dcbb207267950f33acca3
+      seed_43:
+        source_study: encoder_backbone
+        variant: lgatr
+        model_seed: 43
+        data_subset_seed: 42
+        git_sha: e00d3ea351e6850e31da610bcb5a79eb1cfed273
+        architecture_identity: 751cd43fb7091c90a3eda10421fa8fe7c0eabe80083dbf4ae54e08c3a2d767fe
+        checkpoint: /net/scratch/w00238tl/JointEventReconstruction/results/studies/encoder_backbone/ttbar2L/lgatr/seed_43/train/checkpoints/best-loss.ckpt
+        checkpoint_sha256: 119c7e35e3c14523149007d843e479f5dd4ad45231e234c0ae68c49624aedc8a
+        identity_file: /net/scratch/w00238tl/JointEventReconstruction/results/studies/encoder_backbone/ttbar2L/lgatr/seed_43/train/artifact_identity.json
+        identity_sha256: f04460967e775a0fad16b48a1028a09099a1ad67c666361c964e863a47fe83c0
+      seed_44:
+        source_study: encoder_backbone
+        variant: lgatr
+        model_seed: 44
+        data_subset_seed: 42
+        git_sha: e00d3ea351e6850e31da610bcb5a79eb1cfed273
+        architecture_identity: 751cd43fb7091c90a3eda10421fa8fe7c0eabe80083dbf4ae54e08c3a2d767fe
+        checkpoint: /net/scratch/w00238tl/JointEventReconstruction/results/studies/encoder_backbone/ttbar2L/lgatr/seed_44/train/checkpoints/best-loss.ckpt
+        checkpoint_sha256: de23cc740751c92bc4abf3318d0e1687f2217d5b074f13aae57f82da164717d6
+        identity_file: /net/scratch/w00238tl/JointEventReconstruction/results/studies/encoder_backbone/ttbar2L/lgatr/seed_44/train/artifact_identity.json
+        identity_sha256: 0975dbc0e0e24090a37a39f8b3bb6b93b37f1779da7eceaf93de5208d669b75a
 
 assignment_formulation:
   status: pending
   source_study: discrete_assignment
   selected_variant:
   validated_sha:
-  required_by: [assignment_conditioning, c2_feedback, joint_vs_factorized, joint_recurrence, posterior_size, compatibility_reranking]
+  required_by: [assignment_conditioning, c2_feedback, joint_vs_factorized, joint_recurrence, posterior_size, compatibility_reranking, lgatr_invisible_generator]
   selected_patch: {}
   artifacts: {}
 
@@ -88,7 +136,7 @@ invisible_generator:
   source_study: generator_formulations
   selected_variant:
   validated_sha:
-  required_by: [assignment_conditioning, c2_feedback, joint_vs_factorized, joint_recurrence, posterior_size, compatibility_reranking, invisible_coordinates]
+  required_by: [assignment_conditioning, c2_feedback, joint_vs_factorized, joint_recurrence, posterior_size, compatibility_reranking, invisible_coordinates, lgatr_invisible_generator]
   selected_patch: {}
   artifacts: {}
 
@@ -97,7 +145,7 @@ invisible_coordinates:
   source_study: invisible_coordinates
   selected_variant:
   validated_sha:
-  required_by: [assignment_conditioning, c2_feedback, joint_vs_factorized, joint_recurrence, posterior_size, compatibility_reranking]
+  required_by: [assignment_conditioning, c2_feedback, joint_vs_factorized, joint_recurrence, posterior_size, compatibility_reranking, lgatr_invisible_generator]
   selected_patch: {}
   artifacts: {}
 

@@ -23,7 +23,9 @@ class EDMDiffusion(nn.Module):
         self.sigma_max = sigma_max
         self.rho = rho
         if active_mask is None:
-            active_mask = torch.ones(denoiser.state_token_count, 3, dtype=torch.bool)
+            active_mask = torch.ones(
+                denoiser.state_token_count, denoiser.state_dim, dtype=torch.bool
+            )
         self.register_buffer("active_mask", torch.as_tensor(active_mask, dtype=torch.bool))
 
     def coefficients(self, sigma: torch.Tensor) -> tuple[torch.Tensor, ...]:
@@ -33,7 +35,9 @@ class EDMDiffusion(nn.Module):
 
     def denoise(
         self, noisy: torch.Tensor, sigma: torch.Tensor, visible: torch.Tensor,
-        mask: torch.Tensor, parent: torch.Tensor,
+        mask: torch.Tensor, parent: torch.Tensor, *,
+        visible_fourmomenta: torch.Tensor | None = None,
+        met_xy: torch.Tensor | None = None,
     ) -> torch.Tensor:
         if (sigma <= 0).any():
             raise ValueError("EDM denoising requires strictly positive sigma")
@@ -41,16 +45,39 @@ class EDMDiffusion(nn.Module):
         expand = (len(sigma),) + (1,) * (noisy.ndim - 1)
         active = self.active_mask.to(dtype=noisy.dtype)
         network = self.denoiser(
-            c_in.view(expand) * noisy, c_noise, visible, mask, parent,
+            c_in.view(expand) * noisy,
+            c_noise,
+            visible,
+            mask,
+            parent,
+            visible_fourmomenta=visible_fourmomenta,
+            met_xy=met_xy,
         ) * active
         return (c_skip.view(expand) * noisy + c_out.view(expand) * network) * active
 
-    def loss(self, target: torch.Tensor, visible: torch.Tensor, mask: torch.Tensor, parent: torch.Tensor) -> dict:
+    def loss(
+        self,
+        target: torch.Tensor,
+        visible: torch.Tensor,
+        mask: torch.Tensor,
+        parent: torch.Tensor,
+        *,
+        visible_fourmomenta: torch.Tensor | None = None,
+        met_xy: torch.Tensor | None = None,
+    ) -> dict:
         sigma = (torch.randn(len(target), device=target.device, dtype=target.dtype) * self.p_std + self.p_mean).exp()
         active = self.active_mask.to(dtype=target.dtype)
         noise = torch.randn_like(target) * active
         noisy = target + sigma.view(len(target), 1, 1) * noise
-        denoised = self.denoise(noisy, sigma, visible, mask, parent)
+        denoised = self.denoise(
+            noisy,
+            sigma,
+            visible,
+            mask,
+            parent,
+            visible_fourmomenta=visible_fourmomenta,
+            met_xy=met_xy,
+        )
         weight = (sigma.square() + self.sigma_data ** 2) / (sigma * self.sigma_data).square()
         per_event = (denoised - target).square().flatten(1).sum(dim=1) / active.sum()
         return {"loss": (weight * per_event).mean(), "sigma": sigma, "denoised": denoised}
@@ -67,8 +94,10 @@ class EDMDiffusion(nn.Module):
 
     @torch.no_grad()
     def sample(
-        self, shape: tuple[int, int, int], visible: torch.Tensor, mask: torch.Tensor,
+        self, shape: tuple[int, ...], visible: torch.Tensor, mask: torch.Tensor,
         parent: torch.Tensor, *, nfe: int, generator: torch.Generator | None = None,
+        visible_fourmomenta: torch.Tensor | None = None,
+        met_xy: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, int]:
         sigmas = self.schedule(nfe, device=visible.device, dtype=visible.dtype)
         active = self.active_mask.to(device=visible.device, dtype=visible.dtype)
@@ -80,13 +109,23 @@ class EDMDiffusion(nn.Module):
         for index in range(len(sigmas) - 1):
             sigma, following = sigmas[index], sigmas[index + 1]
             batch_sigma = sigma.expand(shape[0])
-            denoised = self.denoise(x, batch_sigma, visible, mask, parent)
+            denoised = self.denoise(
+                x,
+                batch_sigma,
+                visible,
+                mask,
+                parent,
+                visible_fourmomenta=visible_fourmomenta,
+                met_xy=met_xy,
+            )
             evaluations += 1
             derivative = (x - denoised) / sigma
             proposed = x + (following - sigma) * derivative
             if following > 0:
                 next_denoised = self.denoise(
                     proposed, following.expand(shape[0]), visible, mask, parent,
+                    visible_fourmomenta=visible_fourmomenta,
+                    met_xy=met_xy,
                 )
                 evaluations += 1
                 next_derivative = (proposed - next_denoised) / following

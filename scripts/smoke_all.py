@@ -428,6 +428,7 @@ def run_experiment_smoke(
         build_assignments=True,
         max_assignment_states=int(data_config.data.max_assignment_states),
         coordinates_config=data_config.model.invisible.coordinates,
+        mass_shell_config=data_config.model.invisible.mass_shell,
     )
     data.setup("fit")
     batch = move(next(iter(data.train_dataloader())), torch.device(device))

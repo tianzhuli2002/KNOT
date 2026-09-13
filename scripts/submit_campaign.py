@@ -330,6 +330,82 @@ def _historical_study01() -> dict:
     }
 
 
+def _historical_study12(study: StudySpec) -> dict:
+    """Verify the completed Study 12 products without making a new submission."""
+    expected_commit = "e00d3ea351e6850e31da610bcb5a79eb1cfed273"
+    output_root = ROOT / "results/studies"
+    candidates = []
+    for path in _submission_files(output_root, study.name):
+        try:
+            record = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        if (
+            record.get("git_commit") == expected_commit
+            and record.get("seeds") == list(study.seeds)
+            and record.get("topologies") == list(study.topologies)
+            and record.get("requested_variants") == [
+                variant.name for variant in study.variants
+            ]
+            and record.get("submission_identity")
+        ):
+            candidates.append((path, record))
+    if not candidates:
+        return {
+            "status": "FAILED",
+            "reason": (
+                "Study 12 completed submission from the validated source SHA was not found; "
+                "refusing to rerun it"
+            ),
+        }
+
+    path, record = sorted(candidates, key=lambda item: str(item[0]))[-1]
+    status, reason = _submission_status(record, study)
+    train = list(
+        (output_root / study.name / "ttbar2L").glob(
+            "*/seed_*/train/artifact_identity.json"
+        )
+    )
+    prediction = list(
+        (output_root / study.name / "ttbar2L").glob(
+            "*/seed_*/predictions/*.h5"
+        )
+    )
+    expected_units = len(study.variants) * len(study.seeds)
+    if len(train) != expected_units or len(prediction) != expected_units:
+        return {
+            "status": "FAILED",
+            "reason": (
+                f"Study 12 historical products are incomplete: training={len(train)}/"
+                f"{expected_units}, prediction={len(prediction)}/{expected_units}; "
+                "refusing to rerun it"
+            ),
+        }
+    train_levels = record.get("train_levels", [])
+    if len(train_levels) != 1:
+        return {"status": "FAILED", "reason": "Study 12 historical DAG is not one training array"}
+    return {
+        "status": status,
+        "reason": f"{reason}; immutable Study 12 products verified; no rerun",
+        "source_sha": record.get("git_commit"),
+        "manifest_sha256": record.get("study_manifest_sha256"),
+        "submission_identity": f"historical:{record.get('campaign_id', 'study12')}",
+        "output_root": str(output_root),
+        "job_ids": _record_job_ids(record),
+        "training_job_ids": [str(train_levels[0]["job_id"])],
+        "prediction_job_ids": (
+            [str(record["prediction_job"])] if record.get("prediction_job") else []
+        ),
+        "postprocess_job_ids": (
+            [str(record["postprocess_job"])] if record.get("postprocess_job") else []
+        ),
+        "training_identities": len(train),
+        "prediction_files": len(prediction),
+        "training_jobs_completed": expected_units,
+        "prediction_jobs_completed": expected_units,
+    }
+
+
 def _run_plan(command: list[str]) -> None:
     result = subprocess.run(command, cwd=ROOT, text=True, capture_output=True, check=False)
     if result.stdout:
@@ -364,7 +440,11 @@ def _dry_plan(study: StudySpec, identity: str) -> None:
 
 
 def _static_block(study: StudySpec, message: str) -> dict:
-    train_units = len(study.variants) * len(study.topologies) * len(study.seeds) if study.training else 0
+    train_units = (
+        len(study.training_order()) * len(study.topologies) * len(study.seeds)
+        if study.training
+        else 0
+    )
     prediction_units = sum(
         len(variant.predictions) * len(study.topologies) * len(study.seeds)
         for variant in study.variants if variant.reporting != "setup"
@@ -404,6 +484,7 @@ def _blocked_entry(
     static["status"] = status
     return {
         "study": study.name,
+        "title": study.title,
         "source_sha": commit,
         "manifest_sha256": identity_payload["manifest_sha256"],
         "submission_identity": identity,
@@ -414,6 +495,7 @@ def _blocked_entry(
         "training_job_ids": [],
         "prediction_job_ids": [],
         "postprocess_job_ids": [],
+        "cross_study_dependency_job_ids": [],
         "three_seed_strategy": list(study.seeds) == [42, 43, 44],
         **static,
     }
@@ -427,13 +509,18 @@ def _entry(
     run_plans: bool,
 ) -> dict:
     identity, identity_payload = _identity(study, commit)
-    training_units = len(study.variants) * len(study.topologies) * len(study.seeds) if study.training else 0
+    training_units = (
+        len(study.training_order()) * len(study.topologies) * len(study.seeds)
+        if study.training
+        else 0
+    )
     prediction_units = sum(
         len(variant.predictions) * len(study.topologies) * len(study.seeds)
         for variant in study.variants if variant.reporting != "setup"
     )
     base = {
         "study": study.name,
+        "title": study.title,
         "source_sha": commit,
         "manifest_sha256": identity_payload["manifest_sha256"],
         "submission_identity": identity,
@@ -447,6 +534,7 @@ def _entry(
         "three_seed_strategy": list(study.seeds) == [42, 43, 44],
         "training_units": training_units,
         "prediction_units": prediction_units,
+        "cross_study_dependency_job_ids": [],
     }
     existing = _matching_submission(output_root, study, identity, identity_payload)
     if existing is not None:
@@ -458,6 +546,7 @@ def _entry(
             "reason": reason,
             "submission_record": str(path),
             "job_ids": _record_job_ids(record),
+            "cross_study_dependency_job_ids": [],
             "slurm_dry_plan": "validated at submission",
         }
     if run_plans:
@@ -474,6 +563,7 @@ def _entry(
         **base,
         "status": "READY",
         "job_ids": [],
+        "cross_study_dependency_job_ids": [],
         "slurm_dry_plan": "PASS",
     }
 
@@ -484,6 +574,32 @@ def _external_source(study: StudySpec) -> set[str]:
         for variant in study.variants
         if variant.checkpoint_from is not None
     }
+
+
+def _checkpoint_wait_reason(
+    study: StudySpec, entries: dict[str, dict]
+) -> str | None:
+    """Return a truthful waiting state for inference-only external checkpoints."""
+    for variant in study.variants:
+        if variant.checkpoint_from is None:
+            continue
+        source_name, source_variant = variant.checkpoint_from
+        source = entries.get(source_name)
+        if source is None:
+            return (
+                f"WAITING_CHECKPOINT: missing source study {source_name}:{source_variant}"
+            )
+        if source.get("status") not in {"COMPLETE", "SUBMITTED", "RUNNING"}:
+            return (
+                f"WAITING_CHECKPOINT: {source_name}:{source_variant} has no concrete "
+                f"training submission"
+            )
+        if not source.get("submission_record"):
+            return (
+                f"WAITING_CHECKPOINT: {source_name}:{source_variant} has no submission "
+                "identity"
+            )
+    return None
 
 
 def _source_job_id(
@@ -535,6 +651,9 @@ def _submit_one(
         "training_job_ids": [str(level["job_id"]) for level in record.get("train_levels", [])],
         "prediction_job_ids": [str(record["prediction_job"])] if record.get("prediction_job") else [],
         "postprocess_job_ids": [str(record["postprocess_job"])] if record.get("postprocess_job") else [],
+        "cross_study_dependency_job_ids": (
+            sorted(set(dependency.split(","))) if dependency else []
+        ),
     }
 
 
@@ -550,6 +669,7 @@ def _analysis14_entry(study12: dict) -> dict:
         status = "BLOCKED_GATE"
     return {
         "study": "Analysis 14",
+        "title": "14 — How Calibrated Is the Assignment Posterior?",
         "status": status,
         "required_gates": [],
         "manifest_migrated": True,
@@ -567,7 +687,8 @@ def _print_report(entries: list[dict], gates: dict[str, dict]) -> None:
     print("\nCAMPAIGN STATUS")
     for entry in entries:
         reason = f" — {entry['reason']}" if entry.get("reason") else ""
-        print(f"  {entry['study']:24s} {entry['status']:15s}{reason}")
+        title = entry.get("title", "")
+        print(f"  {entry['study']:24s} {title:62s} {entry['status']:18s}{reason}")
 
 
 def _write_registry(path: Path, commit: str, entries: list[dict], gates: dict[str, dict]) -> None:
@@ -608,6 +729,7 @@ def main() -> None:
             historical = _historical_study01()
             entry = {
                 "study": name,
+                "title": raw.title,
                 **historical,
                 "required_gates": [],
                 "manifest_migrated": True,
@@ -615,6 +737,20 @@ def main() -> None:
                 "slurm_dry_plan": "historical Study 01 DAG verified; no rerun",
             }
             entries_by_name[name] = entry
+            continue
+        if name == "encoder_backbone":
+            resolved = resolve_study(path)
+            resolved_by_name[name] = resolved
+            historical = _historical_study12(resolved)
+            entries_by_name[name] = {
+                "study": name,
+                "title": raw.title,
+                **historical,
+                "required_gates": list(resolved.requires),
+                "manifest_migrated": True,
+                "three_seed_strategy": True,
+                "slurm_dry_plan": "historical Study 12 DAG verified; no rerun",
+            }
             continue
         try:
             resolved = resolve_study(path)
@@ -638,6 +774,11 @@ def main() -> None:
         resolved_by_name[name] = resolved
         entries_by_name[name] = _entry(resolved, output_root, commit, run_plans=args.ready)
 
+    for name, study in resolved_by_name.items():
+        waiting = _checkpoint_wait_reason(study, entries_by_name)
+        if waiting is not None and entries_by_name[name].get("status") == "READY":
+            entries_by_name[name]["status"] = "WAITING_CHECKPOINT"
+            entries_by_name[name]["reason"] = waiting
     entries = [entries_by_name[name] for name in paths]
     entries.append(_analysis14_entry(entries_by_name["encoder_backbone"]))
     _write_registry(campaign_root / "campaign_state.json", commit, entries, gates)
@@ -650,7 +791,8 @@ def main() -> None:
 
     ready_names = [
         name for name in paths
-        if entries_by_name[name].get("status") == "READY" and name in resolved_by_name
+        if entries_by_name[name].get("status") in {"READY", "WAITING_CHECKPOINT"}
+        and name in resolved_by_name
     ]
     submitted = dict(entries_by_name)
     pending = set(ready_names)

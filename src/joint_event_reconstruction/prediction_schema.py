@@ -271,6 +271,18 @@ def validate_prediction(path: str | Path) -> None:
                 if values.shape != (count, top_k, len(roles), 3):
                     raise ValueError(f"Prediction output has invalid {name}")
                 _require_finite(values, name)
+            physical = source.get("INVISIBLE/four_vectors")
+            if physical is not None:
+                values = physical[:]
+                expected = (count, top_k, posterior_samples, len(roles), 4)
+                if values.shape != expected:
+                    raise ValueError("Prediction output has invalid invisible four-vectors")
+                _require_finite(values, "INVISIBLE/four_vectors")
+                for name in ("INVISIBLE/four_vector_mean", "INVISIBLE/four_vector_std"):
+                    values = source[name][:]
+                    if values.shape != (count, top_k, len(roles), 4):
+                        raise ValueError(f"Prediction output has invalid {name}")
+                    _require_finite(values, name)
             if "TRUTH/NEUTRINO" not in source:
                 raise ValueError("Prediction output has invalid invisible truth")
             truth = source["TRUTH/NEUTRINO"][:]
@@ -279,6 +291,12 @@ def validate_prediction(path: str | Path) -> None:
                 or not np.isfinite(truth).all()
             ):
                 raise ValueError("Prediction output has invalid invisible truth")
+            truth_physical = source.get("TRUTH/INVISIBLE_FOUR_VECTOR")
+            if truth_physical is not None:
+                values = truth_physical[:]
+                if values.shape != (count, samples.shape[3], 4):
+                    raise ValueError("Prediction output has invalid invisible truth four-vectors")
+                _require_finite(values, "TRUTH/INVISIBLE_FOUR_VECTOR")
             branches = int(
                 source["INVISIBLE"].attrs[
                     "unique_assignment_conditioning_branches"
@@ -453,6 +471,18 @@ def validate_joint_prediction(path: str | Path) -> None:
             raise ValueError("Joint-flow prediction has invalid invisible truth")
         if not np.isfinite(invisible).all():
             raise ValueError("Joint-flow invisible hypotheses contain non-finite values")
+        physical = source.get("HYPOTHESES/invisible_four_vectors")
+        if physical is not None:
+            values = physical[:]
+            if values.shape != (count, posterior_samples, invisible.shape[2], 4):
+                raise ValueError("Joint-flow prediction has invalid invisible four-vectors")
+            _require_finite(values, "HYPOTHESES/invisible_four_vectors")
+        truth_physical = source.get("TRUTH/INVISIBLE_FOUR_VECTOR")
+        if truth_physical is not None:
+            values = truth_physical[:]
+            if values.shape != (count, invisible.shape[2], 4):
+                raise ValueError("Joint-flow prediction has invalid invisible truth four-vectors")
+            _require_finite(values, "TRUTH/INVISIBLE_FOUR_VECTOR")
         _read_invisible_roles(source, invisible.shape[2], "Joint-flow prediction")
         _validate_met_exact_projection(source, "Joint-flow prediction", count)
         _require_integer(states, "Joint-flow assignment states")

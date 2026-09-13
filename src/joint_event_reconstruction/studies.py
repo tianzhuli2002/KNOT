@@ -29,6 +29,7 @@ _GATE_KEYS = {
 }
 _STUDY_KEYS = {
     "name",
+    "title",
     "description",
     "experiment_pattern",
     "topologies",
@@ -46,8 +47,10 @@ _VARIANT_KEYS = {
     "initialise_from_gate",
     "initialise_components",
     "checkpoint_from",
+    "checkpoint_from_gate",
     "predictions",
 }
+_VARIANT_REQUIRED_KEYS = _VARIANT_KEYS - {"checkpoint_from_gate"}
 _PREDICTION_KEYS = {"label", "patch", "recurrent_steps"}
 _CHECKPOINT_SOURCE_KEYS = {"study", "variant"}
 _ARTIFACT_KEYS = {
@@ -90,6 +93,7 @@ class VariantSpec:
     initialise_from_gate: str | None
     initialise_components: tuple[str, ...]
     checkpoint_from: tuple[str, str] | None
+    checkpoint_from_gate: str | None
     predictions: tuple[PredictionSpec, ...]
 
 
@@ -97,6 +101,7 @@ class VariantSpec:
 class StudySpec:
     path: Path
     name: str
+    title: str
     description: str
     experiment_pattern: str
     topologies: tuple[str, ...]
@@ -153,6 +158,19 @@ class StudySpec:
                 frontier.append(parent)
         return tuple(
             variant for variant in self.dependency_order() if variant.name in required
+        )
+
+    def training_order(self, selected: tuple[str, ...] | None = None) -> tuple[VariantSpec, ...]:
+        """Return local-training variants, excluding immutable checkpoint consumers."""
+        ordered = (
+            self.dependency_order()
+            if selected is None
+            else self.dependency_closure(selected)
+        )
+        return tuple(
+            variant
+            for variant in ordered
+            if variant.checkpoint_from is None and variant.checkpoint_from_gate is None
         )
 
     def experiment_path(self, repo_root: Path, topology: str) -> Path:
@@ -410,6 +428,9 @@ def _raw_study(path: str | Path) -> StudySpec:
         raise ValueError("study must be a mapping")
     _exact_keys(study, _STUDY_KEYS, "study")
     name = _identifier(study["name"], "study.name")
+    title = str(study["title"]).strip()
+    if not title:
+        raise ValueError("study.title must be non-empty")
     description = str(study["description"]).strip()
     if not description:
         raise ValueError("study.description must be non-empty")
@@ -440,7 +461,15 @@ def _raw_study(path: str | Path) -> StudySpec:
         variant_name = _identifier(raw_name, "variant name")
         if not isinstance(values, dict):
             raise ValueError(f"variants.{variant_name} must be a mapping")
-        _exact_keys(values, _VARIANT_KEYS, f"variants.{variant_name}")
+        observed_keys = set(values)
+        if not _VARIANT_REQUIRED_KEYS <= observed_keys or not observed_keys <= _VARIANT_KEYS:
+            raise ValueError(
+                f"variants.{variant_name} keys must contain exactly the required keys "
+                f"{sorted(_VARIANT_REQUIRED_KEYS)} and only optional keys "
+                f"{sorted(_VARIANT_KEYS - _VARIANT_REQUIRED_KEYS)}; "
+                f"missing={sorted(_VARIANT_REQUIRED_KEYS - observed_keys)}, "
+                f"unknown={sorted(observed_keys - _VARIANT_KEYS)}"
+            )
         reporting = str(values["reporting"])
         if reporting not in _REPORTING:
             raise ValueError(
@@ -488,6 +517,24 @@ def _raw_study(path: str | Path) -> StudySpec:
                 _identifier(checkpoint_from["study"], f"variants.{variant_name}.checkpoint_from.study"),
                 _identifier(checkpoint_from["variant"], f"variants.{variant_name}.checkpoint_from.variant"),
             )
+        checkpoint_from_gate = values.get("checkpoint_from_gate")
+        if checkpoint_from_gate is not None:
+            checkpoint_from_gate = _identifier(
+                checkpoint_from_gate,
+                f"variants.{variant_name}.checkpoint_from_gate",
+            )
+        if checkpoint_from is not None and checkpoint_from_gate is not None:
+            raise ValueError(
+                f"variants.{variant_name} cannot use both checkpoint_from and "
+                "checkpoint_from_gate"
+            )
+        if checkpoint_from_gate is not None and (
+            initialise_from is not None or initialise_from_gate is not None
+        ):
+            raise ValueError(
+                f"variants.{variant_name} cannot initialise a variant that reads a "
+                "gate checkpoint"
+            )
         raw_predictions = values["predictions"]
         if not isinstance(raw_predictions, dict):
             raise ValueError(f"variants.{variant_name}.predictions must be a mapping")
@@ -533,6 +580,7 @@ def _raw_study(path: str | Path) -> StudySpec:
                 initialise_from_gate=initialise_from_gate,
                 initialise_components=components,
                 checkpoint_from=parsed_checkpoint_from,
+                checkpoint_from_gate=checkpoint_from_gate,
                 predictions=tuple(predictions),
             )
         )
@@ -547,6 +595,7 @@ def _raw_study(path: str | Path) -> StudySpec:
     result = StudySpec(
         path=path,
         name=name,
+        title=title,
         description=description,
         experiment_pattern=pattern,
         topologies=topologies,
@@ -649,6 +698,24 @@ def resolve_study(
                     f"Variant {variant.name!r} references unknown checkpoint variant "
                     f"{source_name}:{source_variant}"
                 )
+        if variant.checkpoint_from_gate is not None:
+            gate_name = variant.checkpoint_from_gate
+            if gate_name not in selected:
+                raise ValueError(
+                    f"Variant {variant.name!r} references gate checkpoint {gate_name!r}, "
+                    "which is not in study.requires"
+                )
+            for topology in study.topologies:
+                for seed in study.seeds:
+                    artifact = (
+                        selected[gate_name].get("artifacts") or {}
+                    ).get(topology, {}).get(f"seed_{seed}")
+                    if not artifact:
+                        raise ValueError(
+                            f"Locked gate {gate_name!r} has no selected checkpoint for "
+                            f"topology={topology}, model_seed={seed}; "
+                            "gate checkpoint consumption requires a registered artifact"
+                        )
         merged_variants.append(replace(variant, patch=patch))
     selected_payload = json.dumps(selected, sort_keys=True, separators=(",", ":")).encode()
     return replace(
