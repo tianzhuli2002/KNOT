@@ -288,11 +288,16 @@ def _record_controls(configs, visible, batch, device):
             / result["m3"]["mean_training_step_ms"]
         ),
     }
-    for name, ratio in result["ratios"].items():
-        if not 0.95 <= ratio <= 1.05:
-            raise RuntimeError(
-                f"{name}={ratio:.4f} is outside the required 0.95-1.05 GPU control range"
-            )
+    outside = {
+        name: ratio
+        for name, ratio in result["ratios"].items()
+        if not 0.95 <= ratio <= 1.05
+    }
+    if outside:
+        rendered = ", ".join(f"{name}={ratio:.4f}" for name, ratio in outside.items())
+        raise RuntimeError(
+            f"GPU compute-control ratios outside the required 0.95-1.05 range: {rendered}"
+        )
     result["ratio_tolerance"] = {"lower": 0.95, "upper": 1.05, "status": "PASS"}
     return result
 

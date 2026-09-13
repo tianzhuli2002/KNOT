@@ -34,7 +34,8 @@
       "role": "parameter-matched non-recurrent control"
     },
     "m2_compute_control": {
-      "encoder_layers": 12,
+      "encoder_layers": 10,
+      "previous_final_encoder_layers": 12,
       "d_feedforward": 64,
       "historical_encoder_layers": 16,
       "role": "training-compute-matched non-recurrent control"

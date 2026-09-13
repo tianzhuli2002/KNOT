@@ -78,7 +78,7 @@ variants:
     reporting: diagnostic
     patch:
       model:
-        encoder: {layers: 12, d_feedforward: 64}
+        encoder: {layers: 10, d_feedforward: 64}
         mode: factorized
       training: {trainable: [visible, assignment]}
     initialise_from:
