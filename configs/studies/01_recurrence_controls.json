@@ -16,6 +16,25 @@
     "tolerance": 0.001,
     "controls_unchanged": true
   },
+  "final_source_compute_check": {
+    "validated_source_sha": "9c516145e223cf6ef08969f767ea74bb3ad8af76",
+    "gpu": "NVIDIA L40S",
+    "slurm_job": 20312720,
+    "batch_events": 128,
+    "warmup": 2,
+    "iterations": 5,
+    "precision": "32-true",
+    "m2_recurrent_steps": 4,
+    "m3_recurrent_steps": 4,
+    "m2_training_step_ms": 26.65168959647417,
+    "m2_compute_control_training_step_ms": 26.270684809423983,
+    "m2_compute_control_over_m2": 0.9857042914419732,
+    "m3_training_step_ms": 34.508057578932494,
+    "m3_compute_control_training_step_ms": 34.69223420834169,
+    "m3_compute_control_over_m3": 1.0053372065056956,
+    "ratio_tolerance": [0.95, 1.05],
+    "status": "PASS"
+  },
   "benchmark": {
     "gpu": "NVIDIA L40S",
     "batch_events": 128,

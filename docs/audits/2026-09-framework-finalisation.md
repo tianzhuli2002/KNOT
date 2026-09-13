@@ -70,7 +70,7 @@ immutable inputs and are not counted as tracked source files.
 - unrestricted scientific invariants, five shared-cache encoder smokes,
   baseline raw/cache regression, representative real-cache reconstruction
   paths, Study-01 controls, all study plans and all Slurm dry plans pass;
-- the final L40S gate remains pending until a clean committed SHA is submitted.
+- the final L40S gate passed on the clean source SHA recorded below.
 
 ## Final CPU evidence (2026-09-13)
 
@@ -101,6 +101,23 @@ immutable inputs and are not counted as tracked source files.
 - Analysis 14 is mechanically validated as validation-only APS calibration;
   all Studies 01--13 and all 13 Slurm DAG dry plans pass. No training or
   calibration campaign has been run.
+
+## Final L40S engineering gate (2026-09-13)
+
+- validated source SHA: `9c516145e223cf6ef08969f767ea74bb3ad8af76`;
+  Slurm job `20312720`, partition `gpuL`, NVIDIA L40S, terminal
+  `COMPLETED`, exit `0:0`, elapsed `00:06:38`, peak batch RSS `9,874,692K`;
+- the worker verified a clean checkout at the expected SHA and a production
+  cache `HIT` for `/net/scratch/w00238tl/jer_cache/ttbar2L_canonical.pt`;
+- all five visible encoders completed CUDA forward/loss/backward/optimizer
+  checks from the same 128-event cache batch in `32-true` precision;
+- fixed-R4 Study-01 control timing passed: M2 control/M2 `0.9857043`, M3
+  control/M3 `1.0053372`, with the required interval `[0.95, 1.05]`;
+- CFM Cartesian, CFM MET-residual, conditional OT, JointFlow MET-residual and
+  truth-oracle paths passed finite-loss/backward checks; checkpoint reload,
+  prediction writing, schema validation and evaluation passed on two events;
+- durable output is under
+  `results/engineering/framework-final-audit/final-gpu-9c51614/`.
 
 The requested VyPER reference inspection found its established fast path in
 `VyPER/data/preprocessed.py` and `VyPER/data/datamodule.py`: one-time graph
