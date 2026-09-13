@@ -96,9 +96,9 @@ def _parameter_count(module: torch.nn.Module) -> int:
     return sum(parameter.numel() for parameter in module.parameters())
 
 
-def _train_step(module, batch, optimiser) -> float:
+def _train_step(module, batch, optimiser, *, recurrent_steps: int | None = None) -> float:
     optimiser.zero_grad(set_to_none=True)
-    output = module(batch)
+    output = module(batch, recurrent_steps=recurrent_steps)
     loss = output["loss"]
     if not torch.isfinite(loss).item():
         raise RuntimeError("non-finite loss in GPU gate")
@@ -109,7 +109,15 @@ def _train_step(module, batch, optimiser) -> float:
     return float(loss.detach().cpu())
 
 
-def _timed_steps(module, batch, *, warmup: int, measured: int, device: torch.device):
+def _timed_steps(
+    module,
+    batch,
+    *,
+    warmup: int,
+    measured: int,
+    device: torch.device,
+    recurrent_steps: int | None = None,
+):
     optimiser = torch.optim.AdamW(
         [parameter for parameter in module.parameters() if parameter.requires_grad],
         lr=1.0e-4,
@@ -117,7 +125,7 @@ def _timed_steps(module, batch, *, warmup: int, measured: int, device: torch.dev
     )
     module.train()
     for _ in range(warmup):
-        _train_step(module, batch, optimiser)
+        _train_step(module, batch, optimiser, recurrent_steps=recurrent_steps)
     _sync(device)
     if device.type == "cuda":
         torch.cuda.reset_peak_memory_stats(device)
@@ -126,7 +134,9 @@ def _timed_steps(module, batch, *, warmup: int, measured: int, device: torch.dev
     for _ in range(measured):
         _sync(device)
         start = time.perf_counter()
-        losses.append(_train_step(module, batch, optimiser))
+        losses.append(
+            _train_step(module, batch, optimiser, recurrent_steps=recurrent_steps)
+        )
         _sync(device)
         values.append(time.perf_counter() - start)
     return {
@@ -255,7 +265,15 @@ def _record_controls(configs, visible, batch, device):
         result[name] = {
             "parameters": _parameter_count(module),
             "precision": "32-true",
-            **_timed_steps(module, batch, warmup=2, measured=5, device=device),
+            "recurrent_steps": 4 if name in {"m2", "m3"} else None,
+            **_timed_steps(
+                module,
+                batch,
+                warmup=2,
+                measured=5,
+                device=device,
+                recurrent_steps=4 if name in {"m2", "m3"} else None,
+            ),
         }
         del module
         if device.type == "cuda":
