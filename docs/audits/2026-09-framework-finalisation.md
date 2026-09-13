@@ -6,7 +6,7 @@
 - audit branch: `framework-final-audit`
 - audit date: 2026-09-02 to 2026-09-03
 - tracked files at audit start: 148
-- final tracked files in the current tree: 147
+- final tracked files in the current tree: 148
 - final CPU validation pass: 2026-09-13
 - excluded artifacts: untracked/generated caches, HDF5 products, plots and Slurm logs
 
@@ -101,6 +101,12 @@ immutable inputs and are not counted as tracked source files.
 - Analysis 14 is mechanically validated as validation-only APS calibration;
   all Studies 01--13 and all 13 Slurm DAG dry plans pass. No training or
   calibration campaign has been run.
+- Final branch-tip dry plans at `ca479b1e3dd475dd2be5287b358957e96a5d5f80`
+  revalidated all 13 compact studies and all 13 Slurm DAGs; Study 01 resolves
+  to 21 training units (seven variants × three model seeds), validation is the
+  selection split, and all seeds share the same train/validation/test EVENT_ID
+  digests under subset seed 42. Analysis 14 imports both calibration scripts
+  and remains validation-only.
 
 ## Final L40S engineering gate (2026-09-13)
 
@@ -195,6 +201,7 @@ content was inspected; “no issue” means inspection found no justified change
 - `scripts/analyze_study_01.py` — AUDITED — no issue
 - `scripts/audit_data_contract.py` — AUDITED — fixed
 - `scripts/benchmark_encoders.py` — AUDITED — fixed
+- `scripts/final_gpu_gate.py` — AUDITED — fixed
 - `scripts/benchmark_synthetic.py` — AUDITED — no issue
 - `scripts/calibrate_assignment_sets.py` — AUDITED — no issue
 - `scripts/check_scientific_invariants.py` — AUDITED — fixed
