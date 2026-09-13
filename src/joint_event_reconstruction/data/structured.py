@@ -31,11 +31,13 @@ class StructuredCollator:
         topology_path: str | Path,
         source_type_ids: dict[str, int],
         *,
+        truth_bindings: dict | None = None,
         build_assignments: bool = False,
         max_assignment_states: int | None = None,
     ):
         self.topology_path = str(Path(topology_path).expanduser().resolve())
         self.source_type_ids = dict(source_type_ids)
+        self.truth_bindings = truth_bindings
         self.build_assignments = bool(build_assignments)
         self.max_assignment_states = (
             None if max_assignment_states is None else int(max_assignment_states)
@@ -53,7 +55,7 @@ class StructuredCollator:
     @property
     def spec(self):
         if self._spec is None:
-            self._spec = load_topology(self.topology_path)
+            self._spec = load_topology(self.topology_path, self.truth_bindings)
         return self._spec
 
     def _initialise_static_layout(
@@ -269,11 +271,14 @@ class StructuredCachedDataset(Dataset):
             "type_ids": self.payload["type_ids"][position],
             "padding_mask": self.payload["padding_mask"][position],
             "labels": self.payload["labels"][position],
-            "event_index": self.payload["indices"][position],
+            "event_index": self.payload.get("event_id", self.payload["indices"])[position],
             "reco_raw_labels": self.payload["reco_raw_labels"][position],
             "reco_source_ids": self.payload["type_ids"][position].to(torch.int8),
             "physics_vectors": self.payload["physics_vectors"][position],
         }
+
+    def __getitems__(self, items):
+        return [self[item] for item in items]
 
 
 class StructuredDataModule(TransformerDataModule):
@@ -282,6 +287,7 @@ class StructuredDataModule(TransformerDataModule):
         config,
         topology_path: str | Path,
         *,
+        truth_bindings: dict | None = None,
         tensor_cache: str | Path | None = None,
         invisible_path: str | Path | None = None,
         allow_synthetic: bool = False,
@@ -294,11 +300,11 @@ class StructuredDataModule(TransformerDataModule):
         self.tensor_cache = (
             None if tensor_cache is None else Path(tensor_cache).expanduser().resolve()
         )
-        config.dataset.cache.enabled = False
         super().__init__(config)
         self.structured_collator = StructuredCollator(
             topology_path,
             dict(self.schema.source_type_ids),
+            truth_bindings=truth_bindings,
             build_assignments=build_assignments,
             max_assignment_states=max_assignment_states,
         )
@@ -427,6 +433,16 @@ class StructuredDataModule(TransformerDataModule):
 
     def _selected_ids(self, split_name: str, positions):
         rows = np.asarray(self.split_indices[split_name], dtype=np.int64)[positions]
+        if self.cache_payload is not None and "event_id" in self.cache_payload:
+            selected = np.asarray(self.split_indices["selected"], dtype=np.int64)
+            order = np.argsort(selected)
+            locations = np.searchsorted(selected[order], rows)
+            if (locations >= len(selected)).any() or not np.array_equal(
+                selected[order][locations], rows
+            ):
+                raise ValueError("Split row is absent from cache EVENT_ID mapping")
+            payload_positions = order[locations]
+            return self.cache_payload["event_id"][payload_positions].numpy()
         with h5py.File(self.h5_path, "r") as source:
             return source["EVENT_ID"][rows] if "EVENT_ID" in source else rows
 
@@ -462,11 +478,28 @@ class StructuredDataModule(TransformerDataModule):
         role_names = tuple(
             role.key for role in self.structured_collator.spec.invisible_roles
         )
-        store = InvisibleTruthStore(
-            self.invisible_path,
-            role_names,
-            allow_synthetic=self.allow_synthetic,
-        )
+        if self.cache_payload is not None and "invisible_truth" in self.cache_payload:
+            cached_ids = self.cache_payload["event_id"].numpy()
+            cached_truth = self.cache_payload["invisible_truth"].numpy()
+            if cached_truth.shape != (len(cached_ids), len(role_names), 3):
+                raise ValueError(
+                    "Cached invisible truth shape does not match topology roles: "
+                    f"cache={cached_truth.shape}, roles={role_names}"
+                )
+            order = np.argsort(cached_ids)
+            store = InvisibleTruthStore.__new__(InvisibleTruthStore)
+            store.path = Path(self.tensor_cache)
+            store.role_names = role_names
+            store.synthetic = False
+            store.metadata = {"source": "tensor_cache"}
+            store.event_ids = cached_ids[order]
+            store.values = cached_truth[order]
+        else:
+            store = InvisibleTruthStore(
+                self.invisible_path,
+                role_names,
+                allow_synthetic=self.allow_synthetic,
+            )
         if store.synthetic:
             scaler_ids = self._selected_ids("train", selected_positions["train"])
         else:

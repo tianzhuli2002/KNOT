@@ -55,6 +55,7 @@ def build_data(config, visible):
     return StructuredDataModule(
         visible,
         config.topology_config,
+        truth_bindings=OmegaConf.to_container(config.data.truth_bindings, resolve=True),
         tensor_cache=config.data.tensor_cache,
         invisible_path=invisible.path if config.model.invisible.enabled else None,
         allow_synthetic=bool(invisible.allow_synthetic),
@@ -167,6 +168,7 @@ def train(
     device: str = "auto",
     initial_checkpoint: str | None = None,
     initial_components: tuple[str, ...] = (),
+    public_config_path: str | None = None,
 ) -> None:
     import lightning as L
     import torch
@@ -188,6 +190,50 @@ def train(
             if data.structured_collator.invisible_store is not None
             else False
         ),
+    )
+    output_dir = Path(config.training.output).expanduser().resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    from joint_event_reconstruction.inputs import encoder_input_contract
+    from joint_event_reconstruction.training.joint import active_architecture
+    import subprocess
+
+    if public_config_path is not None:
+        public_source = Path(public_config_path).expanduser().resolve()
+        (output_dir / "config.public.yaml").write_text(public_source.read_text())
+    (output_dir / "config.resolved.yaml").write_text(OmegaConf.to_yaml(config, resolve=True))
+    (output_dir / "architecture.json").write_text(
+        json.dumps(active_architecture(config.model), indent=2, sort_keys=True) + "\n"
+    )
+    (output_dir / "inputs.json").write_text(
+        json.dumps(encoder_input_contract(config), indent=2, sort_keys=True) + "\n"
+    )
+    git_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"], text=True, capture_output=True, check=True
+    ).stdout.strip()
+    module.hparams["git_sha"] = git_sha
+    cache_manifest_path = Path(config.data.tensor_cache).with_suffix(".json")
+    cache_metadata = json.loads(cache_manifest_path.read_text())
+    module.hparams["cache_metadata"] = cache_metadata
+    module.hparams["dataset_identity"] = cache_metadata.get("source_identity")
+    module.hparams["split_identity"] = data.split_metadata
+    (output_dir / "provenance.json").write_text(
+        json.dumps(
+            {
+                "git_sha": git_sha,
+                "experiment_seed": int(config.experiment.seed),
+                "data_subset_seed": int(config.data.subset_seed),
+                "precision": str(config.training.precision),
+                "trainable_components": list(config.training.trainable),
+                "cache_fingerprint": cache_metadata.get("cache_key"),
+                "cache_metadata": cache_metadata,
+                "dataset_identity": cache_metadata.get("source_identity"),
+                "split_identity": data.split_metadata,
+                "external_package_versions": module.hparams["external_package_versions"],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
     )
     if initial_checkpoint is not None:
         loaded = _load_initial_components(module, initial_checkpoint, initial_components)
@@ -381,6 +427,7 @@ def build_parser() -> argparse.ArgumentParser:
     train_parser = commands.add_parser("train", help="train one configured experiment")
     _experiment_options(train_parser)
     train_parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
+    train_parser.add_argument("--force-rebuild-cache", action="store_true")
     train_parser.add_argument(
         "--initial-checkpoint",
         help="Initialise selected semantic components before training.",
@@ -436,11 +483,180 @@ def build_parser() -> argparse.ArgumentParser:
         "show-config", help="validate and print the fully resolved internal experiment"
     )
     _experiment_options(show_parser)
+
+    config_parser = commands.add_parser("config", help="validate or show an experiment")
+    config_commands = config_parser.add_subparsers(dest="config_command", required=True)
+    for name in ("validate", "show"):
+        command = config_commands.add_parser(name)
+        command.add_argument("path")
+
+    inputs_parser = commands.add_parser("inputs", help="inspect encoder information")
+    inputs_commands = inputs_parser.add_subparsers(dest="inputs_command", required=True)
+    inputs_show = inputs_commands.add_parser("show")
+    inputs_show.add_argument("path")
+    inputs_compare = inputs_commands.add_parser("compare")
+    inputs_compare.add_argument("path")
+
+    cache_parser = commands.add_parser("cache", help="inspect or build the tensor cache")
+    cache_commands = cache_parser.add_subparsers(dest="cache_command", required=True)
+    cache_show = cache_commands.add_parser("show")
+    cache_show.add_argument("path")
+    cache_build = cache_commands.add_parser("build")
+    cache_build.add_argument("path")
+    cache_build.add_argument("--force", action="store_true")
+
+    topology_parser = commands.add_parser("topology", help="inspect semantic topology")
+    topology_commands = topology_parser.add_subparsers(dest="topology_command", required=True)
+    topology_show = topology_commands.add_parser("show")
+    topology_show.add_argument("path")
+
+    checkpoint_parser = commands.add_parser("checkpoint", help="inspect checkpoint metadata")
+    checkpoint_commands = checkpoint_parser.add_subparsers(dest="checkpoint_command", required=True)
+    checkpoint_show = checkpoint_commands.add_parser("show")
+    checkpoint_show.add_argument("path")
+
+    study_parser = commands.add_parser("study", help="inspect a study or campaign")
+    study_commands = study_parser.add_subparsers(dest="study_command", required=True)
+    study_plan = study_commands.add_parser("plan")
+    study_plan.add_argument("path")
+    study_status = study_commands.add_parser("status")
+    study_status.add_argument("path")
     return parser
 
 
-def main() -> None:
+def _checkpoint_summary(path: str) -> dict:
+    import torch
+
+    checkpoint_path = Path(path).expanduser().resolve()
+    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    saved = checkpoint.get("hyper_parameters", {})
+    architecture = saved.get("architecture", {})
+    return {
+        "path": str(checkpoint_path),
+        "git_sha": saved.get("git_sha"),
+        "topology_signature": saved.get("topology_signature"),
+        "architecture_signature": saved.get("architecture_signature"),
+        "visible_encoder": saved.get("visible_encoder"),
+        "encoder_input_contract": saved.get("encoder_input_contract"),
+        "architecture": architecture,
+        "trainable_components": saved.get("trainable_components"),
+        "training_event_fingerprint": saved.get("training_event_fingerprint"),
+        "training_seed": saved.get("experiment_seed"),
+        "data_subset_seed": saved.get("data_subset_seed"),
+        "precision": saved.get("precision"),
+        "external_package_versions": saved.get("external_package_versions"),
+    }
+
+
+def _study_status(path: str) -> dict:
+    candidate = Path(path).expanduser().resolve()
+    if candidate.is_file():
+        submission = candidate
+    else:
+        matches = sorted(candidate.glob("**/submission.json"))
+        if not matches:
+            raise FileNotFoundError(f"No submission.json found under {candidate}")
+        submission = matches[-1]
+    payload = json.loads(submission.read_text())
+    return {"submission": str(submission), **payload}
+
+
+def _main() -> None:
     args = build_parser().parse_args()
+
+    if args.command == "config":
+        config = load_experiment(args.path)
+        if args.config_command == "show":
+            print(OmegaConf.to_yaml(config, resolve=True))
+        else:
+            print(f"VALID: {Path(args.path).resolve()}")
+        return
+    if args.command == "inputs":
+        from joint_event_reconstruction.inputs import (
+            assert_study12_fairness,
+            format_input_contract,
+            load_input_contract,
+            study_input_contracts,
+        )
+
+        if args.inputs_command == "show":
+            print(format_input_contract(load_input_contract(args.path)))
+        else:
+            contracts = study_input_contracts(args.path)
+            assert_study12_fairness(contracts)
+            print(json.dumps(contracts, indent=2, sort_keys=True))
+        return
+    if args.command == "cache":
+        config = load_experiment(args.path)
+        cache_path = Path(config.data.tensor_cache)
+        manifest_path = cache_path.with_suffix(".json")
+        if args.cache_command == "show":
+            state = "MISS"
+            manifest = {}
+            if cache_path.exists() and manifest_path.exists():
+                try:
+                    manifest = json.loads(manifest_path.read_text())
+                    identity = manifest.get("source_identity", {})
+                    input_stat = Path(config.data.input).stat()
+                    compatible = (
+                        manifest.get("cache_version") == 9
+                        and identity.get("path") == str(Path(config.data.input).resolve())
+                        and identity.get("size_bytes") == input_stat.st_size
+                    )
+                    state = "HIT" if compatible else "MISMATCH"
+                except (OSError, json.JSONDecodeError):
+                    state = "MISMATCH"
+            print(json.dumps({
+                "input": str(config.data.input), "cache": str(cache_path),
+                "state": state, "cache_version": manifest.get("cache_version"),
+                "event_count": manifest.get("n_events"),
+                "dataset_fingerprint": manifest.get("source_identity"),
+                "input_fingerprint": manifest.get("cache_key"),
+                "size_bytes": cache_path.stat().st_size if cache_path.is_file() else None,
+            }, indent=2, sort_keys=True))
+        else:
+            config.data.force_rebuild_cache = bool(args.force)
+            visible = load_visible_config(config)
+            data = build_data(config, visible)
+            data.setup("fit")
+            print(f"Cache built: {cache_path}")
+        return
+    if args.command == "topology":
+        from joint_event_reconstruction.topology.compiler import load_topology
+
+        spec = load_topology(args.path)
+        print(json.dumps({
+            "signature": spec.signature,
+            "roots": spec.roots,
+            "dag_order": spec.dag_order,
+            "roles": {
+                key: {"source": role.source, "truth": role.truth_names}
+                for key, role in spec.leaf_roles.items()
+            },
+        }, indent=2, sort_keys=True))
+        return
+    if args.command == "checkpoint":
+        print(json.dumps(_checkpoint_summary(args.path), indent=2, sort_keys=True))
+        return
+    if args.command == "study":
+        if args.study_command == "status":
+            print(json.dumps(_study_status(args.path), indent=2, sort_keys=True))
+        else:
+            from joint_event_reconstruction.studies import load_study
+
+            study = load_study(args.path)
+            print(json.dumps({
+                "name": study.name,
+                "split": study.split,
+                "topologies": study.topologies,
+                "seeds": study.seeds,
+                "dependency_order": [variant.name for variant in study.dependency_order()],
+                "variants": {
+                    variant.name: [prediction.name for prediction in variant.predictions]
+                    for variant in study.variants
+                },
+            }, indent=2, sort_keys=True))
+        return
 
     if args.command == "evaluate":
         from joint_event_reconstruction.evaluation_joint import evaluate_any_predictions
@@ -459,6 +675,7 @@ def main() -> None:
         print(OmegaConf.to_yaml(config, resolve=True))
         return
     if args.command == "train":
+        config.data.force_rebuild_cache = bool(args.force_rebuild_cache)
         if bool(args.initial_checkpoint) != bool(args.initial_components):
             raise ValueError(
                 "--initial-checkpoint and --initial-components must be supplied together"
@@ -468,6 +685,7 @@ def main() -> None:
             device=args.device,
             initial_checkpoint=args.initial_checkpoint,
             initial_components=tuple(args.initial_components),
+            public_config_path=args.experiment,
         )
         return
     if args.command == "predict":
@@ -497,6 +715,13 @@ def main() -> None:
         )
         return
     raise RuntimeError(f"Unhandled command {args.command!r}")
+
+
+def main() -> None:
+    try:
+        _main()
+    except (FileNotFoundError, KeyError, TypeError, ValueError) as error:
+        raise SystemExit(f"jer: {error}") from None
 
 
 if __name__ == "__main__":

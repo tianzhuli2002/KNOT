@@ -10,6 +10,7 @@ from pathlib import Path
 import h5py
 import numpy as np
 import torch
+from omegaconf import OmegaConf
 
 from joint_event_reconstruction.configuration import load_experiment, load_visible_config
 from joint_event_reconstruction.topology.compiler import load_topology
@@ -29,7 +30,10 @@ def main() -> None:
 
     config = load_experiment(args.experiment)
     visible = load_visible_config(config)
-    spec = load_topology(config.topology_config)
+    spec = load_topology(
+        config.topology_config,
+        OmegaConf.to_container(config.data.truth_bindings, resolve=True),
+    )
     cache_name = args.tensor_cache or config.data.tensor_cache
     if cache_name is None:
         raise ValueError("Synthetic sidecar generation requires an explicit tensor cache")

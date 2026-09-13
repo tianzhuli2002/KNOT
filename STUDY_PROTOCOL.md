@@ -217,7 +217,7 @@ External ReconstructionAndSB/VyPER/conventional kinematic baselines and a
 later ttbar1L/ttH1L compact generalisation check are planned before publication;
 they are not part of the current mechanism-discovery campaigns.
 
-## v2 framework extensions
+## Final framework extensions
 
 Study 12 (`configs/studies/12_encoder_backbone.yaml`) is the controlled visible
 backbone template: Transformer, physics Transformer, L-GATr and L-GATr-Slim all
@@ -240,9 +240,9 @@ The maintained human gates are `assignment_reasoning`, `visible_assignment`,
 `configs/studies/UPSTREAM_SELECTIONS.yaml`. The scientific order is Study 01 →
 assignment reasoning → Study 12 → visible assignment; Study 02 and Study 05/11
 then become available as their individual prerequisites are reviewed. No gate
-is locked automatically and no v2 study is submitted by this framework pass.
+is locked automatically and no new study is submitted by this framework pass.
 
-Study 01 historical products may use architecture signature v4. Study 12/v2
+Study 01 historical products may use architecture signature v4. Study 12
 uses signature v5 and trains from scratch under its selected visible-backbone
 configuration; a human decision transfers the reasoning choice rather than
 blindly loading an incompatible full checkpoint.

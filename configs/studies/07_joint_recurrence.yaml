@@ -13,10 +13,14 @@ variants:
     patch:
       model:
         assignment:
-          method: discriminative
-          recurrence: {train_steps: [1, 2, 3, 4], eval_steps: 4, feedback: soft}
+          formulation: discriminative
+          refinement:
+            train_iterations: [1, 2, 3, 4]
+            inference_iterations: 4
+            feedback: soft
+        mode: factorized
       training: {trainable: [visible, assignment]}
-    initialise_from: null
+    initialise_from:
     initialise_components: []
     predictions: {}
 
@@ -25,25 +29,27 @@ variants:
     reporting: primary
     patch:
       model:
-        assignment: null
-        joint_flow: {recurrent: false}
+        assignment:
+        mode: joint
+        joint: {recurrent: false}
       training: {trainable: [assignment, invisible]}
     initialise_from: assignment_reference
     initialise_components: [visible]
     predictions:
-      t8: {label: stateless T=8, patch: {prediction: {samples: 64, steps: 8, sample_chunk_size: 8}}, recurrent_steps: null}
-      t16: {label: stateless T=16, patch: {prediction: {samples: 64, steps: 16, sample_chunk_size: 8}}, recurrent_steps: null}
+      t8: {label: stateless T=8, patch: {inference: {invisible: {samples_per_assignment: 64, flow: {steps: 8}}, sample_chunk_size: 8}}, recurrent_steps: null}
+      t16: {label: stateless T=16, patch: {inference: {invisible: {samples_per_assignment: 64, flow: {steps: 16}}, sample_chunk_size: 8}}, recurrent_steps: null}
 
   recurrent:
     label: joint recurrent topology state
     reporting: primary
     patch:
       model:
-        assignment: null
-        joint_flow: {recurrent: true, train_steps: [1, 2, 3, 4]}
+        assignment:
+        mode: joint
+        joint: {recurrent: true, train_steps: [1, 2, 3, 4]}
       training: {trainable: [assignment, invisible]}
     initialise_from: assignment_reference
     initialise_components: [visible]
     predictions:
-      t8: {label: recurrent T=8, patch: {prediction: {samples: 64, steps: 8, sample_chunk_size: 8}}, recurrent_steps: null}
-      t16: {label: recurrent T=16, patch: {prediction: {samples: 64, steps: 16, sample_chunk_size: 8}}, recurrent_steps: null}
+      t8: {label: recurrent T=8, patch: {inference: {invisible: {samples_per_assignment: 64, flow: {steps: 8}}, sample_chunk_size: 8}}, recurrent_steps: null}
+      t16: {label: recurrent T=16, patch: {inference: {invisible: {samples_per_assignment: 64, flow: {steps: 16}}, sample_chunk_size: 8}}, recurrent_steps: null}

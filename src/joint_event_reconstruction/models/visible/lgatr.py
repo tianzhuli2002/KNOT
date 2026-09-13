@@ -57,24 +57,29 @@ class LGATrVisibleEncoder(nn.Module):
         self.n_object_types = n_object_types
         self.event_state = nn.Parameter(torch.empty(1, 1, int(config.d_model)))
         nn.init.normal_(self.event_state, mean=0.0, std=0.02)
-        beam = str(config.spurions.beam)
-        add_time = bool(config.spurions.time)
+        beam = str(config.symmetry_breaking.beam)
+        add_time = bool(config.symmetry_breaking.time)
         n_spurions = lgatr.get_num_spurions(beam, add_time)
         self.register_buffer(
             "spurions",
             lgatr.get_spurions(beam, add_time),
             persistent=False,
         )
-        scalar_count = len(config.scalar_features) + n_object_types + int(config.d_model)
+        scalar_count = (
+            len(config.inputs.object_features)
+            + len(config.inputs.event_features)
+            + n_object_types
+            + int(config.d_model)
+        )
         self.network = lgatr.LGATr(
-            num_blocks=int(config.blocks),
+            num_blocks=int(config.layers),
             in_mv_channels=1 + n_spurions,
             out_mv_channels=1,
-            hidden_mv_channels=int(config.hidden_mv_channels),
+            hidden_mv_channels=int(config.hidden.multivector_channels),
             in_s_channels=scalar_count,
             out_s_channels=int(config.d_model),
-            hidden_s_channels=int(config.hidden_s_channels),
-            attention={"num_heads": int(config.heads)},
+            hidden_s_channels=int(config.hidden.scalar_channels),
+            attention={"num_heads": int(config.n_heads)},
             mlp={},
             reinsert_mv_channels=tuple(range(1, 1 + n_spurions)),
             dropout_prob=float(config.dropout),
@@ -117,16 +122,21 @@ class LGATrSlimVisibleEncoder(nn.Module):
             self._vector_spurions(config),
             persistent=False,
         )
-        scalar_count = len(config.scalar_features) + n_object_types + int(config.d_model)
+        scalar_count = (
+            len(config.inputs.object_features)
+            + len(config.inputs.event_features)
+            + n_object_types
+            + int(config.d_model)
+        )
         self.network = lgatr.LGATrSlim(
-            num_blocks=int(config.blocks),
+            num_blocks=int(config.layers),
             in_v_channels=1 + len(self.vector_spurions),
             out_v_channels=1,
-            hidden_v_channels=int(config.hidden_vector_channels),
+            hidden_v_channels=int(config.hidden.vector_channels),
             in_s_channels=scalar_count,
             out_s_channels=int(config.d_model),
-            hidden_s_channels=int(config.hidden_scalar_channels),
-            num_heads=int(config.heads),
+            hidden_s_channels=int(config.hidden.scalar_channels),
+            num_heads=int(config.n_heads),
             dropout_prob=float(config.dropout),
             checkpoint_blocks=False,
             naive_amp=False,
@@ -136,15 +146,15 @@ class LGATrSlimVisibleEncoder(nn.Module):
     @staticmethod
     def _vector_spurions(config) -> torch.Tensor:
         vectors = []
-        beam = str(config.spurions.beam)
+        beam = str(config.symmetry_breaking.beam)
         if beam == "xyplane":
             # Slim has no bivector stream. Its vector-only representation uses the
             # beam-normal axis; together with time this preserves the detector O(2)
             # subgroup targeted by the xy-plane spurion in full L-GATr.
             vectors.append((0.0, 0.0, 0.0, 1.0))
         elif beam != "none":
-            raise ValueError("lgatr_slim spurions.beam must be xyplane or none")
-        if bool(config.spurions.time):
+            raise ValueError("lgatr_slim symmetry_breaking.beam must be xyplane or none")
+        if bool(config.symmetry_breaking.time):
             vectors.append((1.0, 0.0, 0.0, 0.0))
         return torch.tensor(vectors, dtype=torch.float32).reshape(-1, 4)
 

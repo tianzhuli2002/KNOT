@@ -1,60 +1,107 @@
 study:
   name: encoder_backbone
-  description: Compare visible backbones at fixed Study-01-selected assignment reasoning; all variants train visible and assignment components from scratch.
+  description: Isolate transformed-token, four-vector, relational, and geometric visible representations at fixed assignment reasoning.
   experiment_pattern: configs/experiments/{topology}.yaml
   topologies: [ttbar2L]
   seeds: [42]
   split: validation
 
 variants:
-  transformer:
-    label: Standard Transformer
-    reporting: primary
+  transformer_baseline:
+    label: Historical transformed-feature Transformer
+    reporting: diagnostic
     patch:
       model:
-        encoder: {type: transformer, layers: 4}
-        assignment: {method: discriminative, recurrence: {train_steps: [1, 2, 3, 4], eval_steps: 4, feedback: soft}}
-      training: {precision: 32-true, runtime: {compile: false, activation_checkpointing: false}, trainable: [visible, assignment]}
+        mode: factorized
+        encoder:
+          type: transformer
+          representation: features
+          relations: none
+          layers: 4
+        assignment: &assignment
+          formulation: discriminative
+          refinement:
+            train_iterations: [1, 2, 3, 4]
+            inference_iterations: 4
+            feedback: soft
+      training: &training
+        precision: 32-true
+        runtime: {compile: false, activation_checkpointing: false}
+        trainable: [visible, assignment]
     initialise_from: null
     initialise_components: []
     predictions:
-      topk5: {label: Transformer top-K=5, patch: {prediction: {top_k: 5}}, recurrent_steps: 4}
+      topk5: {label: Transformer top-K=5, patch: {inference: {assignment: {top_k: 5}}}, recurrent_steps: 4}
 
-  physics_transformer:
-    label: Physics-aware Transformer
+  fourvector_transformer:
+    label: Four-vector Transformer (no pairwise relations)
     reporting: primary
     patch:
       model:
-        encoder: {type: physics_transformer, layers: 4}
-        assignment: {method: discriminative, recurrence: {train_steps: [1, 2, 3, 4], eval_steps: 4, feedback: soft}}
-      training: {precision: 32-true, runtime: {compile: false, activation_checkpointing: false}, trainable: [visible, assignment]}
+        mode: factorized
+        encoder: &physical_encoder
+          type: transformer
+          representation: four_vector
+          relations: none
+          layers: 4
+          n_heads: 4
+        assignment: *assignment
+      training: *training
     initialise_from: null
     initialise_components: []
     predictions:
-      topk5: {label: Physics Transformer top-K=5, patch: {prediction: {top_k: 5}}, recurrent_steps: 4}
+      topk5: {label: Four-vector Transformer top-K=5, patch: {inference: {assignment: {top_k: 5}}}, recurrent_steps: 4}
+
+  relational_transformer:
+    label: Relational Transformer
+    reporting: primary
+    patch:
+      model:
+        mode: factorized
+        encoder:
+          <<: *physical_encoder
+          relations: physics
+        assignment: *assignment
+      training: *training
+    initialise_from: null
+    initialise_components: []
+    predictions:
+      topk5: {label: Relational Transformer top-K=5, patch: {inference: {assignment: {top_k: 5}}}, recurrent_steps: 4}
 
   lgatr:
     label: L-GATr
     reporting: primary
     patch:
       model:
-        encoder: {type: lgatr, blocks: 4, heads: 4, hidden_mv_channels: 8, hidden_s_channels: 64}
-        assignment: {method: discriminative, recurrence: {train_steps: [1, 2, 3, 4], eval_steps: 4, feedback: soft}}
-      training: {precision: 32-true, runtime: {compile: false, activation_checkpointing: false}, trainable: [visible, assignment]}
+        mode: factorized
+        encoder:
+          type: lgatr
+          layers: 4
+          n_heads: 4
+          hidden: {multivector_channels: 8, scalar_channels: 64}
+          symmetry_breaking: {beam: xyplane, time: true}
+        assignment: *assignment
+      training: *training
     initialise_from: null
     initialise_components: []
     predictions:
-      topk5: {label: L-GATr top-K=5, patch: {prediction: {top_k: 5}}, recurrent_steps: 4}
+      topk5: {label: L-GATr top-K=5, patch: {inference: {assignment: {top_k: 5}}}, recurrent_steps: 4}
 
   lgatr_slim:
     label: L-GATr-Slim efficiency diagnostic
     reporting: diagnostic
     patch:
       model:
-        encoder: {type: lgatr_slim, blocks: 4, heads: 4, hidden_vector_channels: 16, hidden_scalar_channels: 64}
-        assignment: {method: discriminative, recurrence: {train_steps: [1, 2, 3, 4], eval_steps: 4, feedback: soft}}
-      training: {precision: 32-true, runtime: {compile: false, activation_checkpointing: false}, trainable: [visible, assignment]}
+        mode: factorized
+        encoder:
+          type: lgatr_slim
+          layers: 4
+          n_heads: 4
+          hidden: {vector_channels: 16, scalar_channels: 64}
+          symmetry_breaking: {beam: xyplane, time: true}
+        assignment: *assignment
+      training: *training
     initialise_from: null
     initialise_components: []
     predictions:
-      topk5: {label: L-GATr-Slim top-K=5, patch: {prediction: {top_k: 5}}, recurrent_steps: 4}
+      topk5: {label: L-GATr-Slim top-K=5, patch: {inference: {assignment: {top_k: 5}}}, recurrent_steps: 4}

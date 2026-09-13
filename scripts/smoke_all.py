@@ -16,6 +16,7 @@ if str(ROOT) not in sys.path:
 import subprocess
 
 import torch
+from omegaconf import OmegaConf
 
 from joint_event_reconstruction.configuration import (
     load_experiment,
@@ -416,6 +417,9 @@ def run_experiment_smoke(
     data = StructuredDataModule(
         visible,
         data_config.topology_config,
+        truth_bindings=OmegaConf.to_container(
+            data_config.data.truth_bindings, resolve=True
+        ),
         tensor_cache=data_config.data.tensor_cache,
         invisible_path=data_config.data.invisible.path,
         allow_synthetic=bool(data_config.data.invisible.allow_synthetic),

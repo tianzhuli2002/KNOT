@@ -20,12 +20,18 @@ from joint_event_reconstruction.topology.spec import (
 )
 
 
-def _leaf(value: object, context: str) -> tuple[str, int]:
-    if not isinstance(value, (list, tuple)) or len(value) != 2:
+def _leaf(
+    value: object,
+    context: str,
+    truth_bindings: Mapping[str, object] | None,
+) -> tuple[str, str, int | None]:
+    if not isinstance(value, Mapping) or set(value) != {"source", "truth"}:
         raise ValueError(
-            f"{context} must be exactly [SOURCE, TRUTH_INDEX], found {value!r}"
+            f"{context} must be exactly {{source: SOURCE, truth: SEMANTIC_NAME}}, "
+            f"found {value!r}. Raw [SOURCE, TRUTH_INDEX] storage bindings are obsolete."
         )
-    source, raw_index = value
+    source = value["source"]
+    truth_name = value["truth"]
     if (
         not isinstance(source, str)
         or source != source.upper()
@@ -35,20 +41,41 @@ def _leaf(value: object, context: str) -> tuple[str, int]:
             f"{context} has unknown or non-canonical source {source!r}; "
             f"expected {sorted(KNOWN_SOURCES)}"
         )
-    if isinstance(raw_index, bool) or not isinstance(raw_index, int):
+    if not isinstance(truth_name, str) or not truth_name:
+        raise ValueError(f"{context}.truth must be a non-empty semantic name")
+    if truth_bindings is None:
+        return source, truth_name, None
+    if truth_name not in truth_bindings:
         raise ValueError(
-            f"{context} truth index must be an integer, found {raw_index!r}"
+            f"{context} refers to truth binding {truth_name!r}, which is absent "
+            "from the selected data config"
         )
+    binding = truth_bindings[truth_name]
+    if not isinstance(binding, Mapping) or set(binding) != {"source", "index"}:
+        raise ValueError(
+            f"Truth binding {truth_name!r} must contain exactly source and index"
+        )
+    if str(binding["source"]) != source:
+        raise ValueError(
+            f"Truth binding {truth_name!r} source mismatch: topology={source}, "
+            f"data={binding['source']}"
+        )
+    raw_index = binding["index"]
+    if isinstance(raw_index, bool) or not isinstance(raw_index, int):
+        raise ValueError(f"Truth binding {truth_name!r} index must be an integer")
     if source == "NEUTRINO" and raw_index < 0:
-        raise ValueError(f"{context} invisible truth index must be non-negative")
+        raise ValueError(f"Truth binding {truth_name!r} invisible index must be non-negative")
     if source != "NEUTRINO" and raw_index <= 0:
         raise ValueError(
-            f"{context} visible truth labels must be positive; zero is unassigned"
+            f"Truth binding {truth_name!r} visible label must be positive; zero is unassigned"
         )
-    return source, raw_index
+    return source, truth_name, raw_index
 
 
-def compile_topology(raw: Mapping[str, object]) -> TopologySpec:
+def compile_topology(
+    raw: Mapping[str, object],
+    truth_bindings: Mapping[str, object] | None = None,
+) -> TopologySpec:
     if set(raw) != {"topology"}:
         raise ValueError(
             "Topology file must contain only the 'topology' mapping, "
@@ -64,7 +91,7 @@ def compile_topology(raw: Mapping[str, object]) -> TopologySpec:
     leaves: dict[str, LeafRole] = {}
     composites: dict[str, CompositeRole] = {}
     parsed_nodes: dict[str, DecayNode] = {}
-    truth_bindings: set[tuple[str, int]] = set()
+    owned_truth_names: set[tuple[str, str]] = set()
     for node_name, roles_raw in definitions.items():
         if not isinstance(roles_raw, Mapping) or not roles_raw:
             raise ValueError(
@@ -92,20 +119,21 @@ def compile_topology(raw: Mapping[str, object]) -> TopologySpec:
             repeated = (
                 isinstance(value, (list, tuple))
                 and value
-                and isinstance(value[0], (list, tuple))
+                and isinstance(value[0], Mapping)
             )
             members = list(value) if repeated else [value]
-            parsed = tuple(_leaf(member, key) for member in members)
-            sources = {source for source, _ in parsed}
+            parsed = tuple(_leaf(member, key, truth_bindings) for member in members)
+            sources = {source for source, _, _ in parsed}
             if len(sources) != 1:
                 raise ValueError(
                     f"Repeated role {key} must contain one source, "
                     f"found {sorted(sources)}"
                 )
-            indices = tuple(sorted(index for _, index in parsed))
-            if len(set(indices)) != len(indices):
+            truth_names = tuple(name for _, name, _ in parsed)
+            indices = tuple(index for _, _, index in parsed)
+            if len(set(truth_names)) != len(truth_names):
                 raise ValueError(
-                    f"Repeated role {key} contains duplicate truth indices {indices}"
+                    f"Repeated role {key} contains duplicate truth names {truth_names}"
                 )
             source = parsed[0][0]
             if source == "NEUTRINO" and len(indices) != 1:
@@ -114,13 +142,14 @@ def compile_topology(raw: Mapping[str, object]) -> TopologySpec:
                     "Use separate named NEUTRINO roles for multiple invisible "
                     "particles so their semantic order is explicit."
                 )
-            for binding in parsed:
-                if binding in truth_bindings:
+            for source_name, truth_name, index in parsed:
+                binding = (source_name, truth_name)
+                if binding in owned_truth_names:
                     raise ValueError(
                         f"Truth binding {binding} is owned by more than one leaf role"
                     )
-                truth_bindings.add(binding)
-            role = LeafRole(key, node_name, role_name, source, indices)
+                owned_truth_names.add(binding)
+            role = LeafRole(key, node_name, role_name, source, truth_names, indices)
             leaves[key] = role
             node_leaves.append(role)
         parsed_nodes[node_name] = DecayNode(
@@ -210,7 +239,7 @@ def compile_topology(raw: Mapping[str, object]) -> TopologySpec:
                     if isinstance(role, CompositeRole)
                     else {
                         "source": role.source,
-                        "truth_indices": role.truth_indices,
+                        "truth": role.truth_names,
                     }
                 )
                 for role in parsed_nodes[name].roles
@@ -243,11 +272,14 @@ def compile_topology(raw: Mapping[str, object]) -> TopologySpec:
     )
 
 
-def load_topology(path: str | Path) -> TopologySpec:
+def load_topology(
+    path: str | Path,
+    truth_bindings: Mapping[str, object] | None = None,
+) -> TopologySpec:
     path = Path(path).expanduser().resolve()
     if not path.is_file():
         raise FileNotFoundError(
             f"Topology configuration does not exist: {path}"
         )
     raw = OmegaConf.to_container(OmegaConf.load(path), resolve=True)
-    return compile_topology(raw)
+    return compile_topology(raw, truth_bindings=truth_bindings)

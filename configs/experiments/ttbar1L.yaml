@@ -5,22 +5,48 @@ experiment:
 topology: configs/topology/ttbar1L.yaml
 
 data:
-  config: configs/data/ttbar1L.yaml
+  input: data/real/ttbar1L_canonical.h5
+  cache: /scratch/w00238tl/jer_cache
   subset_seed: 42
   events: {train: 100000, validation: 50000, test: 50000}
   max_assignment_states: 100000
 
+inputs:
+  transforms:
+    e: log
+    eta: [minmax, -2.5, 2.5]
+    phi: sincos
+    pt: log
+    btag: [minmax, 0, 6]
+    charge: [minmax, -1, 1]
+    flavour: pid
+    njet: [minmax, 0, 8]
+    nBJets_90: [minmax, 0, 8]
+    nBJets_85: [minmax, 0, 8]
+    nBJets_77: [minmax, 0, 8]
+    nBJets_70: [minmax, 0, 8]
+    nBJets_65: [minmax, 0, 8]
+  JET: {count: 8, features: [e, eta, phi, pt, btag, flavour]}
+  LEPTON: {count: 1, features: [e, eta, phi, pt, charge, flavour]}
+  MET: {count: 1, features: [phi, pt, flavour]}
+  GLOBAL: {features: [njet, nBJets_90, nBJets_85, nBJets_77, nBJets_70, nBJets_65]}
+
 model:
   latent: {d_model: 105, n_heads: 3, d_feedforward: 292, dropout: 0.04889685146434}
-  encoder: {type: transformer}
+  encoder:
+    type: transformer
+    representation: features
+    relations: none
   assignment:
-    method: discriminative
-
-prediction: {}
+    formulation: discriminative
+  mode: factorized
 
 training:
+  batch_size: 512
+  workers: 4
   learning_rate: 0.000361545
   weight_decay: 0.00006073529387441413
   epochs: 20
   precision: 16-mixed
   output: results/ttbar1L
+inference: {}

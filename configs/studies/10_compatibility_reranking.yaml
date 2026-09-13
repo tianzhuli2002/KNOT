@@ -13,10 +13,14 @@ variants:
     patch:
       model:
         assignment:
-          method: discriminative
-          recurrence: {train_steps: [1, 2, 3, 4], eval_steps: 4, feedback: soft}
+          formulation: discriminative
+          refinement:
+            train_iterations: [1, 2, 3, 4]
+            inference_iterations: 4
+            feedback: soft
+        mode: factorized
       training: {trainable: [visible, assignment]}
-    initialise_from: null
+    initialise_from:
     initialise_components: []
     predictions: {}
 
@@ -26,9 +30,13 @@ variants:
     patch:
       model:
         assignment:
-          method: discriminative
-          recurrence: {train_steps: [1, 2, 3, 4], eval_steps: 4, feedback: soft}
-        invisible: {method: cfm, conditioning: hypothesis}
+          formulation: discriminative
+          refinement:
+            train_iterations: [1, 2, 3, 4]
+            inference_iterations: 4
+            feedback: soft
+        invisible: {conditioning: {assignment: hypothesis}, generator: {type: cfm}}
+        mode: factorized
       training: {trainable: [invisible]}
     initialise_from: assignment_reference
     initialise_components: [visible, assignment]
@@ -40,12 +48,17 @@ variants:
     patch:
       model:
         assignment:
-          method: discriminative
-          recurrence: {train_steps: [1, 2, 3, 4], eval_steps: 4, feedback: soft}
-        invisible: {method: cfm, conditioning: hypothesis}
+          formulation: discriminative
+          refinement:
+            train_iterations: [1, 2, 3, 4]
+            inference_iterations: 4
+            feedback: soft
+        invisible: {conditioning: {assignment: hypothesis}, generator: {type: cfm}}
         compatibility: {}
+        mode: factorized
       training: {trainable: [compatibility]}
     initialise_from: factorized
     initialise_components: [visible, assignment, invisible]
     predictions:
-      posterior: {label: One stored posterior for offline weight scan, patch: {prediction: {top_k: 10, samples: 16, steps: 17, solver: euler, compatibility_weight: 0.0}}, recurrent_steps: 4}
+      posterior: {label: One stored posterior for offline weight scan, patch: {inference: {assignment: {top_k: 10}, invisible: {samples_per_assignment: 16, flow: {
+                steps: 17, solver: euler}}, compatibility: {weight: 0.0}}}, recurrent_steps: 4}

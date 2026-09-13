@@ -6,7 +6,7 @@ from joint_event_reconstruction.models.visible.transformer import (
     TransformerVisibleEncoder,
 )
 from joint_event_reconstruction.models.visible.physics_transformer import (
-    PhysicsTransformerVisibleEncoder,
+    RelationalTransformerVisibleEncoder,
 )
 
 
@@ -24,8 +24,8 @@ def build_visible_encoder(
             dropout=float(config.dropout),
             n_object_types=n_object_types,
         )
-    if backend == "physics_transformer":
-        return PhysicsTransformerVisibleEncoder(config, schema, n_object_types)
+    if backend == "relational_transformer":
+        return RelationalTransformerVisibleEncoder(config, schema, n_object_types)
     if backend in {"lgatr", "lgatr_slim"}:
         from joint_event_reconstruction.models.visible.lgatr import (
             LGATrSlimVisibleEncoder,

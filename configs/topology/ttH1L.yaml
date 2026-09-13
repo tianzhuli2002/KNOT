@@ -1,16 +1,16 @@
 topology:
   Whad:
     q:
-      - [JET, 2]
-      - [JET, 3]
+      - {source: JET, truth: hadronic_q1}
+      - {source: JET, truth: hadronic_q2}
   thad:
     W: Whad
-    b: [JET, 1]
+    b: {source: JET, truth: hadronic_b}
   H:
     b:
-      - [JET, 5]
-      - [JET, 6]
+      - {source: JET, truth: higgs_b1}
+      - {source: JET, truth: higgs_b2}
   tlep:
-    b: [JET, 4]
-    lepton: [LEPTON, 1]
-    nu: [NEUTRINO, 0]
+    b: {source: JET, truth: leptonic_b}
+    lepton: {source: LEPTON, truth: charged_lepton}
+    nu: {source: NEUTRINO, truth: leptonic_neutrino}

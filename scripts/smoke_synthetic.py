@@ -21,6 +21,7 @@ if str(ROOT) not in sys.path:
 
 import h5py
 import torch
+from omegaconf import OmegaConf
 
 from joint_event_reconstruction.assignment_semantics import NON_NULL_SUPPORT, NULL_INCLUDING_SUPPORT
 from joint_event_reconstruction.configuration import load_experiment, load_visible_config, validate_experiment
@@ -58,7 +59,10 @@ def _synthetic_items(experiment, visible, *, events: int, seed: int):
     if events < 2:
         raise ValueError("Synthetic smoke needs at least two events for finite scaling")
     schema = build_token_schema(visible.dataset)
-    spec = load_topology(experiment.topology_config)
+    spec = load_topology(
+        experiment.topology_config,
+        OmegaConf.to_container(experiment.data.truth_bindings, resolve=True),
+    )
     generator = torch.Generator().manual_seed(seed)
 
     source_positions = {}
@@ -135,6 +139,9 @@ def build_synthetic_batch(experiment, *, events: int, device: str):
     collator = StructuredCollator(
         experiment.topology_config,
         dict(schema.source_type_ids),
+        truth_bindings=OmegaConf.to_container(
+            experiment.data.truth_bindings, resolve=True
+        ),
         build_assignments=True,
         max_assignment_states=int(experiment.data.max_assignment_states),
     )
@@ -326,7 +333,10 @@ def run_topology_contract(topology_name: str, *, device="cpu", events=4):
     base.topology_config = str(ROOT / "configs/topology" / f"{topology_name}.yaml")
     seed_smoke(int(base.experiment.seed) + 40_001)
     visible, batch, scaler = build_synthetic_batch(base, events=events, device=device)
-    spec = load_topology(base.topology_config)
+    spec = load_topology(
+        base.topology_config,
+        OmegaConf.to_container(base.data.truth_bindings, resolve=True),
+    )
     space = AssignmentSpace.from_structured(batch["structured"])
     if len(spec.roots) < 2:
         raise RuntimeError("Synthetic topology contract must exercise multiple roots")

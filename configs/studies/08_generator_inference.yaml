@@ -13,10 +13,14 @@ variants:
     patch:
       model:
         assignment:
-          method: discriminative
-          recurrence: {train_steps: [1, 2, 3, 4], eval_steps: 4, feedback: soft}
+          formulation: discriminative
+          refinement:
+            train_iterations: [1, 2, 3, 4]
+            inference_iterations: 4
+            feedback: soft
+        mode: factorized
       training: {trainable: [visible, assignment]}
-    initialise_from: null
+    initialise_from:
     initialise_components: []
     predictions: {}
 
@@ -26,18 +30,22 @@ variants:
     patch:
       model:
         assignment:
-          method: discriminative
-          recurrence: {train_steps: [1, 2, 3, 4], eval_steps: 4, feedback: soft}
-        invisible: {method: edm, conditioning: none}
+          formulation: discriminative
+          refinement:
+            train_iterations: [1, 2, 3, 4]
+            inference_iterations: 4
+            feedback: soft
+        invisible: {conditioning: {assignment: none}, generator: {type: edm}}
+        mode: factorized
       training: {trainable: [invisible]}
     initialise_from: assignment_reference
     initialise_components: [visible, assignment]
     predictions:
-      nfe5: {label: EDM NFE=5, patch: {prediction: {samples: 32, nfe: 5}}, recurrent_steps: 4}
-      nfe9: {label: EDM NFE=9, patch: {prediction: {samples: 32, nfe: 9}}, recurrent_steps: 4}
-      nfe17: {label: EDM NFE=17, patch: {prediction: {samples: 32, nfe: 17}}, recurrent_steps: 4}
-      nfe33: {label: EDM NFE=33, patch: {prediction: {samples: 32, nfe: 33}}, recurrent_steps: 4}
-      nfe49: {label: EDM NFE=49, patch: {prediction: {samples: 32, nfe: 49}}, recurrent_steps: 4}
+      nfe5: {label: EDM NFE=5, patch: {inference: {invisible: {samples_per_assignment: 32, edm: {nfe: 5}}}}, recurrent_steps: 4}
+      nfe9: {label: EDM NFE=9, patch: {inference: {invisible: {samples_per_assignment: 32, edm: {nfe: 9}}}}, recurrent_steps: 4}
+      nfe17: {label: EDM NFE=17, patch: {inference: {invisible: {samples_per_assignment: 32, edm: {nfe: 17}}}}, recurrent_steps: 4}
+      nfe33: {label: EDM NFE=33, patch: {inference: {invisible: {samples_per_assignment: 32, edm: {nfe: 33}}}}, recurrent_steps: 4}
+      nfe49: {label: EDM NFE=49, patch: {inference: {invisible: {samples_per_assignment: 32, edm: {nfe: 49}}}}, recurrent_steps: 4}
 
   cfm:
     label: CFM
@@ -45,16 +53,20 @@ variants:
     patch:
       model:
         assignment:
-          method: discriminative
-          recurrence: {train_steps: [1, 2, 3, 4], eval_steps: 4, feedback: soft}
-        invisible: {method: cfm, conditioning: none}
+          formulation: discriminative
+          refinement:
+            train_iterations: [1, 2, 3, 4]
+            inference_iterations: 4
+            feedback: soft
+        invisible: {conditioning: {assignment: none}, generator: {type: cfm}}
+        mode: factorized
       training: {trainable: [invisible]}
     initialise_from: assignment_reference
     initialise_components: [visible, assignment]
     predictions:
-      euler8: {label: Euler NFE=8, patch: {prediction: {samples: 32, steps: 8, solver: euler}}, recurrent_steps: 4}
-      heun4: {label: Heun NFE≈8, patch: {prediction: {samples: 32, steps: 4, solver: heun}}, recurrent_steps: 4}
-      euler16: {label: Euler NFE=16, patch: {prediction: {samples: 32, steps: 16, solver: euler}}, recurrent_steps: 4}
-      heun8: {label: Heun NFE≈16, patch: {prediction: {samples: 32, steps: 8, solver: heun}}, recurrent_steps: 4}
-      euler32: {label: Euler NFE=32, patch: {prediction: {samples: 32, steps: 32, solver: euler}}, recurrent_steps: 4}
-      heun16: {label: Heun NFE≈32, patch: {prediction: {samples: 32, steps: 16, solver: heun}}, recurrent_steps: 4}
+      euler8: {label: Euler NFE=8, patch: {inference: {invisible: {samples_per_assignment: 32, flow: {steps: 8, solver: euler}}}}, recurrent_steps: 4}
+      heun4: {label: Heun NFE≈8, patch: {inference: {invisible: {samples_per_assignment: 32, flow: {steps: 4, solver: heun}}}}, recurrent_steps: 4}
+      euler16: {label: Euler NFE=16, patch: {inference: {invisible: {samples_per_assignment: 32, flow: {steps: 16, solver: euler}}}}, recurrent_steps: 4}
+      heun8: {label: Heun NFE≈16, patch: {inference: {invisible: {samples_per_assignment: 32, flow: {steps: 8, solver: heun}}}}, recurrent_steps: 4}
+      euler32: {label: Euler NFE=32, patch: {inference: {invisible: {samples_per_assignment: 32, flow: {steps: 32, solver: euler}}}}, recurrent_steps: 4}
+      heun16: {label: Heun NFE≈32, patch: {inference: {invisible: {samples_per_assignment: 32, flow: {steps: 16, solver: heun}}}}, recurrent_steps: 4}

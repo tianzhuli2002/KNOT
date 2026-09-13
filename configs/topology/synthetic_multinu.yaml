@@ -1,20 +1,20 @@
 topology:
   visible_triplet:
     constituent:
-      - [JET, 1]
-      - [JET, 2]
-      - [JET, 3]
+      - {source: JET, truth: jet_1}
+      - {source: JET, truth: jet_2}
+      - {source: JET, truth: jet_3}
 
   first_parent:
     cluster: visible_triplet
-    bachelor: [JET, 4]
-    invisible: [NEUTRINO, 0]
+    bachelor: {source: JET, truth: jet_4}
+    invisible: {source: NEUTRINO, truth: invisible_1}
 
   second_parent:
-    visible: [JET, 5]
-    lepton: [LEPTON, 1]
-    invisible: [NEUTRINO, 1]
+    visible: {source: JET, truth: jet_5}
+    lepton: {source: LEPTON, truth: charged_lepton}
+    invisible: {source: NEUTRINO, truth: invisible_2}
 
   third_parent:
-    visible: [JET, 6]
-    invisible: [NEUTRINO, 2]
+    visible: {source: JET, truth: jet_6}
+    invisible: {source: NEUTRINO, truth: invisible_3}

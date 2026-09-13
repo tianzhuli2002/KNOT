@@ -125,30 +125,26 @@ def _repo_path(value: object) -> Path:
 
 @lru_cache(maxsize=None)
 def _data_subset_identity_cached(
-    data_config_path: str,
+    source_path_text: str,
     subset_seed: int,
     train_count: int | None,
     validation_count: int | None,
     test_count: int | None,
 ) -> dict:
-    data = OmegaConf.load(data_config_path)
-    source_path = _repo_path(data.source)
-    split_path = _repo_path(data.split)
-    invisible_truth = data.get("invisible_truth")
-    invisible_identity = (
-        None
-        if invisible_truth is None
-        else _file_identity(_repo_path(invisible_truth))
-    )
+    source_path = _repo_path(source_path_text)
     requested = {
         "train": train_count,
         "validation": validation_count,
         "test": test_count,
     }
     split_identity = {}
-    with np.load(split_path) as split_file, h5py.File(source_path, "r") as source:
+    with h5py.File(source_path, "r") as source:
+        if "SPLIT" not in source or "EVENT_ID" not in source:
+            raise KeyError(f"Canonical dataset requires EVENT_ID and SPLIT: {source_path}")
+        membership = np.asarray(source["SPLIT"][:], dtype=np.uint8)
         for split, count in requested.items():
-            rows = np.asarray(split_file[split], dtype=np.int64)
+            split_value = {"train": 0, "validation": 1, "test": 2}[split]
+            rows = np.flatnonzero(membership == split_value)
             event_ids = np.asarray(source["EVENT_ID"][rows], dtype=np.int64)
             positions = deterministic_subset_positions(event_ids, count, subset_seed)
             selected = event_ids[positions]
@@ -161,13 +157,11 @@ def _data_subset_identity_cached(
     return {
         "ranking": SUBSET_RANKING,
         "subset_seed": int(subset_seed),
-        "data_config_sha256": _sha256_file(data_config_path),
         "source": str(source_path),
         "source_size_bytes": source_stat.st_size,
         "source_mtime_ns": source_stat.st_mtime_ns,
-        "split_indices": str(split_path),
-        "split_indices_sha256": _sha256_file(split_path),
-        "invisible_truth": invisible_identity,
+        "split_source": f"{source_path}:SPLIT",
+        "invisible_truth": _file_identity(source_path),
         "splits": split_identity,
     }
 
@@ -175,7 +169,7 @@ def _data_subset_identity_cached(
 def _data_subset_identity(resolved) -> dict:
     limits = resolved.data.max_events
     return _data_subset_identity_cached(
-        str(Path(resolved.data_config).resolve()),
+        str(Path(resolved.data.input).resolve()),
         int(resolved.data.subset_seed),
         None if limits.train is None else int(limits.train),
         None if limits.val is None else int(limits.val),

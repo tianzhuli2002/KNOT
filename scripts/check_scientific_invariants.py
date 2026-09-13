@@ -12,6 +12,8 @@ import tempfile
 from pathlib import Path
 
 import numpy as np
+import torch
+from omegaconf import OmegaConf
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -40,14 +42,14 @@ def _architecture(overrides: list[str] | None = None) -> str:
 def check_architecture_signature_contract() -> None:
     reference = _architecture()
     inference_only = (
-        "prediction.seed=7",
-        "prediction.top_k=5",
-        "prediction.samples=64",
-        "prediction.steps=16",
-        "prediction.solver=euler",
-        "prediction.sample_chunk_size=4",
-        "prediction.nfe=33",
-        "prediction.compatibility_weight=2.0",
+        "inference.seed=7",
+        "inference.assignment.top_k=5",
+        "inference.invisible.samples_per_assignment=64",
+        "inference.invisible.flow.steps=16",
+        "inference.invisible.flow.solver=euler",
+        "inference.sample_chunk_size=4",
+        "inference.invisible.edm.nfe=33",
+        "inference.compatibility.weight=2.0",
     )
     for override in inference_only:
         if _architecture([override]) != reference:
@@ -55,34 +57,34 @@ def check_architecture_signature_contract() -> None:
 
     architecture_changes = (
         "model.encoder.layers=5",
-        "model.assignment.recurrence.train_steps=[1,2]",
-        "model.assignment.recurrence.feedback=soft",
-        "model.invisible.method=cfm",
+        "model.assignment.refinement.train_iterations=[1,2]",
+        "model.assignment.refinement.feedback=soft",
+        "model.invisible.generator.type=cfm",
     )
     for override in architecture_changes:
         if _architecture([override]) == reference:
             raise AssertionError(f"Training/architecture override was omitted: {override}")
 
     c2_base = [
-        "model.assignment.recurrence.train_steps=[1,2]",
-        "model.assignment.recurrence.eval_steps=2",
-        "model.invisible.method=cfm",
-        "model.c2={}",
+        "model.assignment.refinement.train_iterations=[1,2]",
+        "model.assignment.refinement.inference_iterations=2",
+        "model.invisible.generator.type=cfm",
+        "model.feedback.invisible_to_assignment.enabled=true",
     ]
     c2_reference = _architecture(c2_base)
     if _architecture(
-        [*c2_base, "model.c2.training_sampler.steps=8"]
+        [*c2_base, "model.feedback.invisible_to_assignment.training_sampler.steps=8"]
     ) != c2_reference:
         raise AssertionError("Equivalent C2 sampler override changed architecture")
     if _architecture(
-        [*c2_base, "model.c2.training_sampler.steps=9"]
+        [*c2_base, "model.feedback.invisible_to_assignment.training_sampler.steps=9"]
     ) == c2_reference:
         raise AssertionError("C2 training sampler change was omitted from identity")
     if _architecture(
         [
             *c2_base,
-            "prediction.steps=17",
-            "prediction.solver=euler",
+            "inference.invisible.flow.steps=17",
+            "inference.invisible.flow.solver=euler",
         ]
     ) != c2_reference:
         raise AssertionError("Prediction sampler changed C2 architecture identity")
@@ -104,15 +106,15 @@ def check_training_identity_contract() -> None:
         raise AssertionError("Inference/runtime settings changed training identity")
 
     c2_overrides = [
-        "model.assignment.recurrence.train_steps=[1,2]",
-        "model.assignment.recurrence.eval_steps=2",
-        "model.invisible.method=cfm",
-        "model.c2={}",
+        "model.assignment.refinement.train_iterations=[1,2]",
+        "model.assignment.refinement.inference_iterations=2",
+        "model.invisible.generator.type=cfm",
+        "model.feedback.invisible_to_assignment.enabled=true",
     ]
     c2_base = load_experiment("configs/experiments/ttbar2L.yaml", c2_overrides)
     c2_changed = load_experiment(
         "configs/experiments/ttbar2L.yaml",
-        [*c2_overrides, "model.c2.training_sampler.steps=9"],
+        [*c2_overrides, "model.feedback.invisible_to_assignment.training_sampler.steps=9"],
     )
     if _training_config_identity(c2_base) == _training_config_identity(c2_changed):
         raise AssertionError("C2 training sampler change was omitted from training identity")
@@ -120,8 +122,6 @@ def check_training_identity_contract() -> None:
 
 def check_coordinate_contract() -> None:
     """All maintained coordinate systems must preserve their explicit contract."""
-    import torch
-
     from scripts.smoke_synthetic import build_synthetic_batch
     from joint_event_reconstruction.models.invisible.coordinates import (
         build_invisible_coordinates,
@@ -131,7 +131,11 @@ def check_coordinate_contract() -> None:
     base = load_experiment("configs/experiments/ttbar2L.yaml")
     _, batch, _ = build_synthetic_batch(base, events=2, device="cpu")
     role_names = tuple(
-        role.key for role in load_topology(base.topology_config).invisible_roles
+        role.key
+        for role in load_topology(
+            base.topology_config,
+            OmegaConf.to_container(base.data.truth_bindings, resolve=True),
+        ).invisible_roles
     )
     # Keep the role ordering from the topology rather than deriving it from
     # tensor dimensions; prediction metadata uses this exact ordering.
@@ -173,7 +177,10 @@ def check_flow_coupling_context_contract() -> None:
         "method": "conditional_ot",
         "condition_weight": 1.0,
     }
-    spec = load_topology(base.topology_config)
+    spec = load_topology(
+        base.topology_config,
+        OmegaConf.to_container(base.data.truth_bindings, resolve=True),
+    )
     role_count = len(spec.invisible_roles)
     width = int(base.model.latent.d_model)
     pooled = torch.full((2, width), 3.0)
@@ -379,7 +386,7 @@ def check_partial_checkpoint_contract() -> None:
         )
 
         target_config = load_experiment(
-            "configs/experiments/ttbar2L.yaml", ["model.invisible.method=cfm"]
+            "configs/experiments/ttbar2L.yaml", ["model.invisible.generator.type=cfm"]
         )
         target = JointEventModule(
             target_config,
@@ -424,14 +431,14 @@ def check_partial_checkpoint_contract() -> None:
 def check_component_signature_contract() -> None:
     reference = _component_signatures()
     inference_only = (
-        "prediction.seed=7",
-        "prediction.top_k=5",
-        "prediction.samples=64",
-        "prediction.steps=16",
-        "prediction.solver=euler",
-        "prediction.sample_chunk_size=4",
-        "prediction.nfe=33",
-        "prediction.compatibility_weight=2.0",
+        "inference.seed=7",
+        "inference.assignment.top_k=5",
+        "inference.invisible.samples_per_assignment=64",
+        "inference.invisible.flow.steps=16",
+        "inference.invisible.flow.solver=euler",
+        "inference.sample_chunk_size=4",
+        "inference.invisible.edm.nfe=33",
+        "inference.compatibility.weight=2.0",
     )
     for override in inference_only:
         if _component_signatures([override]) != reference:
@@ -439,17 +446,17 @@ def check_component_signature_contract() -> None:
 
     if _component_signatures(["model.encoder.dropout=0.2"])["visible"] == reference["visible"]:
         raise AssertionError("Visible architecture change was omitted from component identity")
-    if _component_signatures(["model.assignment.recurrence.train_steps=[1,2]"])["assignment"] == reference["assignment"]:
+    if _component_signatures(["model.assignment.refinement.train_iterations=[1,2]"])["assignment"] == reference["assignment"]:
         raise AssertionError("Assignment architecture change was omitted from component identity")
 
     c2_base = [
-        "model.assignment.recurrence.train_steps=[1,2]",
-        "model.assignment.recurrence.eval_steps=2",
-        "model.invisible.method=cfm",
-        "model.c2={}",
+        "model.assignment.refinement.train_iterations=[1,2]",
+        "model.assignment.refinement.inference_iterations=2",
+        "model.invisible.generator.type=cfm",
+        "model.feedback.invisible_to_assignment.enabled=true",
     ]
     c2_reference = _component_signatures(c2_base)
-    if _component_signatures([*c2_base, "model.c2.training_sampler.steps=9"])["c2"] == c2_reference["c2"]:
+    if _component_signatures([*c2_base, "model.feedback.invisible_to_assignment.training_sampler.steps=9"])["c2"] == c2_reference["c2"]:
         raise AssertionError("C2 training sampler change was omitted from component identity")
 
 
@@ -482,6 +489,77 @@ def check_loader_split_seed_contract() -> None:
         raise AssertionError("Loader seed contract test did not change model seed")
 
 
+def check_public_schema_and_inputs_contract() -> None:
+    """Old public spellings fail, Study 12 stays fair, and p4 units are explicit."""
+    from joint_event_reconstruction.inputs import (
+        assert_study12_fairness,
+        study_input_contracts,
+    )
+
+    assert_study12_fairness(
+        study_input_contracts("configs/studies/12_encoder_backbone.yaml")
+    )
+    obsolete = (
+        "data.files.events=/tmp/events.h5",
+        "data.invisible_truth=/tmp/truth.h5",
+        "data.split=/tmp/split.npz",
+        "inputs.JET.max_count=8",
+        "inputs.event_features.njet=none",
+        "prediction.seed=7",
+        "model.assignment.method=discriminative",
+        "model.assignment.recurrence.train_steps=[1,2]",
+        "model.invisible.method=cfm",
+        "model.encoder.scalar_features=[btag]",
+        "model.encoder.spurions.beam=none",
+        "model.encoder.type=physics_transformer",
+        "model.encoder.type=relational_transformer",
+        "model.encoder.inputs.kinematics=four_vector",
+    )
+    for override in obsolete:
+        try:
+            load_experiment("configs/experiments/ttbar2L.yaml", [override])
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"Obsolete public config spelling was accepted: {override}")
+
+    from scripts.smoke_synthetic import build_synthetic_batch
+
+    base = load_experiment("configs/experiments/ttbar2L.yaml")
+    _, batch, _ = build_synthetic_batch(base, events=2, device="cpu")
+    vectors = batch["physics_vectors"]
+    if vectors.shape[-1] != 4 or not torch.isfinite(vectors).all():
+        raise AssertionError("Physical vectors are not finite (E,px,py,pz)")
+    met_type = batch["type_ids"] == 3
+    if not torch.equal(vectors[..., 3][met_type], torch.zeros_like(vectors[..., 3][met_type])):
+        raise AssertionError("Detector MET pseudo-vectors must have pz=0")
+
+
+def check_same_flavour_role_contract() -> None:
+    """Flavour never replaces semantic parent identity for invisible roles."""
+    from joint_event_reconstruction.topology.compiler import compile_topology
+
+    raw = {
+        "topology": {
+            "top": {
+                "nu": {"source": "NEUTRINO", "truth": "top_neutrino"},
+            },
+            "antitop": {
+                "nu": {"source": "NEUTRINO", "truth": "antitop_neutrino"},
+            },
+        }
+    }
+    bindings = {
+        "top_neutrino": {"source": "NEUTRINO", "index": 0},
+        "antitop_neutrino": {"source": "NEUTRINO", "index": 1},
+    }
+    spec = compile_topology(raw, bindings)
+    if tuple(role.key for role in spec.invisible_roles) != ("top.nu", "antitop.nu"):
+        raise AssertionError("Same-flavour invisible roles lost semantic parent ordering")
+    if tuple(role.truth_indices[0] for role in spec.invisible_roles) != (0, 1):
+        raise AssertionError("Same-flavour invisible truth bindings collided")
+
+
 def check_truth_oracle_unreconstructable_contract() -> None:
     """Truth-oracle conditioning must mask, rather than index, missing parents."""
     import torch
@@ -491,8 +569,8 @@ def check_truth_oracle_unreconstructable_contract() -> None:
     config = load_experiment(
         "configs/experiments/ttbar2L.yaml",
         [
-            "model.invisible.method=cfm",
-            "model.invisible.conditioning=truth_oracle",
+            "model.invisible.generator.type=cfm",
+            "model.invisible.conditioning.assignment=truth_oracle",
             "training.trainable=[visible,assignment,invisible]",
             "training.loss_weights.compatibility=0.0",
         ],
@@ -798,6 +876,8 @@ def main() -> None:
     check_partial_checkpoint_contract()
     check_nested_subsets()
     check_loader_split_seed_contract()
+    check_public_schema_and_inputs_contract()
+    check_same_flavour_role_contract()
     check_coordinate_contract()
     check_flow_coupling_context_contract()
     check_truth_oracle_unreconstructable_contract()
@@ -807,7 +887,7 @@ def main() -> None:
     print(
         "PASS: architecture, training-identity, partial-checkpoint, split-seed, "
         "nested-subset, coordinate, truth-oracle, exchange, permutation, "
-        "freeze and Slurm-snapshot contracts"
+        "freeze, public-input, same-flavour-role and Slurm-snapshot contracts"
     )
 
 

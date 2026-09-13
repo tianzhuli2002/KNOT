@@ -165,7 +165,10 @@ class JointEventModule(L.LightningModule):
         synthetic_data: bool = False,
     ):
         super().__init__()
-        self.spec = load_topology(experiment.topology_config)
+        self.spec = load_topology(
+            experiment.topology_config,
+            OmegaConf.to_container(experiment.data.truth_bindings, resolve=True),
+        )
         schema = build_token_schema(visible_config.dataset)
         model = experiment.model
         assignment = model.assignment
@@ -258,6 +261,12 @@ class JointEventModule(L.LightningModule):
                 "architecture_component_signatures": component_signatures,
                 "visible_encoder": str(model.visible.type),
                 "visible_encoder_config": _resolved(model.visible),
+                "encoder_input_contract": {
+                    "kinematics": str(model.visible.inputs.kinematics),
+                    "object_features": list(model.visible.inputs.object_features),
+                    "event_features": list(model.visible.inputs.event_features),
+                    "physical_vector_representation": "E_px_py_pz_GeV_v1",
+                },
                 "lgatr_package_version": lgatr_package_version,
                 "model_mode": mode,
                 "assignment_formulation": assignment_formulation,
@@ -301,6 +310,14 @@ class JointEventModule(L.LightningModule):
                 ),
                 "synthetic_data": bool(synthetic_data),
                 "trainable_components": sorted(trainable_components),
+                "experiment_seed": int(experiment.experiment.seed),
+                "data_subset_seed": int(experiment.data.subset_seed),
+                "precision": str(experiment.training.precision),
+                "external_package_versions": {
+                    "torch": torch.__version__,
+                    "lightning": importlib.metadata.version("lightning"),
+                    "lgatr": lgatr_package_version,
+                },
             }
         )
         self.learning_rate = float(experiment.training.learning_rate)

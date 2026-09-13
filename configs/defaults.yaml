@@ -7,31 +7,27 @@ model:
   encoder:
     transformer:
       layers: 4
-    physics_transformer:
+    relational_transformer:
       layers: 4
       momentum_scale_gev: 100.0
-      scalar_features: [btag, charge]
-      pairwise:
+      relations:
+        enabled: true
         hidden_dim: 32
         features: [delta_eta, sin_delta_phi, cos_delta_phi, log_delta_r, minkowski_dot, log_pair_mass]
     lgatr:
-      blocks: 4
-      heads: 4
-      hidden_mv_channels: 8
-      hidden_s_channels: 64
+      layers: 4
+      n_heads: 4
+      hidden: {multivector_channels: 8, scalar_channels: 64}
       dropout: 0.0
       momentum_scale_gev: 100.0
-      scalar_features: [btag, charge]
-      spurions: {beam: xyplane, time: true}
+      symmetry_breaking: {beam: xyplane, time: true}
     lgatr_slim:
-      blocks: 4
-      heads: 4
-      hidden_vector_channels: 16
-      hidden_scalar_channels: 64
+      layers: 4
+      n_heads: 4
+      hidden: {vector_channels: 16, scalar_channels: 64}
       dropout: 0.0
       momentum_scale_gev: 100.0
-      scalar_features: [btag, charge]
-      spurions: {beam: xyplane, time: true}
+      symmetry_breaking: {beam: xyplane, time: true}
   assignment:
     recurrence:
       block_layers: 2
@@ -57,12 +53,12 @@ model:
       p_mean: -0.5
       p_std: 1.2
     flow_matching:
-      coupling: {method: independent, condition_weight: 0.0}
+      coupling: {type: independent, condition_weight: 0.0}
   joint_flow:
     block_layers: 2
     train_steps: [1, 2, 3, 4]
     coordinates: {type: cartesian}
-    coupling: {method: independent, condition_weight: 0.0}
+    coupling: {type: independent, condition_weight: 0.0}
   c2:
     posterior_samples: 4
     gate_initial_bias: -2.0
@@ -73,7 +69,7 @@ model:
   compatibility:
     include_invisible: true
 
-prediction:
+inference:
   seed: 12345
   top_k: 1
   samples: 1

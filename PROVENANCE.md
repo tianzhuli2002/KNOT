@@ -70,11 +70,11 @@ A fixed two-event joint-flow CFM loss-balance diagnostic gave assignment loss
 imbalance, so the maintained 1:1 loss weighting is retained. This is an
 engineering diagnostic, not a physics result.
 
-## Framework v2
+## Framework finalisation
 
-The v2 implementation is based on the immutable starting tree at
-`42642d17f7492a19028cb602e67b55901ac8a8cb` and is developed on the separate
-`feature/physics-framework-v2` branch. It does not modify the submitted Study 01
+The framework finalisation is based on the immutable starting tree at
+`42642d17f7492a19028cb602e67b55901ac8a8cb` and the recorded historical
+framework commits. It does not modify the submitted Study 01
 checkout or its historical products. The implementation uses architecture
 signature v5, separates `model.latent` from the visible encoder, and records the
 physical-vector and invisible-coordinate contracts in checkpoints and prediction
@@ -83,5 +83,11 @@ products.
 The optional L-GATr adapter was exercised with the installed `lgatr` package
 version reported by `importlib.metadata`; standard and physics Transformer paths
 remain usable without that extra. Study 12, Study 13 and Analysis 14 are
-templates/offline tooling only in this branch. No v2 scientific campaign has
+templates/offline tooling only in this branch. No new scientific campaign has
 been submitted and no human selection gate has been changed to `locked`.
+
+Every new training directory records the public and resolved configuration, the
+resolved input contract, cache metadata/fingerprint, practical dataset identity,
+split identity, architecture identity, Git SHA and package versions. Cache
+storage location is operational provenance, not scientific identity: compatible
+contents are identified by the fingerprint stored inside the cache.

@@ -13,10 +13,14 @@ variants:
     patch:
       model:
         assignment:
-          method: discriminative
-          recurrence: {train_steps: [1, 2, 3, 4], eval_steps: 4, feedback: soft}
+          formulation: discriminative
+          refinement:
+            train_iterations: [1, 2, 3, 4]
+            inference_iterations: 4
+            feedback: soft
+        mode: factorized
       training: {trainable: [visible, assignment]}
-    initialise_from: null
+    initialise_from:
     initialise_components: []
     predictions: {}
 
@@ -26,14 +30,18 @@ variants:
     patch:
       model:
         assignment:
-          method: discriminative
-          recurrence: {train_steps: [1, 2, 3, 4], eval_steps: 4, feedback: soft}
-        invisible: {method: cfm, conditioning: soft}
+          formulation: discriminative
+          refinement:
+            train_iterations: [1, 2, 3, 4]
+            inference_iterations: 4
+            feedback: soft
+        invisible: {conditioning: {assignment: soft}, generator: {type: cfm}}
+        mode: factorized
       training: {trainable: [invisible]}
     initialise_from: assignment_reference
     initialise_components: [visible, assignment]
     predictions:
-      baseline: {label: C1 baseline, patch: {prediction: {samples: 32, steps: 17, solver: euler}}, recurrent_steps: 4}
+      baseline: {label: C1 baseline, patch: {inference: {invisible: {samples_per_assignment: 32, flow: {steps: 17, solver: euler}}}}, recurrent_steps: 4}
 
   continued_no_feedback:
     label: Continued assignment training without posterior feedback
@@ -41,14 +49,19 @@ variants:
     patch:
       model:
         assignment:
-          method: discriminative
-          recurrence: {train_steps: [1, 2, 3, 4], eval_steps: 4, feedback: soft}
-        invisible: {method: cfm, conditioning: soft}
+          formulation: discriminative
+          refinement:
+            train_iterations: [1, 2, 3, 4]
+            inference_iterations: 4
+            feedback: soft
+        invisible: {conditioning: {assignment: soft}, generator: {type: cfm}}
+        mode: factorized
       training: {trainable: [assignment]}
     initialise_from: c1
     initialise_components: [visible, assignment, invisible]
     predictions:
-      continued: {label: Matched continued training, patch: {prediction: {samples: 32, steps: 17, solver: euler}}, recurrent_steps: 4}
+      continued: {label: Matched continued training, patch: {inference: {invisible: {samples_per_assignment: 32, flow: {steps: 17, solver: euler}}}},
+          recurrent_steps: 4}
 
   c2:
     label: Continued assignment training + detached posterior feedback
@@ -56,14 +69,20 @@ variants:
     patch:
       model:
         assignment:
-          method: discriminative
-          recurrence: {train_steps: [1, 2, 3, 4], eval_steps: 4, feedback: soft}
-        invisible: {method: cfm, conditioning: soft}
-        c2:
-          posterior_samples: 8
-          training_sampler: {steps: 17, solver: euler}
+          formulation: discriminative
+          refinement:
+            train_iterations: [1, 2, 3, 4]
+            inference_iterations: 4
+            feedback: soft
+        invisible: {conditioning: {assignment: soft}, generator: {type: cfm}}
+        mode: factorized
+        feedback:
+          invisible_to_assignment:
+            posterior_samples: 8
+            training_sampler: {steps: 17, solver: euler}
+            enabled: true
       training: {trainable: [assignment, c2]}
     initialise_from: c1
     initialise_components: [visible, assignment, invisible]
     predictions:
-      feedback: {label: C2 feedback, patch: {prediction: {samples: 32, steps: 17, solver: euler}}, recurrent_steps: 4}
+      feedback: {label: C2 feedback, patch: {inference: {invisible: {samples_per_assignment: 32, flow: {steps: 17, solver: euler}}}}, recurrent_steps: 4}

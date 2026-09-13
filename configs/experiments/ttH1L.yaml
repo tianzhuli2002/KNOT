@@ -5,22 +5,44 @@ experiment:
 topology: configs/topology/ttH1L.yaml
 
 data:
-  config: configs/data/ttH1L.yaml
+  input: /scratch/w00238tl/phenoH5/hyper_converted_ttH_ttbb_train_10M_23May.h5
+  cache: /scratch/w00238tl/jer_cache
   subset_seed: 42
   events: {train: 100000, validation: 50000, test: 50000}
   max_assignment_states: 100000
 
+inputs:
+  transforms:
+    e: log
+    eta: [minmax, -2.5, 2.5]
+    sin_phi: none
+    cos_phi: none
+    pt: log
+    btag: none
+    flavour: pid
+    njet: [minmax, 0, 8]
+    nBjets: [minmax, 0, 8]
+  JET: {count: 8, features: [e, eta, sin_phi, cos_phi, pt, btag, flavour]}
+  LEPTON: {count: 1, features: [e, eta, sin_phi, cos_phi, pt, flavour]}
+  MET: {count: 1, features: [sin_phi, cos_phi, pt, flavour]}
+  GLOBAL: {features: [njet, nBjets]}
+
 model:
   latent: {d_model: 105, n_heads: 3, d_feedforward: 292, dropout: 0.04889685146434}
-  encoder: {type: transformer}
+  encoder:
+    type: transformer
+    representation: features
+    relations: none
   assignment:
-    method: discriminative
-
-prediction: {}
+    formulation: discriminative
+  mode: factorized
 
 training:
+  batch_size: 448
+  workers: 4
   learning_rate: 0.000361545
   weight_decay: 0.00006073529387441413
   epochs: 20
   precision: 16-mixed
   output: results/ttH1L
+inference: {}

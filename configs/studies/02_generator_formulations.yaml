@@ -13,10 +13,14 @@ variants:
     patch:
       model:
         assignment:
-          method: discriminative
-          recurrence: {train_steps: [1, 2, 3, 4], eval_steps: 4, feedback: soft}
+          formulation: discriminative
+          refinement:
+            train_iterations: [1, 2, 3, 4]
+            inference_iterations: 4
+            feedback: soft
+        mode: factorized
       training: {trainable: [visible, assignment]}
-    initialise_from: null
+    initialise_from:
     initialise_components: []
     predictions: {}
 
@@ -26,14 +30,18 @@ variants:
     patch:
       model:
         assignment:
-          method: discriminative
-          recurrence: {train_steps: [1, 2, 3, 4], eval_steps: 4, feedback: soft}
-        invisible: {method: ddim, conditioning: none, coordinates: {type: cartesian}}
+          formulation: discriminative
+          refinement:
+            train_iterations: [1, 2, 3, 4]
+            inference_iterations: 4
+            feedback: soft
+        invisible: {conditioning: {assignment: none}, coordinates: {type: cartesian}, generator: {type: ddim}}
+        mode: factorized
       training: {trainable: [invisible]}
     initialise_from: assignment_reference
     initialise_components: [visible, assignment]
     predictions:
-      nfe17: {label: DDIM NFE=17, patch: {prediction: {samples: 32, steps: 17}}, recurrent_steps: 4}
+      nfe17: {label: DDIM NFE=17, patch: {inference: {invisible: {samples_per_assignment: 32, flow: {steps: 17}}}}, recurrent_steps: 4}
 
   edm:
     label: EDM
@@ -41,14 +49,18 @@ variants:
     patch:
       model:
         assignment:
-          method: discriminative
-          recurrence: {train_steps: [1, 2, 3, 4], eval_steps: 4, feedback: soft}
-        invisible: {method: edm, conditioning: none, coordinates: {type: cartesian}}
+          formulation: discriminative
+          refinement:
+            train_iterations: [1, 2, 3, 4]
+            inference_iterations: 4
+            feedback: soft
+        invisible: {conditioning: {assignment: none}, coordinates: {type: cartesian}, generator: {type: edm}}
+        mode: factorized
       training: {trainable: [invisible]}
     initialise_from: assignment_reference
     initialise_components: [visible, assignment]
     predictions:
-      nfe17: {label: EDM NFE=17, patch: {prediction: {samples: 32, nfe: 17}}, recurrent_steps: 4}
+      nfe17: {label: EDM NFE=17, patch: {inference: {invisible: {samples_per_assignment: 32, edm: {nfe: 17}}}}, recurrent_steps: 4}
 
   cfm:
     label: CFM
@@ -56,14 +68,18 @@ variants:
     patch:
       model:
         assignment:
-          method: discriminative
-          recurrence: {train_steps: [1, 2, 3, 4], eval_steps: 4, feedback: soft}
-        invisible: {method: cfm, conditioning: none, coordinates: {type: cartesian}}
+          formulation: discriminative
+          refinement:
+            train_iterations: [1, 2, 3, 4]
+            inference_iterations: 4
+            feedback: soft
+        invisible: {conditioning: {assignment: none}, coordinates: {type: cartesian}, generator: {type: cfm}}
+        mode: factorized
       training: {trainable: [invisible]}
     initialise_from: assignment_reference
     initialise_components: [visible, assignment]
     predictions:
-      nfe17: {label: CFM Euler NFE=17, patch: {prediction: {samples: 32, steps: 17, solver: euler}}, recurrent_steps: 4}
+      nfe17: {label: CFM Euler NFE=17, patch: {inference: {invisible: {samples_per_assignment: 32, flow: {steps: 17, solver: euler}}}}, recurrent_steps: 4}
 
   ot_cfm:
     label: OT-CFM
@@ -71,14 +87,18 @@ variants:
     patch:
       model:
         assignment:
-          method: discriminative
-          recurrence: {train_steps: [1, 2, 3, 4], eval_steps: 4, feedback: soft}
-        invisible: {method: cfm, conditioning: none, coordinates: {type: cartesian}, coupling: minibatch_ot}
+          formulation: discriminative
+          refinement:
+            train_iterations: [1, 2, 3, 4]
+            inference_iterations: 4
+            feedback: soft
+        invisible: {conditioning: {assignment: none}, coordinates: {type: cartesian}, generator: {type: cfm, coupling: {type: minibatch_ot, condition_weight: 0.0}}}
+        mode: factorized
       training: {trainable: [invisible]}
     initialise_from: assignment_reference
     initialise_components: [visible, assignment]
     predictions:
-      nfe17: {label: OT-CFM Euler NFE=17, patch: {prediction: {samples: 32, steps: 17, solver: euler}}, recurrent_steps: 4}
+      nfe17: {label: OT-CFM Euler NFE=17, patch: {inference: {invisible: {samples_per_assignment: 32, flow: {steps: 17, solver: euler}}}}, recurrent_steps: 4}
 
   conditional_ot_cfm:
     label: Condition-aware OT / C2OT-style CFM
@@ -86,15 +106,22 @@ variants:
     patch:
       model:
         assignment:
-          method: discriminative
-          recurrence: {train_steps: [1, 2, 3, 4], eval_steps: 4, feedback: soft}
+          formulation: discriminative
+          refinement:
+            train_iterations: [1, 2, 3, 4]
+            inference_iterations: 4
+            feedback: soft
         invisible:
-          method: cfm
-          conditioning: none
+          conditioning:
+            assignment: none
           coordinates: {type: cartesian}
-          coupling: {method: conditional_ot, condition_weight: 1.0}
+          generator:
+            type: cfm
+            coupling: {condition_weight: 1.0, type: conditional_ot}
+        mode: factorized
       training: {trainable: [invisible]}
     initialise_from: assignment_reference
     initialise_components: [visible, assignment]
     predictions:
-      nfe17: {label: Condition-aware OT CFM Euler NFE=17, patch: {prediction: {samples: 32, steps: 17, solver: euler}}, recurrent_steps: 4}
+      nfe17: {label: Condition-aware OT CFM Euler NFE=17, patch: {inference: {invisible: {samples_per_assignment: 32, flow: {steps: 17, solver: euler}}}},
+          recurrent_steps: 4}

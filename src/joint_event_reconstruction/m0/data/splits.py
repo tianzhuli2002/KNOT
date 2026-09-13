@@ -7,6 +7,7 @@ import tempfile
 from pathlib import Path
 
 import numpy as np
+import h5py
 from sklearn.model_selection import train_test_split
 
 
@@ -174,6 +175,27 @@ def load_or_create_split(indices_path, labels, *, source_path, seed, limit_event
     if indices_path is None:
         if require_existing:
             raise ValueError("dataset.split.require_existing=true requires dataset.split.indices_path.")
+        with h5py.File(source_path, "r") as handle:
+            if "SPLIT" in handle:
+                split = np.asarray(handle["SPLIT"][:])
+                if split.shape != (len(labels),) or not np.issubdtype(split.dtype, np.integer):
+                    raise ValueError(f"Canonical SPLIT in {source_path} must be a one-dimensional integer dataset")
+                unknown = sorted(set(np.unique(split).tolist()) - {0, 1, 2})
+                if unknown:
+                    raise ValueError(f"Canonical SPLIT in {source_path} contains unknown values {unknown}")
+                selected = np.arange(len(split), dtype=np.int64)
+                arrays = {
+                    "selected": selected,
+                    "train": selected[split == 0],
+                    "validation": selected[split == 1],
+                    "test": selected[split == 2],
+                }
+                arrays = validate_indices(arrays, total_events=len(labels))
+                return arrays, {
+                    "source": source,
+                    "policy": "canonical_hdf5_SPLIT",
+                    "index_hashes": {name: index_hash(values) for name, values in arrays.items()},
+                }
         arrays = generate_indices(labels, seed=seed, limit_events=limit_events, test_size=test_size)
         return arrays, {"source": source, "seed": int(seed), "limit_events": limit_events, "test_size": float(test_size), "index_hashes": {name: index_hash(values) for name, values in arrays.items()}}
     npz_path, metadata_path = split_paths(indices_path)

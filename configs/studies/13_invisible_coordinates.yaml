@@ -12,9 +12,10 @@ variants:
     reporting: setup
     patch:
       model:
-        assignment: {method: discriminative, recurrence: {train_steps: [1, 2, 3, 4], eval_steps: 4, feedback: soft}}
+        assignment: {formulation: discriminative, refinement: {train_iterations: [1, 2, 3, 4], inference_iterations: 4, feedback: soft}}
+        mode: factorized
       training: {trainable: [visible, assignment]}
-    initialise_from: null
+    initialise_from:
     initialise_components: []
     predictions: {}
 
@@ -23,36 +24,39 @@ variants:
     reporting: primary
     patch:
       model:
-        assignment: {method: discriminative, recurrence: {train_steps: [1, 2, 3, 4], eval_steps: 4, feedback: soft}}
-        invisible: {method: cfm, conditioning: none, coordinates: {type: cartesian}}
+        assignment: {formulation: discriminative, refinement: {train_iterations: [1, 2, 3, 4], inference_iterations: 4, feedback: soft}}
+        invisible: {conditioning: {assignment: none}, coordinates: {type: cartesian}, generator: {type: cfm}}
+        mode: factorized
       training: {trainable: [invisible]}
     initialise_from: assignment_reference
     initialise_components: [visible, assignment]
     predictions:
-      default: {label: Cartesian, patch: {prediction: {samples: 32, steps: 17, solver: euler}}, recurrent_steps: 4}
+      default: {label: Cartesian, patch: {inference: {invisible: {samples_per_assignment: 32, flow: {steps: 17, solver: euler}}}}, recurrent_steps: 4}
 
   met_residual:
     label: MET-residual invisible coordinates
     reporting: primary
     patch:
       model:
-        assignment: {method: discriminative, recurrence: {train_steps: [1, 2, 3, 4], eval_steps: 4, feedback: soft}}
-        invisible: {method: cfm, conditioning: none, coordinates: {type: met_residual}}
+        assignment: {formulation: discriminative, refinement: {train_iterations: [1, 2, 3, 4], inference_iterations: 4, feedback: soft}}
+        invisible: {conditioning: {assignment: none}, coordinates: {type: met_residual}, generator: {type: cfm}}
+        mode: factorized
       training: {trainable: [invisible]}
     initialise_from: assignment_reference
     initialise_components: [visible, assignment]
     predictions:
-      default: {label: MET residual, patch: {prediction: {samples: 32, steps: 17, solver: euler}}, recurrent_steps: 4}
+      default: {label: MET residual, patch: {inference: {invisible: {samples_per_assignment: 32, flow: {steps: 17, solver: euler}}}}, recurrent_steps: 4}
 
   met_exact:
     label: MET-exact projection diagnostic
     reporting: diagnostic
     patch:
       model:
-        assignment: {method: discriminative, recurrence: {train_steps: [1, 2, 3, 4], eval_steps: 4, feedback: soft}}
-        invisible: {method: cfm, conditioning: none, coordinates: {type: met_exact}}
+        assignment: {formulation: discriminative, refinement: {train_iterations: [1, 2, 3, 4], inference_iterations: 4, feedback: soft}}
+        invisible: {conditioning: {assignment: none}, coordinates: {type: met_exact}, generator: {type: cfm}}
+        mode: factorized
       training: {trainable: [invisible]}
     initialise_from: assignment_reference
     initialise_components: [visible, assignment]
     predictions:
-      default: {label: MET exact diagnostic, patch: {prediction: {samples: 32, steps: 17, solver: euler}}, recurrent_steps: 4}
+      default: {label: MET exact diagnostic, patch: {inference: {invisible: {samples_per_assignment: 32, flow: {steps: 17, solver: euler}}}}, recurrent_steps: 4}

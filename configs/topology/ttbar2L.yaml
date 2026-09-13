@@ -1,9 +1,9 @@
 topology:
   top_e:
-    b: [JET, 1]
-    lepton: [ELECTRON, 1]
-    nu: [NEUTRINO, 0]
+    b: {source: JET, truth: top_e_b}
+    lepton: {source: ELECTRON, truth: top_e_lepton}
+    nu: {source: NEUTRINO, truth: top_e_neutrino}
   top_mu:
-    b: [JET, 2]
-    lepton: [MUON, 1]
-    nu: [NEUTRINO, 1]
+    b: {source: JET, truth: top_mu_b}
+    lepton: {source: MUON, truth: top_mu_lepton}
+    nu: {source: NEUTRINO, truth: top_mu_neutrino}

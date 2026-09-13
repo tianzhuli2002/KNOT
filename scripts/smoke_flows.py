@@ -15,6 +15,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import torch
+from omegaconf import OmegaConf
 from torch.nn import functional as F
 
 from joint_event_reconstruction.configuration import (
@@ -337,6 +338,9 @@ def run_flow_smoke(
     data = StructuredDataModule(
         visible,
         data_config.topology_config,
+        truth_bindings=OmegaConf.to_container(
+            data_config.data.truth_bindings, resolve=True
+        ),
         tensor_cache=data_config.data.tensor_cache,
         invisible_path=data_config.data.invisible.path,
         allow_synthetic=bool(base.data.invisible.allow_synthetic),

@@ -1,14 +1,15 @@
-# JER framework v2 contract
+# JER framework contract
 
-This document records the maintained v2 seams.  It is an implementation and
+This document records the maintained framework seams. It is an implementation and
 provenance contract, not evidence for any physics improvement.
 
 ## Shared latent and visible backbones
 
 `model.latent` defines the width and default topology-reasoner capacity used by
 assignment, feedback and joint-flow modules.  `model.encoder` selects exactly
-one visible backbone: `transformer`, `physics_transformer`, `lgatr`, or
-`lgatr_slim`.  Every backend returns the same `{pooled, tokens, padding_mask}`
+one visible backbone. Transformer representation and relations are orthogonal:
+`features/none`, `four_vector/none`, or `four_vector/physics`. L-GATr and
+L-GATr-Slim require four-vectors implicitly. Every backend returns the same `{pooled, tokens, padding_mask}`
 interface with width `model.latent.d_model`.  The standard Transformer remains
 the baseline.  L-GATr is optional (`pip install -e '.[lgatr]'`) and is validated
 with the installed package version recorded in checkpoints.
@@ -18,6 +19,23 @@ whose representation is `(E, px, py, pz)` in GeV and whose padded rows are zero.
 The scalar inputs are the explicitly configured physical scalars (`btag` and/or
 `charge`).  MET is read from the one unpadded MET token; it is never recovered
 from scaled embeddings.
+
+## Input and cache boundary
+
+Public configuration has four physics-facing parts: `data` selects one canonical
+HDF5 and one optional cache destination; `inputs` selects collections, counts,
+features and compact transforms; `topology` names semantic roles and decays; and
+`model` selects reconstruction mechanisms. Storage label indices are owned by
+the maintained dataset adapter.
+
+The deterministic path is `HDF5 -> tensor cache -> thin DataModule -> GPU`. One
+plain PyTorch `.pt` cache contains transformed scalar inputs, physical
+`(E,px,py,pz)` vectors in GeV with metric `(+---)`, type IDs, masks, GLOBAL
+features, EVENT_ID, canonical split identity, visible truth and invisible truth.
+It stops before learned computation and is shared by every maintained encoder and
+reconstruction formulation. A fingerprint in metadata validates its contents;
+the filename remains `<input_stem>.pt`. Missing caches build automatically,
+incompatible caches fail, and replacement requires an explicit force option.
 
 ## Invisible coordinates
 

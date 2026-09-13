@@ -77,7 +77,7 @@ class _PhysicsAttentionBlock(nn.Module):
         return x.masked_fill(padding.unsqueeze(-1), 0.0)
 
 
-class PhysicsTransformerVisibleEncoder(nn.Module):
+class RelationalTransformerVisibleEncoder(nn.Module):
     def __init__(self, config, schema, n_object_types: int):
         super().__init__()
         d_model = int(config.d_model)
@@ -86,16 +86,18 @@ class PhysicsTransformerVisibleEncoder(nn.Module):
             raise ValueError("Physics Transformer width must be divisible by heads")
         self.config = config
         self.schema = schema
-        scalar_count = len(config.scalar_features)
+        scalar_count = len(config.inputs.object_features) + len(config.inputs.event_features)
         self.object_projection = nn.Linear(4 + scalar_count, d_model)
         self.type_embedding = nn.Embedding(n_object_types, d_model)
         self.cls_token = nn.Parameter(torch.empty(1, 1, d_model))
         nn.init.normal_(self.cls_token, mean=0.0, std=0.02)
-        self.pair_bias = nn.Sequential(
-            nn.Linear(6, int(config.pairwise.hidden_dim)),
-            nn.GELU(),
-            nn.Linear(int(config.pairwise.hidden_dim), n_heads),
-        )
+        self.pair_bias = None
+        if bool(config.relations.enabled):
+            self.pair_bias = nn.Sequential(
+                nn.Linear(6, int(config.relations.hidden_dim)),
+                nn.GELU(),
+                nn.Linear(int(config.relations.hidden_dim), n_heads),
+            )
         self.blocks = nn.ModuleList(
             _PhysicsAttentionBlock(
                 d_model,
@@ -118,13 +120,14 @@ class PhysicsTransformerVisibleEncoder(nn.Module):
             (len(objects), 1), dtype=torch.bool, device=objects.device
         )
         padding = torch.cat((cls_padding, physical.padding_mask), dim=1)
-        object_bias = self.pair_bias(_pair_features(physical.fourmomenta)).permute(
-            0, 3, 1, 2
-        )
         bias = objects.new_zeros(
-            len(objects), object_bias.shape[1], x.shape[1], x.shape[1]
+            len(objects), int(self.config.n_heads), x.shape[1], x.shape[1]
         )
-        bias[:, :, 1:, 1:] = object_bias
+        if self.pair_bias is not None:
+            object_bias = self.pair_bias(_pair_features(physical.fourmomenta)).permute(
+                0, 3, 1, 2
+            )
+            bias[:, :, 1:, 1:] = object_bias
         for block in self.blocks:
             x = block(x, bias, padding)
         encoded = self.output_norm(x)

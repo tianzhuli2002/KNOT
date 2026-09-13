@@ -17,6 +17,7 @@ TOP_LEVEL_KEYS = {
     "experiment",
     "topology_config",
     "data_config",
+    "input_definition",
     "data",
     "model",
     "inference",
@@ -128,10 +129,12 @@ def validate_experiment(config: DictConfig) -> None:
     data = config.data
     _exact_keys(
         data,
-        {"tensor_cache", "subset_seed", "max_events", "max_assignment_states", "invisible"},
+        {"input", "tensor_cache", "force_rebuild_cache", "subset_seed", "truth_bindings", "max_events", "max_assignment_states", "invisible"},
         "data",
     )
     int(data.subset_seed)
+    if not data.truth_bindings:
+        raise ValueError("data.truth_bindings must be non-empty")
     _exact_keys(data.max_events, {"train", "val", "test"}, "data.max_events")
     _exact_keys(data.invisible, {"path", "allow_synthetic"}, "data.invisible")
     _positive_int(data.max_assignment_states, "data.max_assignment_states")
@@ -149,60 +152,63 @@ def validate_experiment(config: DictConfig) -> None:
         raise ValueError("model.mode must resolve to factorized or joint_flow")
     _latent(model.latent, "model.latent")
     visible_type = str(model.visible.type)
-    visible_keys = {"type", "d_model", "n_heads", "layers", "d_feedforward", "dropout"}
-    if visible_type == "physics_transformer":
-        visible_keys |= {"momentum_scale_gev", "scalar_features", "pairwise"}
+    visible_keys = {"type", "d_model", "n_heads", "layers", "d_feedforward", "dropout", "inputs", "representation", "relations_type"}
+    if visible_type == "relational_transformer":
+        visible_keys |= {"momentum_scale_gev", "relations"}
     elif visible_type == "lgatr":
         visible_keys = {
-            "type", "d_model", "blocks", "heads", "hidden_mv_channels",
-            "hidden_s_channels", "dropout", "momentum_scale_gev",
-            "scalar_features", "spurions",
+            "type", "d_model", "layers", "n_heads", "hidden",
+            "dropout", "momentum_scale_gev", "inputs", "symmetry_breaking", "representation", "relations_type",
         }
     elif visible_type == "lgatr_slim":
         visible_keys = {
-            "type", "d_model", "blocks", "heads", "hidden_vector_channels",
-            "hidden_scalar_channels", "dropout", "momentum_scale_gev",
-            "scalar_features", "spurions",
+            "type", "d_model", "layers", "n_heads", "hidden",
+            "dropout", "momentum_scale_gev", "inputs", "symmetry_breaking", "representation", "relations_type",
         }
     elif visible_type != "transformer":
         raise ValueError("resolved model.visible.type is invalid")
     _exact_keys(model.visible, visible_keys, "model.visible")
     width = _positive_int(model.visible.d_model, "model.visible.d_model")
-    if visible_type in {"transformer", "physics_transformer"}:
+    if visible_type in {"transformer", "relational_transformer"}:
         heads = _positive_int(model.visible.n_heads, "model.visible.n_heads")
         if width % heads:
             raise ValueError("model.visible.d_model must be divisible by n_heads")
         _positive_int(model.visible.layers, "model.visible.layers")
         _positive_int(model.visible.d_feedforward, "model.visible.d_feedforward")
     else:
-        _positive_int(model.visible.blocks, "model.visible.blocks")
-        _positive_int(model.visible.heads, "model.visible.heads")
-        hidden_name = (
-            "hidden_mv_channels" if visible_type == "lgatr" else "hidden_vector_channels"
-        )
-        scalar_name = (
-            "hidden_s_channels" if visible_type == "lgatr" else "hidden_scalar_channels"
-        )
-        _positive_int(model.visible[hidden_name], f"model.visible.{hidden_name}")
-        _positive_int(model.visible[scalar_name], f"model.visible.{scalar_name}")
+        _positive_int(model.visible.layers, "model.visible.layers")
+        _positive_int(model.visible.n_heads, "model.visible.n_heads")
     visible_dropout = float(model.visible.dropout)
     if not math.isfinite(visible_dropout) or not 0 <= visible_dropout < 1:
         raise ValueError("model.visible.dropout must lie in [0,1)")
     if int(model.visible.d_model) != int(model.latent.d_model):
         raise ValueError("visible encoder output width must equal model.latent.d_model")
-    if visible_type == "physics_transformer":
+    _exact_keys(
+        model.visible.inputs,
+        {"kinematics", "object_features", "event_features"},
+        "model.visible.inputs",
+    )
+    if len(set(model.visible.inputs.object_features)) != len(model.visible.inputs.object_features):
+        raise ValueError("model.visible.inputs.object_features must be unique")
+    if len(set(model.visible.inputs.event_features)) != len(model.visible.inputs.event_features):
+        raise ValueError("model.visible.inputs.event_features must be unique")
+    if visible_type == "relational_transformer":
         _positive(model.visible.momentum_scale_gev, "model.visible.momentum_scale_gev")
-        if not set(model.visible.scalar_features) <= {"btag", "charge"}:
-            raise ValueError("model.visible.scalar_features contains an invalid feature")
-        _exact_keys(model.visible.pairwise, {"hidden_dim", "features"}, "model.visible.pairwise")
-        _positive_int(model.visible.pairwise.hidden_dim, "model.visible.pairwise.hidden_dim")
+        _exact_keys(model.visible.relations, {"enabled", "hidden_dim", "features"}, "model.visible.relations")
+        _positive_int(model.visible.relations.hidden_dim, "model.visible.relations.hidden_dim")
     elif visible_type in {"lgatr", "lgatr_slim"}:
         _positive(model.visible.momentum_scale_gev, "model.visible.momentum_scale_gev")
-        if not set(model.visible.scalar_features) <= {"btag", "charge"}:
-            raise ValueError("model.visible.scalar_features contains an invalid feature")
-        _exact_keys(model.visible.spurions, {"beam", "time"}, "model.visible.spurions")
-        if str(model.visible.spurions.beam) not in {"xyplane", "none"}:
-            raise ValueError("model.visible.spurions.beam is invalid")
+        _exact_keys(model.visible.symmetry_breaking, {"beam", "time"}, "model.visible.symmetry_breaking")
+        if str(model.visible.symmetry_breaking.beam) not in {"xyplane", "none"}:
+            raise ValueError("model.visible.symmetry_breaking.beam is invalid")
+        expected_hidden = (
+            {"multivector_channels", "scalar_channels"}
+            if visible_type == "lgatr"
+            else {"vector_channels", "scalar_channels"}
+        )
+        _exact_keys(model.visible.hidden, expected_hidden, "model.visible.hidden")
+        for name in expected_hidden:
+            _positive_int(model.visible.hidden[name], f"model.visible.hidden.{name}")
 
     assignment = model.assignment
     _exact_keys(assignment, {"formulation", "reasoning", "feedback"}, "model.assignment")
@@ -379,9 +385,12 @@ def validate_experiment(config: DictConfig) -> None:
     training = config.training
     _exact_keys(
         training,
-        {"learning_rate", "weight_decay", "epochs", "precision", "gradient_clip", "accumulate_grad_batches", "trainable", "loss_weights", "scheduler", "early_stopping", "runtime", "output"},
+        {"batch_size", "workers", "learning_rate", "weight_decay", "epochs", "precision", "gradient_clip", "accumulate_grad_batches", "trainable", "loss_weights", "scheduler", "early_stopping", "runtime", "output"},
         "training",
     )
+    _positive_int(training.batch_size, "training.batch_size")
+    if int(training.workers) < 0:
+        raise ValueError("training.workers must be non-negative")
     _positive(training.learning_rate, "training.learning_rate")
     _nonnegative(training.weight_decay, "training.weight_decay")
     _positive_int(training.epochs, "training.epochs")

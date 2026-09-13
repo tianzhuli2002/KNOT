@@ -12,10 +12,10 @@ variants:
     reporting: diagnostic
     patch:
       training: {trainable: [visible, assignment]}
-    initialise_from: null
+    initialise_from:
     initialise_components: []
     predictions:
-      top1: {label: M1, patch: {prediction: {top_k: 1}}, recurrent_steps: null}
+      top1: {label: M1, patch: {inference: {assignment: {top_k: 1}}}, recurrent_steps: null}
 
   m3:
     label: discriminative recurrent-feedback candidate reference
@@ -23,23 +23,28 @@ variants:
     patch:
       model:
         assignment:
-          method: discriminative
-          recurrence: {train_steps: [1, 2, 3, 4], eval_steps: 4, feedback: soft}
+          formulation: discriminative
+          refinement:
+            train_iterations: [1, 2, 3, 4]
+            inference_iterations: 4
+            feedback: soft
+        mode: factorized
       training: {trainable: [visible, assignment]}
-    initialise_from: null
+    initialise_from:
     initialise_components: []
     predictions:
-      top1: {label: recurrent-feedback candidate, patch: {prediction: {top_k: 1}}, recurrent_steps: 4}
+      top1: {label: recurrent-feedback candidate, patch: {inference: {assignment: {top_k: 1}}}, recurrent_steps: 4}
 
   dfm:
     label: complete-state DFM
     reporting: primary
     patch:
       model:
-        assignment: {method: dfm}
+        assignment: {formulation: discrete_flow}
+        mode: factorized
       training: {trainable: [visible, assignment]}
-    initialise_from: null
+    initialise_from:
     initialise_components: []
     predictions:
-      s64_t8: {label: DFM S=64 T=8, patch: {prediction: {samples: 64, steps: 8}}, recurrent_steps: null}
-      s64_t16: {label: DFM S=64 T=16, patch: {prediction: {samples: 64, steps: 16}}, recurrent_steps: null}
+      s64_t8: {label: DFM S=64 T=8, patch: {inference: {invisible: {samples_per_assignment: 64, flow: {steps: 8}}}}, recurrent_steps: null}
+      s64_t16: {label: DFM S=64 T=16, patch: {inference: {invisible: {samples_per_assignment: 64, flow: {steps: 16}}}}, recurrent_steps: null}

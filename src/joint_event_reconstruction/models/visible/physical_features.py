@@ -32,12 +32,12 @@ def physical_encoder_input(batch: dict, schema, config) -> PhysicalEncoderInput:
         raise ValueError("type_ids and padding_mask must align with visible tokens")
     if not torch.isfinite(vectors).all():
         raise ValueError("physics_vectors contain non-finite values")
-    names = tuple(str(name) for name in config.scalar_features)
+    names = tuple(str(name) for name in (*config.inputs.object_features, *config.inputs.event_features))
     scalars = tokens.new_zeros(tokens.shape[:2] + (len(names),))
     for scalar_index, name in enumerate(names):
         for source, plan in schema.sources.items():
             feature = next(
-                (item for item in plan.features if item.variable == name), None
+                (item for item in plan.features if item.name == name), None
             )
             if feature is None:
                 continue

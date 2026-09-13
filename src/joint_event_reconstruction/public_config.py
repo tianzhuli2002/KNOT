@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from omegaconf import DictConfig, OmegaConf
@@ -11,13 +12,19 @@ from joint_event_reconstruction.topology.compiler import load_topology
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULTS_PATH = REPO_ROOT / "configs/defaults.yaml"
-PUBLIC_TOP_KEYS = {"experiment", "topology", "data", "model", "prediction", "training"}
+PUBLIC_TOP_KEYS = {
+    "experiment", "topology", "data", "inputs", "model", "inference", "training"
+}
 TRAINABLE_COMPONENTS = {"visible", "assignment", "invisible", "c2", "compatibility"}
 
 
-def _path(value: object) -> Path:
+def _path(value: object, *, data_path: bool = False) -> Path:
     path = Path(str(value)).expanduser()
-    return (path if path.is_absolute() else REPO_ROOT / path).resolve()
+    if path.is_absolute():
+        return path.resolve()
+    if data_path and os.environ.get("JER_DATA_ROOT"):
+        return (Path(os.environ["JER_DATA_ROOT"]).expanduser() / path).resolve()
+    return (REPO_ROOT / path).resolve()
 
 
 def _mapping(value, name: str):
@@ -48,31 +55,87 @@ def _merge(base, override):
     return OmegaConf.merge(OmegaConf.create(_plain(base)), override)
 
 
-def _load_data(path: Path) -> DictConfig:
-    if not path.is_file():
-        raise FileNotFoundError(f"JER data config does not exist: {path}")
-    data = OmegaConf.load(path)
-    allowed = {"source", "invisible_truth", "split", "tensor_cache", "loader", "objects"}
-    _unknown(data, allowed, "data config")
-    _required(data, allowed, "data config")
-    loader_keys = {"batch_size", "workers", "pin_memory", "persistent_workers", "prefetch_factor"}
-    _unknown(data.loader, loader_keys, "data.loader")
-    _required(data.loader, loader_keys, "data.loader")
-    if not data.objects:
-        raise ValueError("data.objects must be non-empty")
-    for source, spec in data.objects.items():
-        _unknown(spec, {"count", "variables", "scalers"}, f"data.objects.{source}")
-        _required(spec, {"variables", "scalers"}, f"data.objects.{source}")
-        if len(spec.variables) != len(spec.scalers):
-            raise ValueError(f"data.objects.{source}: variables and scalers must have equal length")
-        if source != "GLOBAL" and spec.get("count") is None:
-            raise ValueError(f"data.objects.{source}.count is required")
+def _load_data(value) -> DictConfig:
+    """Validate and normalise the compact public ``data`` + ``inputs`` contract."""
+    data = OmegaConf.load(value) if isinstance(value, Path) else value
+    _mapping(data, "input definition")
+    obsolete = {
+        "files", "loader", "objects", "event_features", "truth", "tensor_cache"
+    }
+    found = sorted(obsolete & set(data))
+    if found:
+        raise ValueError(
+            f"Obsolete public data setting(s) {found}; use data.input/data.cache and inputs"
+        )
+    _unknown(data, {"input", "cache", "transforms", "collections"}, "input definition")
+    _required(data, {"input", "cache", "transforms", "collections"}, "input definition")
+    for name, transform in data.transforms.items():
+        _transform_name(transform, f"inputs.transforms.{name}")
+    if not data.collections:
+        raise ValueError("inputs must contain at least one object collection")
+    for source, spec in data.collections.items():
+        _mapping(spec, f"inputs.{source}")
+        if source == "GLOBAL":
+            _unknown(spec, {"features"}, "inputs.GLOBAL")
+            _required(spec, {"features"}, "inputs.GLOBAL")
+        else:
+            if "max_count" in spec:
+                raise ValueError(f"inputs.{source}.max_count is obsolete; use count")
+            _unknown(spec, {"count", "features"}, f"inputs.{source}")
+            _required(spec, {"count", "features"}, f"inputs.{source}")
+            if int(spec.count) <= 0:
+                raise ValueError(f"inputs.{source}.count must be positive")
+        for feature in spec.features:
+            if feature not in data.transforms:
+                raise ValueError(
+                    f"input collection {source} requests unknown feature {feature!r}"
+                )
     return data
+
+
+def _transform_name(transform, path: str) -> str:
+    if isinstance(transform, str):
+        if transform not in {"none", "log", "sincos", "standard", "pid"}:
+            raise ValueError(f"{path} must be none, log, sincos, standard, pid or [minmax, MIN, MAX]")
+        return transform
+    values = list(transform) if OmegaConf.is_list(transform) or isinstance(transform, (list, tuple)) else None
+    if values is None or len(values) != 3 or str(values[0]) != "minmax":
+        raise ValueError(f"{path} must be [minmax, MIN, MAX]")
+    lower, upper = float(values[1]), float(values[2])
+    if not lower < upper:
+        raise ValueError(f"{path} requires min < max")
+    return f"minmax:min={lower:g},max={upper:g}"
+
+
+def _truth_bindings(topology_path: Path) -> dict[str, dict]:
+    """Maintained canonical storage adapters; never part of experiment YAML."""
+    adapters = {
+        "ttbar2L": {
+            "top_e_b": ("JET", 1), "top_e_lepton": ("ELECTRON", 1),
+            "top_mu_b": ("JET", 2), "top_mu_lepton": ("MUON", 1),
+            "top_e_neutrino": ("NEUTRINO", 0), "top_mu_neutrino": ("NEUTRINO", 1),
+        },
+        "ttbar1L": {
+            "leptonic_b": ("JET", 1), "hadronic_b": ("JET", 2),
+            "hadronic_q1": ("JET", 3), "hadronic_q2": ("JET", 4),
+            "charged_lepton": ("LEPTON", 1), "leptonic_neutrino": ("NEUTRINO", 0),
+        },
+        "ttH1L": {
+            "hadronic_b": ("JET", 1), "hadronic_q1": ("JET", 2),
+            "hadronic_q2": ("JET", 3), "leptonic_b": ("JET", 4),
+            "higgs_b1": ("JET", 5), "higgs_b2": ("JET", 6),
+            "charged_lepton": ("LEPTON", 1), "leptonic_neutrino": ("NEUTRINO", 0),
+        },
+    }
+    name = topology_path.stem
+    if name not in adapters:
+        raise ValueError(f"No maintained dataset truth adapter for topology {name!r}")
+    return {key: {"source": source, "index": index} for key, (source, index) in adapters[name].items()}
 
 
 def _visible_targets(topology_path: Path) -> dict:
     """Minimal loader targets used only to request raw LABELS for topology sources."""
-    spec = load_topology(topology_path)
+    spec = load_topology(topology_path, _truth_bindings(topology_path))
     targets = {}
     for node_name in spec.dag_order:
         members = []
@@ -88,47 +151,67 @@ def _visible_targets(topology_path: Path) -> dict:
 
 def build_visible_loader_config(experiment: DictConfig) -> DictConfig:
     """Adapt the JER data config to the mature fixed-token visible loader."""
-    data = _load_data(_path(experiment.data_config))
+    data = _load_data(experiment.input_definition)
     topology_path = _path(experiment.topology_config)
-    loader = data.loader
     observables = []
-    for source, spec in data.objects.items():
+    for source, spec in data.collections.items():
+        if source == "GLOBAL":
+            continue
+        features = [str(name) for name in spec.features]
+        kinematics = _canonical_kinematics(source, features)
         entry = {
             "INPUTS": str(source),
-            "variables": list(spec.variables),
-            "scalers": list(spec.scalers),
+            "variables": features,
+            "scalers": [_transform_name(data.transforms[name], f"inputs.transforms.{name}") for name in features],
+            "feature_names": features,
+            "kinematics": kinematics,
         }
-        if source != "GLOBAL":
-            entry["num_particles"] = int(spec.count)
+        entry["num_particles"] = int(spec.count)
         observables.append(entry)
+    global_spec = data.collections.get("GLOBAL")
+    if global_spec is not None:
+        features = [str(name) for name in global_spec.features]
+        observables.append(
+            {
+                "INPUTS": "GLOBAL",
+                "variables": features,
+                "scalers": [_transform_name(data.transforms[name], f"inputs.transforms.{name}") for name in features],
+                "feature_names": features,
+            }
+        )
 
     counts = {
         str(source): int(spec.count)
-        for source, spec in data.objects.items()
-        if source != "GLOBAL"
+        for source, spec in data.collections.items() if source != "GLOBAL"
     }
     lepton_counts = [
         count for source, count in counts.items() if source in {"LEPTON", "ELECTRON", "MUON"}
     ]
     dataset = {
-        "input_h5_path": str(_path(data.source)),
+        "input_h5_path": str(_path(data.input, data_path=True)),
         "max_jets": int(counts.get("JET", 0)),
         "max_leptons": max(lepton_counts, default=0),
         "include_met": "MET" in counts,
         "test_size": 0.2,
         "limit_events": None,
-        "split": {"indices_path": str(_path(data.split)), "require_existing": True},
+        "split": {"indices_path": None, "require_existing": False},
         "padding_value": 0.0,
-        "train_batch_size": int(loader.batch_size),
-        "val_batch_size": int(loader.batch_size),
-        "test_batch_size": int(loader.batch_size),
-        "train_num_workers": int(loader.workers),
-        "val_num_workers": int(loader.workers),
-        "test_num_workers": int(loader.workers),
-        "pin_memory": bool(loader.pin_memory),
-        "persistent_workers": bool(loader.persistent_workers),
-        "prefetch_factor": int(loader.prefetch_factor),
-        "cache": {"enabled": False},
+        "train_batch_size": int(experiment.training.batch_size),
+        "val_batch_size": int(experiment.training.batch_size),
+        "test_batch_size": int(experiment.training.batch_size),
+        "train_num_workers": int(experiment.training.workers),
+        "val_num_workers": int(experiment.training.workers),
+        "test_num_workers": int(experiment.training.workers),
+        "pin_memory": True,
+        "persistent_workers": True,
+        "prefetch_factor": 2,
+        "cache": {
+            "enabled": data.cache is not None,
+            "path": data.cache,
+            "build_chunk_size": 131072,
+            "build_workers": 1,
+            "rebuild": bool(experiment.data.get("force_rebuild_cache", False)),
+        },
         "observables": observables,
     }
     visible = OmegaConf.create(
@@ -177,6 +260,24 @@ def build_visible_loader_config(experiment: DictConfig) -> DictConfig:
     return visible
 
 
+def _canonical_kinematics(source: str, features: list[str]) -> dict:
+    """Return one of the explicit maintained physical-vector layouts."""
+    names = set(features)
+    if source == "MET":
+        if {"pt", "phi"} <= names:
+            return {"representation": "transverse_pseudovector", "pt": "pt", "phi": "phi"}
+        if {"pt", "sin_phi", "cos_phi"} <= names:
+            return {"representation": "transverse_pseudovector", "pt": "pt", "sin_phi": "sin_phi", "cos_phi": "cos_phi"}
+    elif {"e", "pt", "eta", "phi"} <= names:
+        return {"energy": "e", "pt": "pt", "eta": "eta", "phi": "phi"}
+    elif {"e", "pt", "eta", "sin_phi", "cos_phi"} <= names:
+        return {"energy": "e", "pt": "pt", "eta": "eta", "sin_phi": "sin_phi", "cos_phi": "cos_phi"}
+    raise ValueError(
+        f"input collection {source} does not provide a maintained canonical physical layout; "
+        f"features={features}"
+    )
+
+
 def _resolve_recurrence(public, defaults) -> tuple[dict, bool, bool]:
     if public is None:
         recurrence = _plain(defaults)
@@ -184,14 +285,19 @@ def _resolve_recurrence(public, defaults) -> tuple[dict, bool, bool]:
         recurrence["feedback"] = feedback_defaults
         return recurrence, False, False
 
-    _mapping(public, "model.assignment.recurrence")
-    allowed = {"block_layers", "train_steps", "eval_steps", "reinject_visible", "feedback"}
-    _unknown(public, allowed, "model.assignment.recurrence")
+    _mapping(public, "model.assignment.refinement")
+    allowed = {"layers", "train_iterations", "inference_iterations", "reinject_encoder_context", "feedback"}
+    _unknown(public, allowed, "model.assignment.refinement")
     feedback = public.get("feedback")
     if feedback not in {None, "soft"}:
-        raise ValueError("model.assignment.recurrence.feedback must be soft or omitted")
-    numeric = {key: _plain(value) for key, value in public.items() if key != "feedback"}
-    recurrence = _plain(_merge(defaults, numeric))
+        raise ValueError("model.assignment.refinement.feedback must be soft or omitted")
+    recurrence = _plain(defaults)
+    if public.get("layers") is not None:
+        recurrence["block_layers"] = int(public.layers)
+    recurrence["train_steps"] = list(public.get("train_iterations", recurrence["train_steps"]))
+    recurrence["eval_steps"] = int(public.get("inference_iterations", recurrence["eval_steps"]))
+    if public.get("reinject_encoder_context") is not None:
+        recurrence["reinject_visible"] = bool(public.reinject_encoder_context)
     return recurrence, True, feedback == "soft"
 
 
@@ -216,7 +322,12 @@ def _resolve_invisible(public, defaults) -> dict:
         "denoiser": _plain(defaults.network),
         "standard": _plain(defaults.standard),
         "edm": _plain(defaults.edm),
-        "flow_matching": _plain(defaults.flow_matching),
+        "flow_matching": {
+            "coupling": {
+                "method": str(defaults.flow_matching.coupling.type),
+                "condition_weight": float(defaults.flow_matching.coupling.condition_weight),
+            }
+        },
     }
     if public is None:
         return invisible
@@ -224,18 +335,26 @@ def _resolve_invisible(public, defaults) -> dict:
     _mapping(public, "model.invisible")
     _unknown(
         public,
-        {"method", "conditioning", "coordinates", "coupling", "network", "training"},
+        {"generator", "conditioning", "coordinates", "network", "training"},
         "model.invisible",
     )
-    _required(public, {"method"}, "model.invisible")
-    method = str(public.method)
+    if "method" in public:
+        raise ValueError("model.invisible.method is obsolete; use model.invisible.generator")
+    _required(public, {"generator"}, "model.invisible")
+    _mapping(public.generator, "model.invisible.generator")
+    _unknown(public.generator, {"type", "coupling", "network"}, "model.invisible.generator")
+    _required(public.generator, {"type"}, "model.invisible.generator")
+    method = str(public.generator.type)
     method_map = {"ddim": "standard", "edm": "edm", "cfm": "flow_matching"}
     if method not in method_map:
-        raise ValueError("model.invisible.method must be ddim, edm or cfm")
-    conditioning = str(public.get("conditioning", "none"))
+        raise ValueError("model.invisible.generator must be ddim, edm or cfm")
+    conditioning_public = public.get("conditioning", {"assignment": "none"})
+    _mapping(conditioning_public, "model.invisible.conditioning")
+    _unknown(conditioning_public, {"assignment"}, "model.invisible.conditioning")
+    conditioning = str(conditioning_public.get("assignment", "none"))
     if conditioning not in {"none", "soft", "hard", "hypothesis", "truth_oracle"}:
         raise ValueError(
-            "model.invisible.conditioning must be none, soft, hard, hypothesis or truth_oracle"
+            "model.invisible.conditioning.assignment must be none, soft, hard, hypothesis or truth_oracle"
         )
 
     invisible["enabled"] = True
@@ -253,24 +372,25 @@ def _resolve_invisible(public, defaults) -> dict:
             "model.invisible.coordinates.type must be cartesian, met_residual or met_exact"
         )
     invisible["coordinates"] = _coordinate_config(coordinate_type)
-    if public.get("network") is not None:
-        invisible["denoiser"] = _plain(_merge(defaults.network, public.network))
+    network = public.generator.get("network", public.get("network"))
+    if network is not None:
+        invisible["denoiser"] = _plain(_merge(defaults.network, network))
 
-    coupling = public.get("coupling")
+    coupling = public.generator.get("coupling")
     if method == "cfm":
         coupling = coupling if coupling is not None else defaults.flow_matching.coupling
-        if isinstance(coupling, str):
-            coupling = {"method": coupling, "condition_weight": 0.0}
         _mapping(coupling, "model.invisible.coupling")
-        _unknown(coupling, {"method", "condition_weight"}, "model.invisible.coupling")
-        method_name = str(coupling.get("method", "independent"))
+        if "method" in coupling:
+            raise ValueError("model.invisible.coupling.method is obsolete; use type")
+        _unknown(coupling, {"type", "condition_weight"}, "model.invisible.coupling")
+        method_name = str(coupling.get("type", "independent"))
         if method_name not in {"independent", "minibatch_ot", "conditional_ot"}:
             raise ValueError(
                 "model.invisible.coupling.method must be independent, minibatch_ot or conditional_ot"
             )
         condition_weight = float(coupling.get("condition_weight", 0.0))
         if method_name != "conditional_ot" and condition_weight != 0.0:
-            raise ValueError("condition_weight must be zero unless coupling.method=conditional_ot")
+            raise ValueError("condition_weight must be zero unless coupling.type=conditional_ot")
         invisible["flow_matching"] = {
             "coupling": {"method": method_name, "condition_weight": condition_weight}
         }
@@ -299,51 +419,70 @@ def _resolve_visible(public, latent: dict, defaults) -> dict:
             "model.latent"
         )
     backend = str(public.get("type", ""))
-    common = {"type", "layers", "n_heads", "d_feedforward", "dropout"}
+    common = {"type", "representation", "relations", "layers", "n_heads", "d_feedforward", "dropout"}
+    if "scalar_features" in public:
+        raise ValueError(
+            "model.encoder.scalar_features is obsolete; inputs are declared once in inputs"
+        )
+    if "spurions" in public:
+        raise ValueError(
+            "model.encoder.spurions is obsolete; use model.encoder.symmetry_breaking"
+        )
+    if "inputs" in public:
+        raise ValueError("model.encoder.inputs is obsolete; declare inputs once at top level")
+    _required(public, {"type"}, "model.encoder")
     if backend == "transformer":
         _unknown(public, common, "model.encoder (transformer)")
         selected = _plain(_merge(defaults.encoder.transformer, public))
-    elif backend == "physics_transformer":
-        allowed = common | {"momentum_scale_gev", "scalar_features", "pairwise"}
-        _unknown(public, allowed, "model.encoder (physics_transformer)")
-        selected = _plain(_merge(defaults.encoder.physics_transformer, public))
-        pairwise = selected["pairwise"]
-        _unknown(pairwise, {"hidden_dim", "features"}, "model.encoder.pairwise")
+        representation = str(public.get("representation", "features"))
+        if representation not in {"features", "four_vector"}:
+            raise ValueError("transformer representation must be features or four_vector")
+        relations_public = public.get("relations", "none")
+        relation_type = str(relations_public.get("type")) if OmegaConf.is_config(relations_public) or isinstance(relations_public, dict) else str(relations_public)
+        if relation_type not in {"none", "physics"}:
+            raise ValueError("transformer relations must be none or physics")
+        if relation_type == "physics" and representation != "four_vector":
+            raise ValueError("transformer relations=physics requires representation=four_vector")
+        if relation_type == "physics":
+            backend = "relational_transformer"
+            selected = _plain(_merge(defaults.encoder.relational_transformer, public))
+        relations = _plain(defaults.encoder.relational_transformer.relations)
+        if relation_type == "physics" and (OmegaConf.is_config(relations_public) or isinstance(relations_public, dict)):
+            relations = _plain(_merge(relations, relations_public))
+            relations.pop("type", None)
+        if relation_type == "physics":
+            _unknown(relations, {"enabled", "hidden_dim", "features"}, "model.encoder.relations")
         allowed_features = {
             "delta_eta", "sin_delta_phi", "cos_delta_phi", "log_delta_r",
             "minkowski_dot", "log_pair_mass",
         }
-        if set(pairwise["features"]) != allowed_features:
+        if relation_type == "physics" and set(relations["features"]) != allowed_features:
             raise ValueError(
-                "physics_transformer pairwise.features must contain the six "
+                "relational_transformer relations.features must contain the six "
                 "maintained physical relations exactly"
             )
-        scalar_features = list(selected["scalar_features"])
-        if not set(scalar_features) <= {"btag", "charge"}:
-            raise ValueError("Physical scalar_features may contain only btag and charge")
     elif backend == "lgatr":
-        allowed = {
-            "type", "blocks", "heads", "hidden_mv_channels",
-            "hidden_s_channels", "dropout", "momentum_scale_gev",
-            "scalar_features", "spurions",
-        }
+        allowed = common | {"hidden", "momentum_scale_gev", "symmetry_breaking"}
         _unknown(public, allowed, "model.encoder (lgatr)")
         selected = _plain(_merge(defaults.encoder.lgatr, public))
     elif backend == "lgatr_slim":
-        allowed = {
-            "type", "blocks", "heads", "hidden_vector_channels",
-            "hidden_scalar_channels", "dropout", "momentum_scale_gev",
-            "scalar_features", "spurions",
-        }
+        allowed = common | {"hidden", "momentum_scale_gev", "symmetry_breaking"}
         _unknown(public, allowed, "model.encoder (lgatr_slim)")
         selected = _plain(_merge(defaults.encoder.lgatr_slim, public))
     else:
         raise ValueError(
-            "model.encoder.type must be transformer, physics_transformer, "
-            "lgatr or lgatr_slim"
+            "model.encoder.type must be transformer, lgatr or lgatr_slim; "
+            "use transformer relations=physics for the relational Transformer"
         )
-    result = {"type": backend, "d_model": int(latent["d_model"])}
-    if backend in {"transformer", "physics_transformer"}:
+    representation = "four_vector" if backend in {"relational_transformer", "lgatr", "lgatr_slim"} else str(public.get("representation", "features"))
+    result = {
+        "type": backend,
+        "d_model": int(latent["d_model"]),
+        "inputs": {"kinematics": "transformed_features" if representation == "features" else "four_vector"},
+        "representation": representation,
+        "relations_type": "physics" if backend == "relational_transformer" else "none",
+    }
+    if backend in {"transformer", "relational_transformer"}:
         result.update(
             {
                 "n_heads": int(selected.get("n_heads", latent["n_heads"])),
@@ -354,51 +493,44 @@ def _resolve_visible(public, latent: dict, defaults) -> dict:
                 "dropout": float(selected.get("dropout", latent["dropout"])),
             }
         )
-        if backend == "physics_transformer":
+        if backend == "relational_transformer":
             result.update(
                 {
                     "momentum_scale_gev": float(selected["momentum_scale_gev"]),
-                    "scalar_features": list(selected["scalar_features"]),
-                    "pairwise": selected["pairwise"],
+                    "relations": relations,
                 }
             )
     else:
-        _unknown(selected["spurions"], {"beam", "time"}, "model.encoder.spurions")
-        if str(selected["spurions"]["beam"]) not in {"xyplane", "none"}:
-            raise ValueError("model.encoder.spurions.beam must be xyplane or none")
-        if not set(selected["scalar_features"]) <= {"btag", "charge"}:
-            raise ValueError("Physical scalar_features may contain only btag and charge")
+        _unknown(selected["symmetry_breaking"], {"beam", "time"}, "model.encoder.symmetry_breaking")
+        if str(selected["symmetry_breaking"]["beam"]) not in {"xyplane", "none"}:
+            raise ValueError("model.encoder.symmetry_breaking.beam must be xyplane or none")
         result.update(
             {
-                "blocks": int(selected["blocks"]),
-                "heads": int(selected["heads"]),
+                "layers": int(selected["layers"]),
+                "n_heads": int(selected["n_heads"]),
                 "dropout": float(selected["dropout"]),
                 "momentum_scale_gev": float(selected["momentum_scale_gev"]),
-                "scalar_features": list(selected["scalar_features"]),
-                "spurions": selected["spurions"],
+                "hidden": selected["hidden"],
+                "symmetry_breaking": selected["symmetry_breaking"],
             }
         )
-        if backend == "lgatr":
-            result.update(
-                hidden_mv_channels=int(selected["hidden_mv_channels"]),
-                hidden_s_channels=int(selected["hidden_s_channels"]),
-            )
-        else:
-            result.update(
-                hidden_vector_channels=int(selected["hidden_vector_channels"]),
-                hidden_scalar_channels=int(selected["hidden_scalar_channels"]),
-            )
     return result
 
 
 def _resolve_model(public, defaults) -> dict:
     _mapping(public, "model")
     allowed = {
-        "latent", "encoder", "assignment", "invisible", "joint_flow", "c2",
-        "compatibility",
+        "mode", "latent", "encoder", "assignment", "invisible", "joint",
+        "feedback", "compatibility",
     }
     _unknown(public, allowed, "model")
-    _required(public, {"latent", "encoder"}, "model")
+    for obsolete, replacement in {
+        "joint_flow": "joint",
+        "c2": "feedback.invisible_to_assignment",
+    }.items():
+        if obsolete in public:
+            raise ValueError(f"model.{obsolete} is obsolete; use model.{replacement}")
+    _required(public, {"mode", "latent", "encoder"}, "model")
     _mapping(public.latent, "model.latent")
     latent_keys = {"d_model", "n_heads", "d_feedforward", "dropout"}
     _unknown(public.latent, latent_keys, "model.latent")
@@ -406,33 +538,38 @@ def _resolve_model(public, defaults) -> dict:
     latent = _plain(public.latent)
     encoder = _resolve_visible(public.encoder, latent, defaults)
 
-    joint_public = public.get("joint_flow")
-    if joint_public is not None:
-        for name in ("assignment", "invisible", "c2", "compatibility"):
+    mode = str(public.mode)
+    if mode not in {"factorized", "joint"}:
+        raise ValueError("model.mode must be factorized or joint")
+    joint_public = public.get("joint")
+    if mode == "joint":
+        if joint_public is None:
+            raise ValueError("model.mode=joint requires model.joint")
+        for name in ("assignment", "invisible", "feedback", "compatibility"):
             if public.get(name) is not None:
-                raise ValueError(f"model.{name} must be omitted when model.joint_flow is used")
-        _mapping(joint_public, "model.joint_flow")
+                raise ValueError(f"model.{name} must be omitted when model.mode=joint")
+        _mapping(joint_public, "model.joint")
         _unknown(
             joint_public,
             {"recurrent", "block_layers", "train_steps", "coordinates", "coupling"},
-            "model.joint_flow",
+            "model.joint",
         )
         joint = _plain(_merge(defaults.joint_flow, joint_public))
         coordinates = joint["coordinates"]
-        _unknown(coordinates, {"type"}, "model.joint_flow.coordinates")
+        _unknown(coordinates, {"type"}, "model.joint.coordinates")
         coordinate_type = str(coordinates["type"])
         if coordinate_type not in {"cartesian", "met_residual", "met_exact"}:
-            raise ValueError("model.joint_flow.coordinates.type is invalid")
+            raise ValueError("model.joint.coordinates.type is invalid")
         coupling = joint["coupling"]
-        if isinstance(coupling, str):
-            coupling = {"method": coupling, "condition_weight": 0.0}
-        _unknown(coupling, {"method", "condition_weight"}, "model.joint_flow.coupling")
-        coupling_method = str(coupling["method"])
+        if "method" in coupling:
+            raise ValueError("model.joint.coupling.method is obsolete; use type")
+        _unknown(coupling, {"type", "condition_weight"}, "model.joint.coupling")
+        coupling_method = str(coupling["type"])
         coupling_weight = float(coupling.get("condition_weight", 0.0))
         if coupling_method not in {"independent", "minibatch_ot", "conditional_ot"}:
-            raise ValueError("model.joint_flow.coupling.method is invalid")
+            raise ValueError("model.joint.coupling.type is invalid")
         if coupling_method != "conditional_ot" and coupling_weight != 0.0:
-            raise ValueError("condition_weight must be zero unless coupling.method=conditional_ot")
+            raise ValueError("condition_weight must be zero unless coupling.type=conditional_ot")
         recurrence = defaults.assignment.recurrence
         return {
             "mode": "joint_flow",
@@ -487,42 +624,54 @@ def _resolve_model(public, defaults) -> dict:
             },
         }
 
+    if joint_public is not None:
+        raise ValueError("model.joint is only valid when model.mode=joint")
     assignment_public = public.get("assignment")
     if assignment_public is None:
         raise ValueError("Factorized models require model.assignment")
     _mapping(assignment_public, "model.assignment")
-    _unknown(assignment_public, {"method", "recurrence"}, "model.assignment")
-    _required(assignment_public, {"method"}, "model.assignment")
-    method = str(assignment_public.method)
-    if method not in {"discriminative", "dfm"}:
-        raise ValueError("model.assignment.method must be discriminative or dfm")
+    if "method" in assignment_public:
+        raise ValueError("model.assignment.method is obsolete; use model.assignment.formulation")
+    if "recurrence" in assignment_public:
+        raise ValueError("model.assignment.recurrence is obsolete; use model.assignment.refinement")
+    _unknown(assignment_public, {"formulation", "refinement"}, "model.assignment")
+    _required(assignment_public, {"formulation"}, "model.assignment")
+    method = str(assignment_public.formulation)
+    if method not in {"discriminative", "discrete_flow"}:
+        raise ValueError("model.assignment.formulation must be discriminative or discrete_flow")
 
     recurrence, recurrent, feedback = _resolve_recurrence(
-        assignment_public.get("recurrence"), defaults.assignment.recurrence
+        assignment_public.get("refinement"), defaults.assignment.recurrence
     )
-    if method == "dfm" and recurrent:
+    if method == "discrete_flow" and recurrent:
         raise ValueError("Factorized DFM has its own time-conditioned reasoner; omit recurrence")
 
     invisible = _resolve_invisible(public.get("invisible"), defaults.invisible)
-    if method == "dfm" and invisible["enabled"]:
+    if method == "discrete_flow" and invisible["enabled"]:
         raise ValueError("Factorized DFM is assignment-only; omit model.invisible or use joint_flow")
 
-    c2_public = public.get("c2")
+    feedback_public = public.get("feedback")
+    if feedback_public is not None:
+        _mapping(feedback_public, "model.feedback")
+        _unknown(feedback_public, {"invisible_to_assignment"}, "model.feedback")
+    c2_public = None if feedback_public is None else feedback_public.get("invisible_to_assignment")
     c2 = _plain(defaults.c2)
     c2_enabled = c2_public is not None
     if c2_enabled:
         if method != "discriminative" or not recurrent or not invisible["enabled"]:
-            raise ValueError("model.c2 requires recurrent discriminative assignment and invisible inference")
-        _mapping(c2_public, "model.c2")
+            raise ValueError("model.feedback.invisible_to_assignment requires recurrent discriminative assignment and invisible inference")
+        _mapping(c2_public, "model.feedback.invisible_to_assignment")
+        _required(c2_public, {"enabled"}, "model.feedback.invisible_to_assignment")
+        c2_enabled = bool(c2_public.enabled)
         _unknown(
             c2_public,
-            {"posterior_samples", "gate_initial_bias", "training_sampler"},
-            "model.c2",
+            {"enabled", "posterior_samples", "gate_initial_bias", "training_sampler"},
+            "model.feedback.invisible_to_assignment",
         )
         c2 = _plain(_merge(defaults.c2, c2_public))
         sampler_public = c2_public.get("training_sampler")
         if sampler_public is not None:
-            _mapping(sampler_public, "model.c2.training_sampler")
+            _mapping(sampler_public, "model.feedback.invisible_to_assignment.training_sampler")
             formulation = invisible["formulation"]
             allowed = {
                 "standard": {"steps"},
@@ -532,7 +681,7 @@ def _resolve_model(public, defaults) -> dict:
             _unknown(
                 sampler_public,
                 allowed,
-                f"model.c2.training_sampler ({formulation})",
+                f"model.feedback.invisible_to_assignment.training_sampler ({formulation})",
             )
 
     c2_sampler = None
@@ -567,7 +716,7 @@ def _resolve_model(public, defaults) -> dict:
         "latent": latent,
         "visible": encoder,
         "assignment": {
-            "formulation": "flow_matching" if method == "dfm" else "discriminative",
+            "formulation": "flow_matching" if method == "discrete_flow" else "discriminative",
             "reasoning": {
                 "enabled": recurrent,
                 "block_layers": int(recurrence["block_layers"]),
@@ -616,40 +765,99 @@ def resolve_public_experiment(public: DictConfig, *, source_path: str | Path | N
         raise FileNotFoundError(f"Topology config does not exist: {topology_path}")
     data_public = public.data
     _mapping(data_public, "data")
-    data_keys = {"config", "events", "subset_seed", "max_assignment_states"}
+    data_keys = {"input", "cache", "events", "subset_seed", "max_assignment_states"}
     _unknown(data_public, data_keys, "data")
-    _required(data_public, data_keys, "data")
-    _unknown(data_public.events, {"train", "validation", "test"}, "data.events")
-    _required(data_public.events, {"train", "validation", "test"}, "data.events")
-    data_path = _path(data_public.config)
-    data_config = _load_data(data_path)
+    _required(data_public, {"input", "cache"}, "data")
+    events = data_public.get("events", {"train": None, "validation": None, "test": None})
+    _unknown(events, {"train", "validation", "test"}, "data.events")
+    _required(events, {"train", "validation", "test"}, "data.events")
+    input_path = _path(data_public.input, data_path=True)
+    cache_value = data_public.cache
+    cache_path = None
+    if cache_value is not None:
+        cache_path = _path(cache_value, data_path=True)
+        if cache_path.suffix != ".pt":
+            cache_path = cache_path / f"{input_path.stem}.pt"
+    inputs_public = public.inputs
+    _mapping(inputs_public, "inputs")
+    _required(inputs_public, {"transforms"}, "inputs")
+    collections = {key: value for key, value in inputs_public.items() if key != "transforms"}
+    data_config = _load_data(OmegaConf.create({
+        "input": str(input_path), "cache": None if cache_path is None else str(cache_path),
+        "transforms": _plain(inputs_public.transforms), "collections": _plain(collections),
+    }))
 
     defaults = OmegaConf.load(DEFAULTS_PATH)
     model = _resolve_model(public.model, defaults.model)
-
-    prediction_public = public.prediction
-    _mapping(prediction_public, "prediction")
-    prediction_keys = {
-        "seed", "top_k", "samples", "steps", "solver", "sample_chunk_size",
-        "nfe", "sigma_min", "sigma_max", "rho", "compatibility_weight",
-    }
-    _unknown(prediction_public, prediction_keys, "prediction")
-    prediction = _merge(defaults.prediction, prediction_public)
-    standard_steps = (
-        int(prediction_public.steps)
-        if "steps" in prediction_public
-        else int(defaults.prediction.standard_steps)
+    kinematic_names = {"e", "pt", "eta", "phi", "sin_phi", "cos_phi"}
+    object_features = []
+    for source, spec in data_config.collections.items():
+        if source == "GLOBAL":
+            continue
+        for name in spec.features:
+            if name not in kinematic_names and name not in object_features:
+                object_features.append(str(name))
+    global_spec = data_config.collections.get("GLOBAL")
+    model["visible"]["inputs"]["object_features"] = object_features
+    model["visible"]["inputs"]["event_features"] = (
+        [] if global_spec is None else [str(name) for name in global_spec.features]
     )
+
+    inference_public = public.inference
+    _mapping(inference_public, "inference")
+    _unknown(
+        inference_public,
+        {"seed", "assignment", "invisible", "sample_chunk_size", "compatibility"},
+        "inference",
+    )
+    assignment_inference = inference_public.get("assignment", {})
+    invisible_inference = inference_public.get("invisible", {})
+    compatibility_inference = inference_public.get("compatibility", {})
+    _unknown(assignment_inference, {"top_k"}, "inference.assignment")
+    _unknown(invisible_inference, {"samples_per_assignment", "flow", "edm", "ddim"}, "inference.invisible")
+    _unknown(compatibility_inference, {"weight"}, "inference.compatibility")
+    flow_inference = invisible_inference.get("flow", {})
+    edm_inference = invisible_inference.get("edm", {})
+    ddim_inference = invisible_inference.get("ddim", {})
+    _unknown(flow_inference, {"steps", "solver"}, "inference.invisible.flow")
+    _unknown(edm_inference, {"nfe", "sigma_min", "sigma_max", "rho"}, "inference.invisible.edm")
+    _unknown(ddim_inference, {"steps"}, "inference.invisible.ddim")
+    defaults_inference = defaults.inference
+    prediction = {
+        "seed": inference_public.get("seed", defaults_inference.seed),
+        "top_k": assignment_inference.get("top_k", defaults_inference.top_k),
+        "samples": invisible_inference.get("samples_per_assignment", defaults_inference.samples),
+        "steps": flow_inference.get("steps", defaults_inference.steps),
+        "solver": flow_inference.get("solver", defaults_inference.solver),
+        "sample_chunk_size": inference_public.get("sample_chunk_size", defaults_inference.sample_chunk_size),
+        "nfe": edm_inference.get("nfe", defaults_inference.nfe),
+        "sigma_min": edm_inference.get("sigma_min", defaults_inference.sigma_min),
+        "sigma_max": edm_inference.get("sigma_max", defaults_inference.sigma_max),
+        "rho": edm_inference.get("rho", defaults_inference.rho),
+        "standard_steps": ddim_inference.get("steps", defaults_inference.standard_steps),
+        "compatibility_weight": compatibility_inference.get("weight", defaults_inference.compatibility_weight),
+    }
+    standard_steps = int(prediction["standard_steps"])
 
     training_public = public.training
     _mapping(training_public, "training")
     training_keys = {
-        "learning_rate", "weight_decay", "epochs", "precision", "gradient_clip",
+        "batch_size", "workers", "optimizer", "learning_rate", "weight_decay", "epochs", "precision", "gradient_clip",
         "accumulate_grad_batches", "trainable", "loss_weights", "scheduler",
         "early_stopping", "runtime", "output",
     }
     _unknown(training_public, training_keys, "training")
     training = _merge(defaults.training, training_public)
+    optimizer = training_public.get("optimizer")
+    if optimizer is not None:
+        _mapping(optimizer, "training.optimizer")
+        _unknown(optimizer, {"type", "learning_rate", "weight_decay"}, "training.optimizer")
+        if str(optimizer.get("type", "adamw")) != "adamw":
+            raise ValueError("training.optimizer.type must be adamw")
+        if optimizer.get("learning_rate") is not None:
+            training.learning_rate = optimizer.learning_rate
+        if optimizer.get("weight_decay") is not None:
+            training.weight_decay = optimizer.weight_decay
 
     if training_public.get("trainable") is None:
         trainable = ["visible", "assignment"]
@@ -683,52 +891,57 @@ def resolve_public_experiment(public: DictConfig, *, source_path: str | Path | N
             {key: float(value) for key, value in training_public.loss_weights.items()}
         )
 
-    invisible_truth = data_config.invisible_truth
     return OmegaConf.create(
         {
             "experiment": _plain(public.experiment),
             "topology_config": str(topology_path),
-            "data_config": str(data_path),
+            "data_config": str(input_path),
+            "input_definition": _plain(data_config),
             "data": {
-                "tensor_cache": None if data_config.tensor_cache is None else str(_path(data_config.tensor_cache)),
-                "subset_seed": int(data_public.subset_seed),
+                "input": str(input_path),
+                "tensor_cache": None if cache_path is None else str(cache_path),
+                "force_rebuild_cache": False,
+                "subset_seed": int(data_public.get("subset_seed", public.experiment.seed)),
+                "truth_bindings": _truth_bindings(topology_path),
                 "max_events": {
-                    "train": data_public.events.train,
-                    "val": data_public.events.validation,
-                    "test": data_public.events.test,
+                    "train": events.train,
+                    "val": events.validation,
+                    "test": events.test,
                 },
-                "max_assignment_states": int(data_public.max_assignment_states),
+                "max_assignment_states": int(data_public.get("max_assignment_states", 100000)),
                 "invisible": {
-                    "path": None if invisible_truth is None else str(_path(invisible_truth)),
+                    "path": str(input_path),
                     "allow_synthetic": False,
                 },
             },
             "model": model,
             "inference": {
-                "seed": int(prediction.seed),
-                "top_k_assignments": int(prediction.top_k),
-                "posterior_samples": int(prediction.samples),
+                "seed": int(prediction["seed"]),
+                "top_k_assignments": int(prediction["top_k"]),
+                "posterior_samples": int(prediction["samples"]),
                 "invisible": {
                     "standard": {"steps": standard_steps},
                     "edm": {
-                        "sigma_min": float(prediction.sigma_min),
-                        "sigma_max": float(prediction.sigma_max),
-                        "rho": float(prediction.rho),
-                        "nfe": int(prediction.nfe),
+                        "sigma_min": float(prediction["sigma_min"]),
+                        "sigma_max": float(prediction["sigma_max"]),
+                        "rho": float(prediction["rho"]),
+                        "nfe": int(prediction["nfe"]),
                     },
                     "flow_matching": {
-                        "steps": int(prediction.steps),
-                        "solver": str(prediction.solver),
+                        "steps": int(prediction["steps"]),
+                        "solver": str(prediction["solver"]),
                     },
                 },
-                "assignment_flow": {"steps": int(prediction.steps)},
+                "assignment_flow": {"steps": int(prediction["steps"])},
                 "joint_flow": {
-                    "steps": int(prediction.steps),
-                    "sample_chunk_size": int(prediction.sample_chunk_size),
+                    "steps": int(prediction["steps"]),
+                    "sample_chunk_size": int(prediction["sample_chunk_size"]),
                 },
-                "compatibility_weight": float(prediction.compatibility_weight),
+                "compatibility_weight": float(prediction["compatibility_weight"]),
             },
             "training": {
+                "batch_size": int(training_public.get("batch_size", 512)),
+                "workers": int(training_public.get("workers", 4)),
                 "learning_rate": float(training.learning_rate),
                 "weight_decay": float(training.weight_decay),
                 "epochs": int(training.epochs),

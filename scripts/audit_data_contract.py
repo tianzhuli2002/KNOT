@@ -18,20 +18,21 @@ from joint_event_reconstruction.configuration import load_experiment
 QUANTILES = (0.0, 0.001, 0.01, 0.5, 0.99, 0.999, 1.0)
 
 
-def _scaler_contract(scaler: str) -> tuple[float | None, float | None, bool]:
-    text = str(scaler)
-    if text == "Log":
+def _scaler_contract(transform) -> tuple[float | None, float | None, bool]:
+    if isinstance(transform, list):
+        if len(transform) != 3 or transform[0] != "minmax":
+            raise ValueError(f"Unsupported public transform: {transform}")
+        return float(transform[1]), float(transform[2]), False
+    text = str(transform).lower()
+    if text == "log":
         return None, None, True
-    if not text.startswith("minmax:"):
-        return None, None, False
-    values = dict(item.split("=", 1) for item in text.split(":")[1].split(","))
-    return float(values["min"]), float(values["max"]), False
+    return None, None, False
 
 
-def _new_stats(scaler: str) -> dict:
-    lower, upper, positive = _scaler_contract(scaler)
+def _new_stats(transform) -> dict:
+    lower, upper, positive = _scaler_contract(transform)
     return {
-        "scaler": str(scaler),
+        "transform": transform,
         "lower": lower,
         "upper": upper,
         "positive": positive,
@@ -111,27 +112,25 @@ def _finish(stats: dict) -> dict:
 
 def audit(experiment_path: Path, chunk_size: int) -> dict:
     experiment = load_experiment(experiment_path)
-    data_path = Path(experiment.data_config)
-    data = OmegaConf.to_container(OmegaConf.load(data_path), resolve=True)
-    source_path = Path(data["source"])
-    if not source_path.is_absolute():
-        source_path = experiment_path.parent.parent.parent / source_path
+    data = OmegaConf.to_container(experiment.input_definition, resolve=True)
+    source_path = Path(data["input"])
 
     forbidden = ("truth", "label", "target")
     active = {}
-    for object_name, values in data["objects"].items():
-        variables = list(values["variables"])
-        if any(any(word in variable.lower() for word in forbidden) for variable in variables):
-            raise ValueError(f"Truth-derived variable name in {object_name}: {variables}")
+    configured = data["collections"]
+    for object_name, values in configured.items():
+        variables = {name: name for name in values["features"]}
+        if any(any(word in name.lower() for word in forbidden) for name in variables):
+            raise ValueError(f"Truth-derived feature name in {object_name}: {list(variables)}")
         active[object_name] = {
-            variable: _new_stats(scaler)
-            for variable, scaler in zip(variables, values["scalers"], strict=True)
+            name: {**_new_stats(data["transforms"][name]), "source": source}
+            for name, source in variables.items()
         }
 
     with h5py.File(source_path, "r") as source:
         total = len(source["EVENT_ID"])
         sample_stride = max(1, math.ceil(total / 250_000))
-        retained_jets = int(data["objects"]["JET"]["count"])
+        retained_jets = int(data["collections"]["JET"]["count"])
         njet_over = 0
         electron_outside = 0
         muon_outside = 0
@@ -179,13 +178,13 @@ def audit(experiment_path: Path, chunk_size: int) -> dict:
             for object_name, variables in active.items():
                 values = source[f"INPUTS/{object_name}"][start:stop]
                 if object_name == "JET":
-                    count = int(data["objects"][object_name]["count"])
+                    count = int(data["collections"][object_name]["count"])
                     values = values[:, :count]
                     mask = np.arange(count)[None, :] < np.minimum(njet, count)[:, None]
                 else:
                     mask = np.ones(values.shape, dtype=bool)
-                for variable, stats in variables.items():
-                    _update(stats, values[variable][mask], sample_stride)
+                for _, stats in variables.items():
+                    _update(stats, values[stats["source"]][mask], sample_stride)
 
     for row in by_njet.values():
         row["reconstructable_fraction"] = row["reconstructable"] / row["events"]

@@ -15,16 +15,22 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import torch
+from omegaconf import OmegaConf
 
 from joint_event_reconstruction.configuration import (
     load_experiment,
     validate_experiment,
 )
+from joint_event_reconstruction.public_config import resolve_public_experiment
+from joint_event_reconstruction.studies import load_study
 from joint_event_reconstruction.training.joint import JointEventModule
 from scripts.smoke_synthetic import build_synthetic_batch
 
 
-ENCODERS = ("transformer", "physics_transformer", "lgatr", "lgatr_slim")
+ENCODERS = (
+    "transformer_baseline", "fourvector_transformer", "relational_transformer",
+    "lgatr", "lgatr_slim",
+)
 
 
 def _sync(device: str) -> None:
@@ -35,14 +41,26 @@ def _sync(device: str) -> None:
 def _configure(experiment: Path, encoder: str):
     if encoder not in ENCODERS:
         raise ValueError(f"Unknown encoder {encoder!r}; choose from {ENCODERS}")
-    config = load_experiment(experiment, [f"model.encoder.type={encoder}"])
+    study = load_study("configs/studies/12_encoder_backbone.yaml")
+    variant_name = {
+        "transformer_baseline": "transformer_baseline",
+        "fourvector_transformer": "fourvector_transformer",
+        "relational_transformer": "relational_transformer",
+        "lgatr": "lgatr",
+        "lgatr_slim": "lgatr_slim",
+    }[encoder]
+    variant = study.variant_map[variant_name]
+    config = resolve_public_experiment(
+        OmegaConf.merge(OmegaConf.load(experiment), variant.patch),
+        source_path=experiment,
+    )
     config = copy.deepcopy(config)
     # This is a visible-backbone profile; downstream assignment capacity is
     # intentionally kept identical for every row.
-    if encoder in {"transformer", "physics_transformer"}:
+    if encoder in {"transformer_baseline", "fourvector_transformer", "relational_transformer"}:
         config.model.visible.layers = 1
     else:
-        config.model.visible.blocks = 1
+        config.model.visible.layers = 1
     config.model.assignment.formulation = "discriminative"
     config.model.assignment.feedback.enabled = False
     config.model.invisible.enabled = False

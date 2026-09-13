@@ -1,4 +1,5 @@
 import hashlib
+import fcntl
 import json
 import logging
 import os
@@ -34,7 +35,7 @@ logger = logging.getLogger(__name__)
 
 LABEL_PATH = "/LABELS/GLOBAL"
 LOG_OFFSET = float(get_transformer_by_name("Log").offset)
-CACHE_VERSION = 8
+CACHE_VERSION = 9
 
 RECO_IGNORE_INDEX = -100.0
 PARTICLE_IDS = OrderedDict(
@@ -77,6 +78,7 @@ STATEFUL_SCALERS = {"standard", "minmax"}
 
 @dataclass(frozen=True)
 class FeaturePlan:
+    name: str
     variable: str
     scaler: str
     indices: np.ndarray
@@ -92,6 +94,7 @@ class SourcePlan:
     scalers: tuple[str, ...]
     expanded_names: tuple[str, ...]
     features: tuple[FeaturePlan, ...]
+    kinematics: dict | None = None
     num_particles: int | None = None
 
 
@@ -326,7 +329,13 @@ def _parse_variables_and_scalers(spec, *, inputs_name):
             f"Unsupported transformer observable variable(s) for INPUTS:{inputs_name}: {unknown}. "
             f"Supported variables are: {list(supported)}"
         )
-    return variables, scalers
+    feature_names = list(spec.get("feature_names", variables))
+    if len(feature_names) != len(variables) or len(set(feature_names)) != len(feature_names):
+        raise ValueError(
+            f"Transformer observable INPUTS:{inputs_name} requires one unique "
+            "feature_names entry per source variable."
+        )
+    return variables, scalers, feature_names
 
 
 _FLOAT_PATTERN = r"[+-]?(?:(?:\d+(?:\.\d*)?)|(?:\.\d+))(?:e[+-]?\d+)?"
@@ -394,9 +403,10 @@ def _compile_expression(scaler):
     )
 
 
-def _make_feature_plan(variable, scaler, schema_index):
+def _make_feature_plan(variable, scaler, schema_index, *, name=None):
     scaler_name = _normalise_scaler_name(scaler)
-    names = _expanded_names(variable, scaler_name)
+    semantic_name = str(name if name is not None else variable)
+    names = _expanded_names(semantic_name, scaler_name)
     indices = np.asarray([schema_index[name] for name in names], dtype=np.int64)
     expression_divisor = None
     expression_offset = None
@@ -404,6 +414,7 @@ def _make_feature_plan(variable, scaler, schema_index):
     if scaler_name not in {"none", "passthrough", "log", "sincos", "pid", "standard", "minmax"}:
         expression_offset, expression_divisor, transformer = _compile_expression(scaler_name)
     return FeaturePlan(
+        name=semantic_name,
         variable=variable,
         scaler=scaler_name,
         indices=indices,
@@ -441,14 +452,15 @@ def _build_observable_schema(cfg):
         spec = lookup.get(source_name)
         if spec is None:
             raise ValueError(f"Missing observable spec for INPUTS:{source_name}.")
-        variables, scalers = _parse_variables_and_scalers(spec, inputs_name=source_name)
+        variables, scalers, feature_names = _parse_variables_and_scalers(spec, inputs_name=source_name)
         expanded = []
-        for variable, scaler in zip(variables, scalers):
-            expanded.extend(_expanded_names(variable, scaler))
+        for feature_name, scaler in zip(feature_names, scalers):
+            expanded.extend(_expanded_names(feature_name, scaler))
         raw_sources[source_name] = (
             spec,
             tuple(variables),
             tuple(_normalise_scaler_name(s) for s in scalers),
+            tuple(feature_names),
             tuple(expanded),
         )
         for name in expanded:
@@ -458,10 +470,10 @@ def _build_observable_schema(cfg):
     schema_index = {name: idx for idx, name in enumerate(schema_names)}
     sources = OrderedDict()
 
-    for source_name, (spec, variables, scalers, expanded) in raw_sources.items():
+    for source_name, (spec, variables, scalers, feature_names, expanded) in raw_sources.items():
         features = tuple(
-            _make_feature_plan(variable, scaler, schema_index)
-            for variable, scaler in zip(variables, scalers)
+            _make_feature_plan(variable, scaler, schema_index, name=feature_name)
+            for variable, scaler, feature_name in zip(variables, scalers, feature_names)
         )
         sources[source_name] = SourcePlan(
             name=source_name,
@@ -469,6 +481,7 @@ def _build_observable_schema(cfg):
             scalers=scalers,
             expanded_names=expanded,
             features=features,
+            kinematics=dict(spec.get("kinematics", {})) or None,
             num_particles=_source_num_particles(spec, cfg, source_name),
         )
 
@@ -500,6 +513,7 @@ def _build_legacy_schema(cfg):
     for source_name in OBJECT_SOURCES:
         features = tuple(
             FeaturePlan(
+                name=variable,
                 variable=variable,
                 scaler="none",
                 indices=np.asarray([idx], dtype=np.int64),
@@ -512,6 +526,7 @@ def _build_legacy_schema(cfg):
             scalers=tuple("none" for _ in token_features),
             expanded_names=token_features,
             features=features,
+            kinematics=None,
             num_particles=_source_num_particles(None, cfg, source_name),
         )
     return TokenSchema(
@@ -1305,13 +1320,36 @@ class TransformerH5Dataset(Dataset):
                 cursor += 1
                 continue
             rows = source_rows.get(source_name, [])
+            kinematics = self.schema.sources[source_name].kinematics
+            if not kinematics:
+                raise ValueError(
+                    f"INPUTS:{source_name} has no explicit physical kinematics contract"
+                )
             for local, row in enumerate(rows[:width]):
                 fields = row.dtype.names or ()
-                if not {"pt", "phi"}.issubset(fields):
+                if source_name != "MET" and not _is_valid_object(row):
                     continue
-                pt = float(row["pt"]); phi = float(row["phi"])
-                eta = float(row["eta"]) if "eta" in fields else 0.0
-                energy = float(row["e"]) if "e" in fields else pt * np.cosh(eta)
+                required = {
+                    str(value)
+                    for key, value in kinematics.items()
+                    if key != "representation"
+                }
+                missing = sorted(required - set(fields))
+                if missing:
+                    raise KeyError(
+                        f"{self.h5_path}:/INPUTS/{source_name} lacks configured "
+                        f"kinematic fields {missing}"
+                    )
+                pt = float(row[str(kinematics["pt"])])
+                if "phi" in kinematics:
+                    phi = float(row[str(kinematics["phi"])])
+                else:
+                    phi = float(np.arctan2(
+                        row[str(kinematics["sin_phi"])],
+                        row[str(kinematics["cos_phi"])],
+                    ))
+                eta = float(row[str(kinematics["eta"])]) if "eta" in kinematics else 0.0
+                energy = float(row[str(kinematics["energy"])]) if "energy" in kinematics else pt * np.cosh(eta)
                 if np.isfinite((energy, pt, eta, phi)).all():
                     vectors[cursor + local] = (energy, pt * np.cos(phi), pt * np.sin(phi), pt * np.sinh(eta))
             cursor += width
@@ -1598,7 +1636,7 @@ class CachedTransformerDataset(Dataset):
             "type_ids": self.cache_payload["type_ids"][pos],
             "padding_mask": self.cache_payload["padding_mask"][pos],
             "labels": self.cache_payload["labels"][pos],
-            "event_index": self.cache_payload["indices"][pos],
+            "event_index": self.cache_payload.get("event_id", self.cache_payload["indices"])[pos],
             "physics_vectors": self.cache_payload["physics_vectors"][pos],
         }
         if self.reco_builder is not None:
@@ -1613,42 +1651,123 @@ class CachedTransformerDataset(Dataset):
             )
         return result
 
+    def __getitems__(self, items):
+        """PyTorch batched fetch hook; all expensive preprocessing is already cached."""
+        return [self[item] for item in items]
+
 
 def _process_loaded_cache_chunk(dataset, output_positions, event_indices, source_arrays, label_values, reco_label_arrays):
     """Pure in-memory preprocessing; worker threads never touch a live H5 handle."""
     n_chunk = len(event_indices)
-    tokens = np.empty((n_chunk, dataset.total_tokens, dataset.schema.dim), dtype=np.float32)
-    type_ids = np.empty((n_chunk, dataset.total_tokens), dtype=np.int64)
-    padding_masks = np.empty((n_chunk, dataset.total_tokens), dtype=np.bool_)
+    tokens = np.zeros((n_chunk, dataset.total_tokens, dataset.schema.dim), dtype=np.float32)
+    type_ids = np.zeros((n_chunk, dataset.total_tokens), dtype=np.int8)
+    padding_masks = np.ones((n_chunk, dataset.total_tokens), dtype=np.bool_)
     labels = np.asarray(label_values, dtype=np.float32).reshape(-1).copy()
-    physics_vectors = np.empty((n_chunk, dataset.total_tokens, 4), dtype=np.float32)
+    physics_vectors = np.zeros((n_chunk, dataset.total_tokens, 4), dtype=np.float32)
     reco_raw_labels = (
-        np.empty((n_chunk, dataset.total_tokens), dtype=np.float32)
+        np.full((n_chunk, dataset.total_tokens), dataset.reco_builder.ignore_index, dtype=np.float32)
         if dataset.reconstruction_enabled else None
     )
-    for local_pos, event_idx in enumerate(event_indices):
-        rows = {name: values[local_pos] for name, values in source_arrays.items() if name != "GLOBAL"}
-        global_row = source_arrays["GLOBAL"][local_pos] if "GLOBAL" in source_arrays else None
-        if global_row is not None and getattr(global_row, "shape", ()):
-            global_row = global_row.reshape(-1)[0]
-        token_arr, type_arr, mask_arr, _ = dataset._build_event_arrays_from_rows(
-            rows, global_row, labels[local_pos]
+
+    cursor = 0
+    for source_name in _token_source_names(dataset.schema):
+        plan = dataset.schema.sources[source_name]
+        if source_name == "GLOBAL":
+            continue
+
+        width = int(dataset.widths[source_name])
+        rows = np.asarray(source_arrays[source_name])[:, :width]
+        valid = np.ones((n_chunk, width), dtype=bool) if source_name == "MET" else (
+            np.isfinite(_fields(rows, "pt", default=np.nan))
+            & (_fields(rows, "pt", default=np.nan) > 0)
         )
-        tokens[local_pos] = token_arr
-        type_ids[local_pos] = type_arr
-        padding_masks[local_pos] = mask_arr
-        physics_vectors[local_pos] = dataset._build_physics_vectors_from_rows(rows)
-        if dataset.reconstruction_enabled:
-            event_reco_labels = {
-                name: values[local_pos] for name, values in reco_label_arrays.items()
-            }
-            reco_raw_labels[local_pos] = dataset._build_reco_raw_labels_from_rows(
-                rows, event_reco_labels, mask_arr, int(event_idx)
-            )
+        slots = slice(cursor, cursor + width)
+        type_ids[:, slots] = np.where(valid, dataset._source_type_id(source_name), 0)
+        padding_masks[:, slots] = ~valid
+        default_id = 1.0 if source_name == "JET" else 4.0 if source_name == "MET" else 0.0
+        for feature in plan.features:
+            if feature.variable == "id" and rows.dtype.names and "id" not in rows.dtype.names:
+                values = np.full((n_chunk, width), default_id, dtype=np.float32)
+                if "is_el" in rows.dtype.names:
+                    values[np.asarray(rows["is_el"]) == 1] = 2
+                if "is_mu" in rows.dtype.names:
+                    values[np.asarray(rows["is_mu"]) == 1] = 3
+            else:
+                values = np.asarray(_fields(rows, feature.variable), dtype=np.float32)
+            values = np.where(valid, values, 0.0)
+            _write_vectorized_feature(tokens[:, slots], feature, values, dataset, source_name)
+        tokens[:, slots] *= valid[..., None]
+
+        kinematics = plan.kinematics
+        required = [str(value) for key, value in kinematics.items() if key != "representation"]
+        missing = sorted(set(required) - set(rows.dtype.names or ()))
+        if missing:
+            raise KeyError(f"{dataset.h5_path}:/INPUTS/{source_name} lacks kinematic fields {missing}")
+        pt = np.asarray(rows[str(kinematics["pt"])], dtype=np.float32)
+        if "phi" in kinematics:
+            phi = np.asarray(rows[str(kinematics["phi"])], dtype=np.float32)
+        else:
+            phi = np.arctan2(rows[str(kinematics["sin_phi"])], rows[str(kinematics["cos_phi"])])
+        eta = np.asarray(rows[str(kinematics["eta"])], dtype=np.float32) if "eta" in kinematics else np.zeros_like(pt)
+        energy = np.asarray(rows[str(kinematics["energy"])], dtype=np.float32) if "energy" in kinematics else pt * np.cosh(eta)
+        finite = valid & np.isfinite(energy) & np.isfinite(pt) & np.isfinite(eta) & np.isfinite(phi)
+        physics_vectors[:, slots, 0] = np.where(finite, energy, 0)
+        physics_vectors[:, slots, 1] = np.where(finite, pt * np.cos(phi), 0)
+        physics_vectors[:, slots, 2] = np.where(finite, pt * np.sin(phi), 0)
+        physics_vectors[:, slots, 3] = np.where(finite, pt * np.sinh(eta), 0)
+
+        if dataset.reconstruction_enabled and source_name in reco_label_arrays:
+            raw = np.asarray(reco_label_arrays[source_name], dtype=np.float32)[:, :width]
+            if not np.isfinite(raw[valid]).all():
+                bad = np.argwhere(valid & ~np.isfinite(raw))[0]
+                raise ValueError(
+                    f"Non-finite reconstruction label in {dataset.h5_path}, source {source_name}, "
+                    f"event {int(event_indices[bad[0]])}, object {int(bad[1])}"
+                )
+            reco_raw_labels[:, slots] = np.where(valid, raw, dataset.reco_builder.ignore_index)
+        cursor += width
+    if dataset.schema.has_global_token:
+        plan = dataset.schema.sources["GLOBAL"]
+        rows = np.asarray(source_arrays["GLOBAL"]).reshape(n_chunk)
+        for feature in plan.features:
+            values = np.asarray(_fields(rows, feature.variable), dtype=np.float32)
+            _write_vectorized_feature(tokens[:, cursor], feature, values, dataset, "GLOBAL")
+        type_ids[:, cursor] = dataset._source_type_id("GLOBAL")
+        padding_masks[:, cursor] = False
     return (
         output_positions, tokens, type_ids, padding_masks, labels,
         physics_vectors, reco_raw_labels,
     )
+
+
+def _write_vectorized_feature(tokens, feature, values, dataset, group):
+    """Write one feature for a whole HDF5 chunk without per-event Python calls."""
+    values = np.nan_to_num(np.asarray(values, dtype=np.float32), nan=0.0, posinf=0.0, neginf=0.0)
+    scaler = feature.scaler
+    if scaler in {"none", "passthrough"}:
+        tokens[..., feature.indices[0]] = values
+    elif scaler == "log":
+        tokens[..., feature.indices[0]] = np.log(np.clip(values, 0.0, None) + LOG_OFFSET)
+    elif scaler == "sincos":
+        tokens[..., feature.indices[0]] = np.sin(values)
+        tokens[..., feature.indices[1]] = np.cos(values)
+    elif scaler == "pid":
+        for index, raw_id in enumerate(PARTICLE_IDS.values()):
+            tokens[..., feature.indices[index]] = np.rint(values) == raw_id
+    elif scaler in {"standard", "minmax"}:
+        state = dataset.scaler_state.get(group, {}).get(feature.variable, {}).get(scaler)
+        if state is None:
+            tokens[..., feature.indices[0]] = values
+        elif scaler == "standard":
+            tokens[..., feature.indices[0]] = (values - state["mean"]) / state["scale"]
+        else:
+            tokens[..., feature.indices[0]] = (values - state["min"]) / state["range"]
+    elif feature.expression_divisor is not None:
+        tokens[..., feature.indices[0]] = (
+            values - float(feature.expression_offset or 0.0)
+        ) / feature.expression_divisor
+    else:
+        raise ValueError(f"Unsupported vectorized cache transform {scaler!r}")
 
 
 def _collate_transformer(batch):
@@ -2139,6 +2258,19 @@ class TransformerDataModule(L.LightningDataModule):
             logger.warning("Could not stat H5 path for cache fingerprint: %s", h5_path if h5_path is not None else self.h5_path)
             return None
 
+    def _dataset_event_identity(self, h5_path=None):
+        path = str(h5_path if h5_path is not None else self.h5_path)
+        with h5py.File(path, "r") as source:
+            if "EVENT_ID" not in source:
+                return None
+            event_ids = source["EVENT_ID"]
+            count = len(event_ids)
+            sample = np.concatenate(
+                [np.asarray(event_ids[: min(count, 4096)], dtype=np.int64),
+                 np.asarray(event_ids[max(0, count - 4096):], dtype=np.int64)]
+            )
+        return hashlib.sha256(sample.tobytes()).hexdigest()
+
     def _n_events_for_h5(self, h5_path):
         with h5py.File(str(h5_path), "r") as h5_file:
             return int(h5_file["/INPUTS/JET"].shape[0])
@@ -2177,17 +2309,14 @@ class TransformerDataModule(L.LightningDataModule):
                 "path": str(Path(str(h5_path)).expanduser().resolve()),
                 "size_bytes": self._h5_size_bytes(h5_path),
                 "n_events": int(self._n_events_for_h5(h5_path)),
+                "event_id_fingerprint": self._dataset_event_identity(h5_path),
             },
             "fingerprint": fingerprint,
             "input_schema": _h5_schema_summary(
                 h5_path,
                 [
-                    "/INPUTS/JET",
-                    "/INPUTS/LEPTON",
-                    "/INPUTS/MET",
-                    "/INPUTS/GLOBAL",
-                    LABEL_PATH,
-                    "/LABELS/CLASS",
+                    "/INPUTS/JET", "/INPUTS/LEPTON", "/INPUTS/MET",
+                    "/INPUTS/GLOBAL", LABEL_PATH, "/LABELS/CLASS",
                 ],
             ),
             "n_events": int(self._n_events_for_h5(h5_path)),
@@ -2231,6 +2360,11 @@ class TransformerDataModule(L.LightningDataModule):
 
         metadata = self._cache_key_metadata(h5_path=h5_path, cache_context=cache_context)
         cache_key = _stable_json_hash(metadata, length=12)
+        explicit = self._cache_cfg().get("path")
+        if explicit not in {None, ""}:
+            cache_path = Path(str(explicit)).expanduser().resolve()
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            return cache_path, metadata, cache_key
         dataset_id = _safe_cache_name(metadata["dataset_id"])
         widths = metadata["widths"]
 
@@ -2291,6 +2425,14 @@ class TransformerDataModule(L.LightningDataModule):
             "padding_mask_shape": padding_shape,
             "physics_vectors_shape": list(payload["physics_vectors"].shape),
             "physics_vector_representation": "E_px_py_pz_GeV_v1",
+            "metric_convention": "+---",
+            "event_id_shape": list(payload["event_id"].shape),
+            "event_id_fingerprint": key_metadata.get("source_identity", {}).get("event_id_fingerprint"),
+            "split_shape": list(payload["split"].shape),
+            "invisible_truth_shape": (
+                list(payload["invisible_truth"].shape)
+                if "invisible_truth" in payload else None
+            ),
             "labels_shape": list(payload["labels"].shape),
             "reco_raw_labels_shape": reco_shape,
             "has_reco_raw_labels": bool(has_reco_raw_labels),
@@ -2433,7 +2575,7 @@ class TransformerDataModule(L.LightningDataModule):
         )
         if cache_path.exists() and not rebuild and manifest_ok:
             logger.info("Loading transformer tensor cache from %s.", cache_path)
-            payload = torch.load(cache_path, map_location="cpu", weights_only=False)
+            payload = torch.load(cache_path, map_location="cpu", weights_only=True, mmap=True)
             ok, reason = self._cache_payload_matches_config(payload, selected_indices, metadata)
             if not ok:
                 if require_existing:
@@ -2441,13 +2583,10 @@ class TransformerDataModule(L.LightningDataModule):
                         f"Transformer tensor cache at {cache_path} is stale or incompatible ({reason}) "
                         "and dataset.cache.require_existing=true."
                     )
-                logger.warning("Transformer tensor cache at %s is stale or incompatible (%s); rebuilding.", cache_path, reason)
-                payload = self._build_cache_payload_chunked(h5_path, selected_indices, metadata, label_override=label_override)
-                self._save_validated_cache_payload(
-                    payload, h5_path=h5_path, selected_indices=selected_indices,
-                    metadata=metadata, cache_path=cache_path, cache_key=cache_key,
+                raise ValueError(
+                    f"cache exists but is incompatible with the current input configuration ({reason}); "
+                    "use --force-rebuild-cache"
                 )
-                logger.info("Saved rebuilt transformer tensor cache to %s (%.3f GB).", cache_path, cache_path.stat().st_size / 1.0e9)
             else:
                 logger.info("Loaded compatible transformer tensor cache from %s.", cache_path)
 
@@ -2470,13 +2609,30 @@ class TransformerDataModule(L.LightningDataModule):
         else:
             logger.info("No transformer tensor cache found at %s; building it.", cache_path)
 
-        if cache_path.exists() and not manifest_ok:
-            logger.warning("Ignoring incomplete transformer cache at %s (%s).", cache_path, manifest_reason)
-        payload = self._build_cache_payload_chunked(h5_path, selected_indices, metadata, label_override=label_override)
-        self._save_validated_cache_payload(
-            payload, h5_path=h5_path, selected_indices=selected_indices,
-            metadata=metadata, cache_path=cache_path, cache_key=cache_key,
-        )
+        if cache_path.exists() and not manifest_ok and not rebuild:
+            raise ValueError(
+                f"cache exists but is incompatible with the current input configuration ({manifest_reason}); "
+                "use --force-rebuild-cache"
+            )
+        lock_path = cache_path.with_suffix(cache_path.suffix + ".lock")
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with lock_path.open("w") as lock:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            manifest_ok, _ = self._cache_manifest_matches_config(
+                manifest_path, cache_path, metadata, cache_key
+            )
+            if manifest_ok and not rebuild:
+                payload = torch.load(
+                    cache_path, map_location="cpu", weights_only=True, mmap=True
+                )
+            else:
+                payload = self._build_cache_payload_chunked(
+                    h5_path, selected_indices, metadata, label_override=label_override
+                )
+                self._save_validated_cache_payload(
+                    payload, h5_path=h5_path, selected_indices=selected_indices,
+                    metadata=metadata, cache_path=cache_path, cache_key=cache_key,
+                )
 
         logger.info(
             "Built transformer tensor cache with %d events in %.2f s at %s (%.3f GB).",
@@ -2495,6 +2651,8 @@ class TransformerDataModule(L.LightningDataModule):
             labels = payload["labels"]
             physics_vectors = payload["physics_vectors"]
             indices = payload["indices"]
+            event_ids = payload["event_id"]
+            split = payload["split"]
             payload_metadata = payload.get("metadata", {})
         except (TypeError, KeyError) as exc:
             return False, f"missing payload key: {exc}"
@@ -2527,6 +2685,20 @@ class TransformerDataModule(L.LightningDataModule):
             return False, f"indices length {len(indices)} != {len(selected_indices)}"
         if not torch.equal(indices.cpu(), torch.as_tensor(selected_indices, dtype=torch.long)):
             return False, "selected event indices differ"
+        if tuple(event_ids.shape) != (len(selected_indices),):
+            return False, "event_id shape mismatch"
+        if event_ids.dtype != torch.int64 or len(torch.unique(event_ids)) != len(event_ids):
+            return False, "EVENT_ID must be unique int64"
+        if tuple(split.shape) != (len(selected_indices),) or split.dtype != torch.uint8:
+            return False, "split identity must be uint8 [events]"
+        if not set(torch.unique(split).tolist()) <= {0, 1, 2}:
+            return False, "split identity contains unknown values"
+        if "invisible_truth" in payload:
+            invisible = payload["invisible_truth"]
+            if invisible.shape[0] != len(selected_indices) or invisible.shape[-1] != 3:
+                return False, "invisible_truth shape mismatch"
+            if invisible.dtype != torch.float32 or not torch.isfinite(invisible).all():
+                return False, "invisible_truth must be finite float32"
         if not torch.isfinite(tokens).all():
             return False, "tokens contain non-finite values"
         if not torch.isfinite(physics_vectors).all():
@@ -2622,7 +2794,7 @@ class TransformerDataModule(L.LightningDataModule):
         ) = result
         output_positions = torch.as_tensor(output_positions, dtype=torch.long)
         tokens[output_positions] = torch.from_numpy(chunk_tokens)
-        type_ids[output_positions] = torch.from_numpy(chunk_type_ids)
+        type_ids[output_positions] = torch.from_numpy(chunk_type_ids).to(type_ids.dtype)
         padding_masks[output_positions] = torch.from_numpy(chunk_masks)
         labels[output_positions] = torch.from_numpy(chunk_labels)
         physics_vectors[output_positions] = torch.from_numpy(chunk_physics)
@@ -2650,7 +2822,7 @@ class TransformerDataModule(L.LightningDataModule):
 
         n_events = len(dataset)
         tokens = torch.empty((n_events, dataset.total_tokens, self.schema.dim), dtype=torch.float32)
-        type_ids = torch.empty((n_events, dataset.total_tokens), dtype=torch.long)
+        type_ids = torch.empty((n_events, dataset.total_tokens), dtype=torch.int8)
         padding_masks = torch.empty((n_events, dataset.total_tokens), dtype=torch.bool)
         labels = torch.empty(n_events, dtype=torch.float32)
         physics_vectors = torch.empty(
@@ -2712,6 +2884,7 @@ class TransformerDataModule(L.LightningDataModule):
         }
         if self.reconstruction_enabled:
             payload["reco_raw_labels"] = reco_raw_labels
+        self._add_canonical_payload(payload, h5_path, selected_indices)
         return payload
 
     def _build_cache_payload_chunked_parallel(
@@ -2741,7 +2914,7 @@ class TransformerDataModule(L.LightningDataModule):
         )
         n_events = len(selected_indices)
         tokens = torch.empty((n_events, dataset.total_tokens, self.schema.dim), dtype=torch.float32)
-        type_ids = torch.empty((n_events, dataset.total_tokens), dtype=torch.long)
+        type_ids = torch.empty((n_events, dataset.total_tokens), dtype=torch.int8)
         padding_masks = torch.empty((n_events, dataset.total_tokens), dtype=torch.bool)
         labels = torch.empty(n_events, dtype=torch.float32)
         physics_vectors = torch.empty(
@@ -2829,7 +3002,39 @@ class TransformerDataModule(L.LightningDataModule):
         }
         if self.reconstruction_enabled:
             payload["reco_raw_labels"] = reco_raw_labels
+        self._add_canonical_payload(payload, h5_path, selected_indices)
         return payload
+
+    @staticmethod
+    def _add_canonical_payload(payload, h5_path, selected_indices):
+        """Attach model-agnostic event identity, split, and invisible truth."""
+        indices = np.asarray(selected_indices, dtype=np.int64)
+        with h5py.File(str(h5_path), "r") as source:
+            if "EVENT_ID" not in source:
+                raise KeyError(f"Canonical dataset {h5_path} is missing EVENT_ID")
+            if "SPLIT" not in source:
+                raise KeyError(f"Canonical dataset {h5_path} is missing SPLIT")
+            order = np.argsort(indices, kind="stable")
+            restore = np.argsort(order, kind="stable")
+            sorted_indices = indices[order]
+            payload["event_id"] = torch.from_numpy(
+                np.asarray(source["EVENT_ID"][sorted_indices], dtype=np.int64)[restore].copy()
+            )
+            payload["split"] = torch.from_numpy(
+                np.asarray(source["SPLIT"][sorted_indices], dtype=np.uint8)[restore].copy()
+            )
+            if "LABELS/NEUTRINO" in source:
+                raw = source["LABELS/NEUTRINO"][sorted_indices][restore]
+                if raw.dtype.names != ("px", "py", "pz"):
+                    raise TypeError(
+                        f"{h5_path}:LABELS/NEUTRINO fields must be exactly px,py,pz"
+                    )
+                invisible = np.stack([raw[name] for name in raw.dtype.names], axis=-1)
+                if not np.isfinite(invisible).all():
+                    raise ValueError(f"{h5_path}:LABELS/NEUTRINO contains non-finite values")
+                payload["invisible_truth"] = torch.from_numpy(
+                    np.asarray(invisible, dtype=np.float32).copy()
+                )
 
     def sample_dataloader(self, sample_cfg, batch_size=None):
         h5_path = sample_cfg.get("path")

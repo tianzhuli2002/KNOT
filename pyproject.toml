@@ -21,6 +21,9 @@ dependencies = [
   "torch",
 ]
 
+[project.scripts]
+jer = "joint_event_reconstruction.cli.run:main"
+
 [project.optional-dependencies]
 lgatr = ["lgatr>=2,<3"]
 

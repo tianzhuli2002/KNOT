@@ -12,10 +12,10 @@ variants:
     reporting: primary
     patch:
       training: {trainable: [visible, assignment]}
-    initialise_from: null
+    initialise_from:
     initialise_components: []
     predictions:
-      default: {label: One pass, patch: {prediction: {top_k: 5}}, recurrent_steps: null}
+      default: {label: One pass, patch: {inference: {assignment: {top_k: 5}}}, recurrent_steps: null}
 
   m2:
     label: Recurrent assignment refinement
@@ -23,17 +23,20 @@ variants:
     patch:
       model:
         assignment:
-          method: discriminative
-          recurrence: {train_steps: [1, 2, 3, 4], eval_steps: 4}
+          formulation: discriminative
+          refinement:
+            train_iterations: [1, 2, 3, 4]
+            inference_iterations: 4
+        mode: factorized
       training: {trainable: [visible, assignment]}
-    initialise_from: null
+    initialise_from:
     initialise_components: []
     predictions:
-      r1: {label: R=1, patch: {prediction: {top_k: 5}}, recurrent_steps: 1}
-      r2: {label: R=2, patch: {prediction: {top_k: 5}}, recurrent_steps: 2}
-      r3: {label: R=3, patch: {prediction: {top_k: 5}}, recurrent_steps: 3}
-      r4: {label: R=4, patch: {prediction: {top_k: 5}}, recurrent_steps: 4}
-      r8: {label: R=8 diagnostic extrapolation, patch: {prediction: {top_k: 5}}, recurrent_steps: 8}
+      r1: {label: R=1, patch: {inference: {assignment: {top_k: 5}}}, recurrent_steps: 1}
+      r2: {label: R=2, patch: {inference: {assignment: {top_k: 5}}}, recurrent_steps: 2}
+      r3: {label: R=3, patch: {inference: {assignment: {top_k: 5}}}, recurrent_steps: 3}
+      r4: {label: R=4, patch: {inference: {assignment: {top_k: 5}}}, recurrent_steps: 4}
+      r8: {label: R=8 diagnostic extrapolation, patch: {inference: {assignment: {top_k: 5}}}, recurrent_steps: 8}
 
   m3:
     label: Recurrent assignment + soft feedback
@@ -41,17 +44,21 @@ variants:
     patch:
       model:
         assignment:
-          method: discriminative
-          recurrence: {train_steps: [1, 2, 3, 4], eval_steps: 4, feedback: soft}
+          formulation: discriminative
+          refinement:
+            train_iterations: [1, 2, 3, 4]
+            inference_iterations: 4
+            feedback: soft
+        mode: factorized
       training: {trainable: [visible, assignment]}
-    initialise_from: null
+    initialise_from:
     initialise_components: []
     predictions:
-      r1: {label: R=1, patch: {prediction: {top_k: 5}}, recurrent_steps: 1}
-      r2: {label: R=2, patch: {prediction: {top_k: 5}}, recurrent_steps: 2}
-      r3: {label: R=3, patch: {prediction: {top_k: 5}}, recurrent_steps: 3}
-      r4: {label: R=4, patch: {prediction: {top_k: 5}}, recurrent_steps: 4}
-      r8: {label: R=8 diagnostic extrapolation, patch: {prediction: {top_k: 5}}, recurrent_steps: 8}
+      r1: {label: R=1, patch: {inference: {assignment: {top_k: 5}}}, recurrent_steps: 1}
+      r2: {label: R=2, patch: {inference: {assignment: {top_k: 5}}}, recurrent_steps: 2}
+      r3: {label: R=3, patch: {inference: {assignment: {top_k: 5}}}, recurrent_steps: 3}
+      r4: {label: R=4, patch: {inference: {assignment: {top_k: 5}}}, recurrent_steps: 4}
+      r8: {label: R=8 diagnostic extrapolation, patch: {inference: {assignment: {top_k: 5}}}, recurrent_steps: 8}
 
   m2_parameter_control:
     label: Parameter-matched non-recurrent control for recurrence
@@ -59,11 +66,12 @@ variants:
     patch:
       model:
         encoder: {layers: 6, d_feedforward: 384}
+        mode: factorized
       training: {trainable: [visible, assignment]}
-    initialise_from: null
+    initialise_from:
     initialise_components: []
     predictions:
-      default: {label: Parameter control, patch: {prediction: {top_k: 5}}, recurrent_steps: null}
+      default: {label: Parameter control, patch: {inference: {assignment: {top_k: 5}}}, recurrent_steps: null}
 
   m2_compute_control:
     label: Training-compute-matched non-recurrent control for recurrence
@@ -71,11 +79,12 @@ variants:
     patch:
       model:
         encoder: {layers: 16, d_feedforward: 64}
+        mode: factorized
       training: {trainable: [visible, assignment]}
-    initialise_from: null
+    initialise_from:
     initialise_components: []
     predictions:
-      default: {label: Training-compute control, patch: {prediction: {top_k: 5}}, recurrent_steps: null}
+      default: {label: Training-compute control, patch: {inference: {assignment: {top_k: 5}}}, recurrent_steps: null}
 
   m3_parameter_control:
     label: Parameter-matched non-recurrent control for soft feedback
@@ -83,11 +92,12 @@ variants:
     patch:
       model:
         encoder: {layers: 7, d_feedforward: 384}
+        mode: factorized
       training: {trainable: [visible, assignment]}
-    initialise_from: null
+    initialise_from:
     initialise_components: []
     predictions:
-      default: {label: Parameter control, patch: {prediction: {top_k: 5}}, recurrent_steps: null}
+      default: {label: Parameter control, patch: {inference: {assignment: {top_k: 5}}}, recurrent_steps: null}
 
   m3_compute_control:
     label: Training-compute-matched non-recurrent control for soft feedback
@@ -95,8 +105,9 @@ variants:
     patch:
       model:
         encoder: {layers: 24, d_feedforward: 64}
+        mode: factorized
       training: {trainable: [visible, assignment]}
-    initialise_from: null
+    initialise_from:
     initialise_components: []
     predictions:
-      default: {label: Training-compute control, patch: {prediction: {top_k: 5}}, recurrent_steps: null}
+      default: {label: Training-compute control, patch: {inference: {assignment: {top_k: 5}}}, recurrent_steps: null}

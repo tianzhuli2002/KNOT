@@ -18,11 +18,12 @@ class LeafRole:
     node: str
     name: str
     source: str
-    truth_indices: tuple[int, ...]
+    truth_names: tuple[str, ...]
+    truth_indices: tuple[int | None, ...]
 
     @property
     def multiplicity(self) -> int:
-        return len(self.truth_indices)
+        return len(self.truth_names)
 
     @property
     def exchangeable(self) -> bool:

@@ -1,12 +1,12 @@
 topology:
   pair:
     daughter:
-      - [JET, 1]
-      - [JET, 2]
+      - {source: JET, truth: pair_jet_1}
+      - {source: JET, truth: pair_jet_2}
   parent:
     pair: pair
-    bachelor: [JET, 3]
+    bachelor: {source: JET, truth: bachelor_jet}
   other_branch:
-    visible: [JET, 4]
-    lepton: [LEPTON, 1]
-    invisible: [NEUTRINO, 0]
+    visible: {source: JET, truth: other_jet}
+    lepton: {source: LEPTON, truth: charged_lepton}
+    invisible: {source: NEUTRINO, truth: invisible_1}
