@@ -34,12 +34,9 @@
       "role": "parameter-matched non-recurrent control"
     },
     "m2_compute_control": {
-      "encoder_layers": 16,
+      "encoder_layers": 12,
       "d_feedforward": 64,
-      "target_training_seconds_per_step": 0.017783,
-      "control_training_seconds_per_step": 0.017486,
-      "training_time_ratio": 0.983,
-      "inference_time_ratio": 0.642,
+      "historical_encoder_layers": 16,
       "role": "training-compute-matched non-recurrent control"
     },
     "m3_parameter_control": {
@@ -51,12 +48,9 @@
       "role": "parameter-matched non-recurrent control"
     },
     "m3_compute_control": {
-      "encoder_layers": 24,
+      "encoder_layers": 16,
       "d_feedforward": 64,
-      "target_training_seconds_per_step": 0.025350,
-      "control_training_seconds_per_step": 0.024360,
-      "training_time_ratio": 0.961,
-      "inference_time_ratio": 0.698,
+      "historical_encoder_layers": 24,
       "role": "training-compute-matched non-recurrent control"
     }
   },
