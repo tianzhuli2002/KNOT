@@ -1703,13 +1703,27 @@ def _process_loaded_cache_chunk(dataset, output_positions, event_indices, source
         missing = sorted(set(required) - set(rows.dtype.names or ()))
         if missing:
             raise KeyError(f"{dataset.h5_path}:/INPUTS/{source_name} lacks kinematic fields {missing}")
-        pt = np.asarray(rows[str(kinematics["pt"])], dtype=np.float32)
+        # Match the scalar reference path: HDF5 float32 values are promoted to
+        # Python/NumPy float64 for the trigonometric arithmetic, then stored in
+        # the final float32 cache tensor.  Keeping these intermediates in
+        # float64 avoids a representation-dependent p4 rounding difference
+        # between raw and vectorised loading.
+        pt = np.asarray(rows[str(kinematics["pt"])], dtype=np.float64)
         if "phi" in kinematics:
-            phi = np.asarray(rows[str(kinematics["phi"])], dtype=np.float32)
+            phi = np.asarray(rows[str(kinematics["phi"])], dtype=np.float64)
         else:
-            phi = np.arctan2(rows[str(kinematics["sin_phi"])], rows[str(kinematics["cos_phi"])])
-        eta = np.asarray(rows[str(kinematics["eta"])], dtype=np.float32) if "eta" in kinematics else np.zeros_like(pt)
-        energy = np.asarray(rows[str(kinematics["energy"])], dtype=np.float32) if "energy" in kinematics else pt * np.cosh(eta)
+            phi = np.arctan2(
+                np.asarray(rows[str(kinematics["sin_phi"])], dtype=np.float64),
+                np.asarray(rows[str(kinematics["cos_phi"])], dtype=np.float64),
+            )
+        eta = (
+            np.asarray(rows[str(kinematics["eta"])], dtype=np.float64)
+            if "eta" in kinematics else np.zeros_like(pt)
+        )
+        energy = (
+            np.asarray(rows[str(kinematics["energy"])], dtype=np.float64)
+            if "energy" in kinematics else pt * np.cosh(eta)
+        )
         finite = valid & np.isfinite(energy) & np.isfinite(pt) & np.isfinite(eta) & np.isfinite(phi)
         physics_vectors[:, slots, 0] = np.where(finite, energy, 0)
         physics_vectors[:, slots, 1] = np.where(finite, pt * np.cos(phi), 0)
@@ -1773,7 +1787,9 @@ def _write_vectorized_feature(tokens, feature, values, dataset, group):
 def _collate_transformer(batch):
     collated = {
         "tokens": torch.stack([item["tokens"] for item in batch]),
-        "type_ids": torch.stack([item["type_ids"] for item in batch]),
+        # Cache type IDs use compact integer storage; embedding layers require
+        # a supported index dtype at the model boundary.
+        "type_ids": torch.stack([item["type_ids"] for item in batch]).long(),
         "padding_mask": torch.stack([item["padding_mask"] for item in batch]),
         "labels": torch.stack([item["labels"] for item in batch]),
         "event_index": torch.stack([item["event_index"] for item in batch]),

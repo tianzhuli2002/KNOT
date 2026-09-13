@@ -3,7 +3,7 @@ study:
   description: Compare one-pass assignment with recurrent refinement, soft feedback, and fixed capacity/compute controls on ttbar2L validation data.
   experiment_pattern: configs/experiments/{topology}.yaml
   topologies: [ttbar2L]
-  seeds: [42]
+  seeds: [42, 43, 44]
   split: validation
 
 variants:

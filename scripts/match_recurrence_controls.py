@@ -117,21 +117,24 @@ def _control_patch(layers: int, feedforward: int) -> dict:
     return {
         "model": {
             "encoder": {"layers": layers, "d_feedforward": feedforward},
-            "assignment": {"method": "discriminative"},
+            "assignment": {"formulation": "discriminative"},
         },
         "training": {"trainable": ["visible", "assignment"]},
     }
 
 
 def _target_patch(target: str, steps: int) -> dict:
-    recurrence = {"train_steps": list(range(1, steps + 1)), "eval_steps": steps}
+    refinement = {
+        "train_iterations": list(range(1, steps + 1)),
+        "inference_iterations": steps,
+    }
     if target == "m3":
-        recurrence["feedback"] = "soft"
+        refinement["feedback"] = "soft"
     return {
         "model": {
             "assignment": {
-                "method": "discriminative",
-                "recurrence": recurrence,
+                "formulation": "discriminative",
+                "refinement": refinement,
             }
         },
         "training": {"trainable": ["visible", "assignment"]},

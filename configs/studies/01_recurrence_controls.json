@@ -1,5 +1,21 @@
 {
   "purpose": "Fixed Study 01 non-recurrent control design; benchmark numbers are engineering diagnostics, not physics results.",
+  "study_seed_strategy": {
+    "model_seeds": [42, 43, 44],
+    "data_subset_seed": 42,
+    "selection_split": "validation",
+    "training_units": 21
+  },
+  "final_source_parameter_check": {
+    "m2": 1161474,
+    "m2_parameter_control": 1160962,
+    "m3": 1327106,
+    "m3_parameter_control": 1326338,
+    "m2_relative_trainable_difference": -0.00044081916599080135,
+    "m3_relative_trainable_difference": -0.0005787028315748704,
+    "tolerance": 0.001,
+    "controls_unchanged": true
+  },
   "benchmark": {
     "gpu": "NVIDIA L40S",
     "batch_events": 128,

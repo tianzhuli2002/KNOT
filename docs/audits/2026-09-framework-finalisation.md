@@ -6,6 +6,8 @@
 - audit branch: `framework-final-audit`
 - audit date: 2026-09-02 to 2026-09-03
 - tracked files at audit start: 148
+- final tracked files in the current tree: 147
+- final CPU validation pass: 2026-09-13
 - excluded artifacts: untracked/generated caches, HDF5 products, plots and Slurm logs
 
 This report is the permanent file-by-file record for the last framework audit
@@ -56,10 +58,56 @@ immutable inputs and are not counted as tracked source files.
 
 - all 13 maintained study variant sets resolve under the final public schema;
 - compileall, selected Ruff correctness rules and `git diff --check` pass;
-- a 256-event real ttbar2L cache proves build, mmap reuse, mismatch failure and
-  forced rebuild;
-- final full invariant, real-cache performance, CPU model-path and clean-SHA GPU
-  results are recorded below when terminal.
+- a 256-event real ttbar2L fixture proved build, mmap reuse, mismatch failure
+  and forced rebuild; the final 3,921,094-event cache is one model-agnostic
+  mmap-loadable tensor file;
+- raw/scalar versus vectorised cache equivalence passed on fixed train,
+  validation and test rows, including canonical EVENT_ID joins and invisible
+  truth;
+- the corrected vectorised build completed in 114.49 s on a warm source cache
+  (the first final vectorised build was 415.83 s), versus the earlier 890.93 s
+  per-event baseline; peak RSS was 10,592,512 KiB;
+- unrestricted scientific invariants, five shared-cache encoder smokes,
+  baseline raw/cache regression, representative real-cache reconstruction
+  paths, Study-01 controls, all study plans and all Slurm dry plans pass;
+- the final L40S gate remains pending until a clean committed SHA is submitted.
+
+## Final CPU evidence (2026-09-13)
+
+- Cache equivalence artifact: `results/engineering/framework-final-audit/cache_equivalence.json`;
+  maximum continuous difference `4.76837158203125e-07`; type IDs are stored as
+  `int8` and promoted to `long` at the embedding boundary; EVENT_ID, split,
+  visible truth and invisible truth are exact.
+- Cache artifact: `results/engineering/framework-final-audit/cache-build.json`;
+  input `/net/scratch/w00238tl/JointEventReconstruction/data/real/ttbar2L_canonical.h5`,
+  cache `/net/scratch/w00238tl/jer_cache/ttbar2L_canonical.pt`, version 9,
+  3,921,094 events, 4,034,813,989 bytes, cache state HIT.
+- `scripts/check_scientific_invariants.py` exits 0 with all maintained contract
+  markers, without an arbitrary timeout.
+- All five Study-12 encoders use the same cache and selected EVENT_IDs;
+  Transformer, four-vector Transformer and relational Transformer complete
+  CPU backward; L-GATr and L-GATr-Slim complete finite CPU forward.
+- The historical Transformer baseline checkpoint loads strictly and produces
+  identical raw-HDF5/cache inputs and outputs on a fixed 32-event validation
+  batch.
+- Real-cache mechanism smoke passes CFM Cartesian, CFM MET-residual,
+  conditional OT, JointFlow MET-residual, truth-oracle conditioning,
+  checkpoint reload, prediction-schema validation and evaluation. JointFlow
+  impossible assignment states intentionally use `-inf` logits; NaN, `+inf`,
+  loss and gradient checks pass.
+- Study 01 parameter controls remain unchanged and match trainable parameters
+  within 0.1%: M2 `-0.0441%`, M3 `-0.0579%`. Fixed model seeds are
+  `[42, 43, 44]` with data subset seed 42 and validation selection.
+- Analysis 14 is mechanically validated as validation-only APS calibration;
+  all Studies 01--13 and all 13 Slurm DAG dry plans pass. No training or
+  calibration campaign has been run.
+
+The requested VyPER reference inspection found its established fast path in
+`VyPER/data/preprocessed.py` and `VyPER/data/datamodule.py`: one-time graph
+preprocessing writes a single on-disk database, then DataLoader workers read
+serialized records without repeating HDF5 feature construction. JER borrows
+the same one-time-preprocess/thin-loader principle while retaining its simpler
+plain PyTorch tensor cache and physics-specific fixed-token contract.
 
 ## Deferred issues
 
@@ -95,9 +143,6 @@ content was inspected; “no issue” means inspection found no justified change
 - `configs/experiments/ttH1L.yaml` — AUDITED — fixed
 - `configs/experiments/ttbar1L.yaml` — AUDITED — fixed
 - `configs/experiments/ttbar2L.yaml` — AUDITED — fixed
-- `configs/legacy/data/ttH1L.yaml` — AUDITED — no issue
-- `configs/legacy/data/ttbar1L.yaml` — AUDITED — no issue
-- `configs/legacy/data/ttbar2L.yaml` — AUDITED — no issue
 - `configs/studies/01_recurrence_controls.json` — AUDITED — docs/static
 - `configs/studies/01_visible_recurrence.yaml` — AUDITED — fixed
 - `configs/studies/02_generator_formulations.yaml` — AUDITED — fixed
