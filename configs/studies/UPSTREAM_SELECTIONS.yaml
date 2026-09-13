@@ -1,33 +1,105 @@
-# Human-reviewed scientific decision gates. Do not mark a gate locked until its
-# validation study and required confirmation seeds have been interpreted.
+# Human-reviewed scientific decision gates. Only a human may change a gate to
+# locked or not_applicable. A selected patch is the reproducible decision that
+# downstream manifests inherit; it is not inferred from a later metric.
 assignment_reasoning:
-  status: pending
+  status: locked
   source_study: visible_recurrence
-  selected_variant:
-  validated_sha:
+  selected_variant: m1
+  validated_sha: b0fc3583c94640fa7ec8b281935204c8bda64f16
   required_by: [encoder_backbone]
+  selected_patch:
+    model:
+      assignment:
+        formulation: discriminative
+  artifacts:
+    ttbar2L:
+      seed_42:
+        source_study: visible_recurrence
+        variant: m1
+        model_seed: 42
+        data_subset_seed: 42
+        git_sha: b0fc3583c94640fa7ec8b281935204c8bda64f16
+        architecture_identity: bbc36d8574ac150cc9016a00c234e76e650523ed4015e340cf937570921d7009
+        checkpoint: /net/scratch/w00238tl/JointEventReconstruction/results/studies/visible_recurrence-final-20260913/visible_recurrence/ttbar2L/m1/seed_42/train/checkpoints/best-loss.ckpt
+        checkpoint_sha256: 08edefa7126a653ae9204f2f1cc6247776fca3ae0dfd9be6ee2fb50a0a1942d1
+        identity_file: /net/scratch/w00238tl/JointEventReconstruction/results/studies/visible_recurrence-final-20260913/visible_recurrence/ttbar2L/m1/seed_42/train/artifact_identity.json
+        identity_sha256: 917d4dfc9c2e3dc4c1bda2c6ce1402747dd68c5eabd0fdd51e877feefc2cdd34
+      seed_43:
+        source_study: visible_recurrence
+        variant: m1
+        model_seed: 43
+        data_subset_seed: 42
+        git_sha: b0fc3583c94640fa7ec8b281935204c8bda64f16
+        architecture_identity: bbc36d8574ac150cc9016a00c234e76e650523ed4015e340cf937570921d7009
+        checkpoint: /net/scratch/w00238tl/JointEventReconstruction/results/studies/visible_recurrence-final-20260913/visible_recurrence/ttbar2L/m1/seed_43/train/checkpoints/best-loss.ckpt
+        checkpoint_sha256: 01c9f85ff0d90ca427e665dfc0bf1aa9e7bbae6a4f5e07f8e0787ce5d1c5b89b
+        identity_file: /net/scratch/w00238tl/JointEventReconstruction/results/studies/visible_recurrence-final-20260913/visible_recurrence/ttbar2L/m1/seed_43/train/artifact_identity.json
+        identity_sha256: 19fffdc465d7ec6c778522da785ac041cc968770b183942d1b0a5bf5d56af8ce
+      seed_44:
+        source_study: visible_recurrence
+        variant: m1
+        model_seed: 44
+        data_subset_seed: 42
+        git_sha: b0fc3583c94640fa7ec8b281935204c8bda64f16
+        architecture_identity: bbc36d8574ac150cc9016a00c234e76e650523ed4015e340cf937570921d7009
+        checkpoint: /net/scratch/w00238tl/JointEventReconstruction/results/studies/visible_recurrence-final-20260913/visible_recurrence/ttbar2L/m1/seed_44/train/checkpoints/best-loss.ckpt
+        checkpoint_sha256: 6a91c1717cd462c538ca5e85796432c2db14ad328aa4d40b098e9843bae5ed20
+        identity_file: /net/scratch/w00238tl/JointEventReconstruction/results/studies/visible_recurrence-final-20260913/visible_recurrence/ttbar2L/m1/seed_44/train/artifact_identity.json
+        identity_sha256: 9082fc05c259a5a9282651c28cd4d52b89e1497a14213218f619d4afedb49f60
 
 visible_assignment:
   status: pending
   source_study: encoder_backbone
   selected_variant:
   validated_sha:
-  required_by: [generator_formulations, assignment_conditioning, c2_feedback, discrete_assignment, joint_vs_factorized, joint_recurrence, generator_inference,
-      posterior_size, compatibility_reranking, data_scaling, invisible_coordinates]
+  required_by: [generator_formulations, discrete_assignment, data_scaling, assignment_conditioning, c2_feedback, joint_vs_factorized, joint_recurrence, generator_inference, posterior_size, compatibility_reranking, invisible_coordinates]
+  selected_patch: {}
+  artifacts: {}
+
+assignment_formulation:
+  status: pending
+  source_study: discrete_assignment
+  selected_variant:
+  validated_sha:
+  required_by: [assignment_conditioning, c2_feedback, joint_vs_factorized, joint_recurrence, posterior_size, compatibility_reranking]
+  selected_patch: {}
+  artifacts: {}
+
+assignment_conditioning:
+  status: pending
+  source_study: assignment_conditioning
+  selected_variant:
+  validated_sha:
+  required_by: [c2_feedback, joint_vs_factorized, joint_recurrence, compatibility_reranking]
+  selected_patch: {}
+  artifacts: {}
+
+invisible_feedback:
+  status: pending
+  source_study: c2_feedback
+  selected_variant:
+  validated_sha:
+  required_by: [joint_vs_factorized, joint_recurrence]
+  selected_patch: {}
+  artifacts: {}
 
 invisible_generator:
   status: pending
   source_study: generator_formulations
   selected_variant:
   validated_sha:
-  required_by: [assignment_conditioning, c2_feedback, joint_vs_factorized, joint_recurrence, generator_inference, posterior_size, compatibility_reranking]
+  required_by: [assignment_conditioning, c2_feedback, joint_vs_factorized, joint_recurrence, posterior_size, compatibility_reranking, invisible_coordinates]
+  selected_patch: {}
+  artifacts: {}
 
 invisible_coordinates:
   status: pending
   source_study: invisible_coordinates
   selected_variant:
   validated_sha:
-  required_by: [assignment_conditioning, c2_feedback, joint_vs_factorized, joint_recurrence, generator_inference, posterior_size, compatibility_reranking]
+  required_by: [assignment_conditioning, c2_feedback, joint_vs_factorized, joint_recurrence, posterior_size, compatibility_reranking]
+  selected_patch: {}
+  artifacts: {}
 
 joint_model:
   status: pending
@@ -35,3 +107,5 @@ joint_model:
   selected_variant:
   validated_sha:
   required_by: [joint_recurrence, posterior_size]
+  selected_patch: {}
+  artifacts: {}

@@ -14,99 +14,14 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from omegaconf import OmegaConf
-
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from joint_event_reconstruction.studies import StudySpec, VariantSpec, load_study
+from joint_event_reconstruction.studies import StudySpec, VariantSpec, resolve_study
 
 
 _CAMPAIGN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
-SELECTIONS_PATH = ROOT / "configs/studies/UPSTREAM_SELECTIONS.yaml"
-_GATE_KEYS = {
-    "status",
-    "source_study",
-    "selected_variant",
-    "validated_sha",
-    "required_by",
-}
-_COMMIT_SHA = re.compile(r"^[0-9a-f]{40}$")
-
-
-def _scientific_gates() -> dict:
-    if not SELECTIONS_PATH.is_file():
-        raise FileNotFoundError(f"Scientific selection gates do not exist: {SELECTIONS_PATH}")
-    raw = OmegaConf.to_container(OmegaConf.load(SELECTIONS_PATH), resolve=True)
-    if not isinstance(raw, dict) or not raw:
-        raise ValueError(f"Scientific selection gates must be a non-empty mapping: {SELECTIONS_PATH}")
-    study_paths = {
-        load_study(path).name: path
-        for path in sorted((ROOT / "configs/studies").glob("[0-9][0-9]_*.yaml"))
-    }
-    for name, gate in raw.items():
-        if not isinstance(gate, dict) or set(gate) != _GATE_KEYS:
-            raise ValueError(
-                f"Scientific gate {name!r} must contain exactly {sorted(_GATE_KEYS)}"
-            )
-        if gate["status"] not in {"pending", "locked"}:
-            raise ValueError(f"Scientific gate {name!r} has invalid status {gate['status']!r}")
-        source_study = str(gate["source_study"]).strip()
-        if not source_study:
-            raise ValueError(f"Scientific gate {name!r} has no source_study")
-        if source_study not in study_paths:
-            raise ValueError(
-                f"Scientific gate {name!r} refers to unknown source study "
-                f"{source_study!r}"
-            )
-        required_by = gate["required_by"]
-        if (
-            not isinstance(required_by, list)
-            or not required_by
-            or any(not str(study).strip() for study in required_by)
-            or len(set(required_by)) != len(required_by)
-        ):
-            raise ValueError(f"Scientific gate {name!r} has invalid required_by")
-        unknown_dependents = sorted(set(required_by) - set(study_paths))
-        if unknown_dependents:
-            raise ValueError(
-                f"Scientific gate {name!r} refers to unknown dependent studies "
-                f"{unknown_dependents}"
-            )
-        if gate["status"] == "locked":
-            selected_variant = str(gate["selected_variant"]).strip()
-            if not selected_variant:
-                raise ValueError(f"Locked scientific gate {name!r} has no selected_variant")
-            if selected_variant not in load_study(
-                study_paths[source_study]
-            ).variant_map:
-                raise ValueError(
-                    f"Locked scientific gate {name!r} selects unknown variant "
-                    f"{selected_variant!r} from {source_study!r}"
-                )
-            if not isinstance(gate["validated_sha"], str) or not _COMMIT_SHA.fullmatch(
-                gate["validated_sha"]
-            ):
-                raise ValueError(
-                    f"Locked scientific gate {name!r} must record a 40-character validated_sha"
-                )
-    return raw
-
-
-def _require_locked_scientific_gates(study_name: str, selections: dict | None = None) -> None:
-    selections = _scientific_gates() if selections is None else selections
-    pending = [
-        name
-        for name, gate in selections.items()
-        if study_name in gate["required_by"] and gate["status"] != "locked"
-    ]
-    if pending:
-        raise RuntimeError(
-            f"Study {study_name!r} is decision-gated by pending selections {pending}. "
-            f"Record the human-reviewed winner in {SELECTIONS_PATH} and update the "
-            "study's explicit reference patch before submission."
-        )
 
 
 def _selected(value: str, allowed: tuple, label: str) -> tuple:
@@ -209,6 +124,7 @@ def _worker_script(
     expected_commit: str,
     expected_manifest_sha256: str,
     expected_experiments: dict[str, dict[str, str]],
+    expected_gate_digest: str | None = None,
 ) -> None:
     command = [
         sys.executable,
@@ -221,6 +137,8 @@ def _worker_script(
         "--seeds", '"$seed"',
         "--device", device,
     ]
+    if expected_gate_digest is not None:
+        command += ["--expected-gates-digest", expected_gate_digest]
     if stage == "train":
         command.append("--exact-variants")
     for override in global_overrides:
@@ -373,6 +291,7 @@ def _post_command(
     variants: tuple[VariantSpec, ...],
     seeds: tuple[int, ...],
     overrides: tuple[str, ...],
+    expected_gate_digest: str | None,
 ) -> list[str]:
     command = [
         sys.executable,
@@ -387,6 +306,8 @@ def _post_command(
     ]
     for override in overrides:
         command += ["--set", override]
+    if expected_gate_digest is not None:
+        command += ["--expected-gates-digest", expected_gate_digest]
     return command
 
 
@@ -398,7 +319,7 @@ def main() -> None:
     parser.add_argument("--variants", default="all")
     parser.add_argument("--seeds", default="all")
     parser.add_argument("--gpu-partition", default="gpuL")
-    parser.add_argument("--gpu-gres", default="gpu:1")
+    parser.add_argument("--gpu-gres", default="gpu:l40s:1")
     parser.add_argument("--gpu-cpus", type=int, default=12)
     parser.add_argument("--gpu-mem", default="64G")
     parser.add_argument("--gpu-time", default="4-00:00:00")
@@ -408,10 +329,16 @@ def main() -> None:
     parser.add_argument("--cpu-time", default="04:00:00")
     parser.add_argument("--set", dest="global_overrides", action="append", default=[])
     parser.add_argument(
-        "--extra-sbatch",
+        "--extra-gpu-sbatch",
         action="append",
         default=[],
-        help="Pass one additional sbatch argument, e.g. --extra-sbatch=--account=project.",
+        help="Pass an additional sbatch argument to GPU training/prediction jobs.",
+    )
+    parser.add_argument(
+        "--extra-cpu-sbatch",
+        action="append",
+        default=[],
+        help="Pass an additional sbatch argument to CPU postprocessing jobs.",
     )
     parser.add_argument("--no-postprocess", action="store_true")
     parser.add_argument(
@@ -422,22 +349,24 @@ def main() -> None:
         "--campaign-id",
         help="Human-readable immutable Slurm-attempt identifier; defaults to a UTC timestamp.",
     )
+    parser.add_argument(
+        "--submission-identity",
+        help="Campaign-level immutable identity used for idempotent resubmission checks.",
+    )
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
-    study = load_study(args.study)
-    selections = _scientific_gates()
-    if not args.dry_run:
-        _require_locked_scientific_gates(study.name, selections)
+    study = resolve_study(args.study)
     topologies = _selected(args.topologies, study.topologies, "topologies")
     variant_names = tuple(variant.name for variant in study.variants)
     requested_names = _selected(args.variants, variant_names, "variants")
     requested = tuple(study.variant_map[name] for name in requested_names)
-    training = (
-        study.dependency_order()
-        if args.variants == "all"
-        else study.dependency_closure(requested_names)
-    )
+    if not study.training:
+        training = ()
+    elif args.variants == "all":
+        training = study.dependency_order()
+    else:
+        training = study.dependency_closure(requested_names)
     seeds = (
         study.seeds
         if args.seeds == "all"
@@ -446,6 +375,15 @@ def main() -> None:
     unknown_seeds = sorted(set(seeds) - set(study.seeds))
     if unknown_seeds:
         raise ValueError(f"Seeds {unknown_seeds} are not declared by the study")
+
+    from scripts.run_study import _gate_checkpoint
+
+    for variant in training:
+        if variant.initialise_from_gate is None:
+            continue
+        for topology in topologies:
+            for seed in seeds:
+                _gate_checkpoint(study, variant.initialise_from_gate, topology, seed)
 
     study_path = study.path
     output_root = args.output_root.expanduser().resolve()
@@ -474,7 +412,8 @@ def main() -> None:
             "Study manifest snapshot checksum does not match the submitted manifest"
         )
     overrides = tuple(args.global_overrides)
-    extra = tuple(args.extra_sbatch)
+    gpu_extra = tuple(args.extra_gpu_sbatch)
+    cpu_extra = tuple(args.extra_cpu_sbatch)
     git_commit, git_dirty = _git_state()
     if git_dirty and not args.dry_run:
         raise RuntimeError("Study submission requires a clean committed checkout")
@@ -488,6 +427,7 @@ def main() -> None:
 
     submitted: dict[str, object] = {
         "campaign_id": campaign_id,
+        "submission_identity": args.submission_identity,
         "submission_timestamp": submitted_at,
         "git_commit": git_commit,
         "git_dirty": git_dirty,
@@ -508,7 +448,22 @@ def main() -> None:
         "training_closure": [variant.name for variant in training],
         "seeds": list(seeds),
         "overrides": list(overrides),
-        "extra_sbatch": list(extra),
+        "extra_gpu_sbatch": list(gpu_extra),
+        "extra_cpu_sbatch": list(cpu_extra),
+        "required_gates": list(study.requires),
+        "resolved_gate_variants": {
+            name: gate.get("selected_variant")
+            for name, gate in (study.resolved_gates or {}).items()
+        },
+        "resolved_gate_digest": study.gates_digest,
+        "checkpoint_sources": {
+            variant.name: {
+                "study": variant.checkpoint_from[0],
+                "variant": variant.checkpoint_from[1],
+            }
+            for variant in requested
+            if variant.checkpoint_from is not None
+        },
         "resources": {
             "gpu": {
                 "partition": args.gpu_partition,
@@ -550,6 +505,7 @@ def main() -> None:
             global_overrides=overrides,
             expected_commit=git_commit,
             expected_manifest_sha256=manifest_sha256,
+            expected_gate_digest=study.gates_digest,
             expected_experiments=base_experiments,
         )
         job_id = _submit(
@@ -564,7 +520,7 @@ def main() -> None:
                 memory=args.gpu_mem,
                 time_limit=args.gpu_time,
                 dependency=dependency,
-                extra=extra,
+                extra=gpu_extra,
             ),
             dry_run=args.dry_run,
             fake_id=fake_id,
@@ -606,6 +562,7 @@ def main() -> None:
             global_overrides=overrides,
             expected_commit=git_commit,
             expected_manifest_sha256=manifest_sha256,
+            expected_gate_digest=study.gates_digest,
             expected_experiments=base_experiments,
         )
         prediction_job = _submit(
@@ -620,7 +577,7 @@ def main() -> None:
                 memory=args.gpu_mem,
                 time_limit=args.gpu_time,
                 dependency=dependency,
-                extra=extra,
+                extra=gpu_extra,
             ),
             dry_run=args.dry_run,
             fake_id=fake_id,
@@ -643,6 +600,7 @@ def main() -> None:
                     variants=prediction_variants,
                     seeds=seeds,
                     overrides=overrides,
+                    expected_gate_digest=study.gates_digest,
                 )
                 for stage in ("evaluate", "plot", "compare", "summary", "analyze")
             ]
@@ -665,7 +623,7 @@ def main() -> None:
                     f"--dependency=afterok:{prediction_job}",
                     f"--output={log_dir}/%x-%j.out",
                     f"--error={log_dir}/%x-%j.err",
-                    *extra,
+                    *cpu_extra,
                     str(post_worker),
                 ],
                 dry_run=args.dry_run,

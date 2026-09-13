@@ -1,64 +1,26 @@
 study:
   name: compatibility_reranking
-  description: Train a compatibility head, generate hypotheses once, and scan reranking weight offline on validation data.
+  description: Reuse selected factorised components, generate one posterior, and scan explicit compatibility weights offline.
   experiment_pattern: configs/experiments/{topology}.yaml
   topologies: [ttbar2L]
-  seeds: [42]
+  seeds: [42, 43, 44]
   split: validation
+  requires: [visible_assignment, assignment_formulation, assignment_conditioning, invisible_generator, invisible_coordinates]
+  inherit: [visible_assignment, assignment_formulation, assignment_conditioning, invisible_generator, invisible_coordinates]
+  training: true
 
 variants:
-  assignment_reference:
-    label: Assignment reference (pending Study 01 gate)
-    reporting: setup
-    patch:
-      model:
-        assignment:
-          formulation: discriminative
-          refinement:
-            train_iterations: [1, 2, 3, 4]
-            inference_iterations: 4
-            feedback: soft
-        mode: factorized
-      training: {trainable: [visible, assignment]}
-    initialise_from:
-    initialise_components: []
-    predictions: {}
-
-  factorized:
-    label: factorized hypothesis CFM
-    reporting: setup
-    patch:
-      model:
-        assignment:
-          formulation: discriminative
-          refinement:
-            train_iterations: [1, 2, 3, 4]
-            inference_iterations: 4
-            feedback: soft
-        invisible: {conditioning: {assignment: hypothesis}, generator: {type: cfm}}
-        mode: factorized
-      training: {trainable: [invisible]}
-    initialise_from: assignment_reference
-    initialise_components: [visible, assignment]
-    predictions: {}
-
   compatibility:
-    label: compatibility reranking
+    label: learned visible/invisible compatibility reranking
     reporting: primary
     patch:
       model:
-        assignment:
-          formulation: discriminative
-          refinement:
-            train_iterations: [1, 2, 3, 4]
-            inference_iterations: 4
-            feedback: soft
-        invisible: {conditioning: {assignment: hypothesis}, generator: {type: cfm}}
-        compatibility: {}
         mode: factorized
+        compatibility: {}
       training: {trainable: [compatibility]}
-    initialise_from: factorized
+    initialise_from:
+    initialise_from_gate: assignment_conditioning
     initialise_components: [visible, assignment, invisible]
+    checkpoint_from:
     predictions:
-      posterior: {label: One stored posterior for offline weight scan, patch: {inference: {assignment: {top_k: 10}, invisible: {samples_per_assignment: 16, flow: {
-                steps: 17, solver: euler}}, compatibility: {weight: 0.0}}}, recurrent_steps: 4}
+      posterior: {label: One stored posterior for offline weight scan, patch: {inference: {assignment: {top_k: 10}, invisible: {samples_per_assignment: 16, flow: {steps: 17, solver: euler}}, compatibility: {weight: 0.0}}}, recurrent_steps: null}

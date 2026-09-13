@@ -82,9 +82,12 @@ products.
 
 The optional L-GATr adapter was exercised with the installed `lgatr` package
 version reported by `importlib.metadata`; standard and physics Transformer paths
-remain usable without that extra. Study 12, Study 13 and Analysis 14 are
-templates/offline tooling only in this branch. No new scientific campaign has
-been submitted and no human selection gate has been changed to `locked`.
+remain usable without that extra. Studies 02--13 now use strict gate resolution
+and explicit checkpoint provenance rather than copied provisional reference
+patches. The completed Study-01 validation decision is locked as
+`assignment_reasoning=m1`; `visible_assignment` remains a pending human gate.
+Study 12 and its validation-only Analysis-14 package are the current eligible
+campaign wave, while downstream training remains held at its scientific gates.
 
 Every new training directory records the public and resolved configuration, the
 resolved input contract, cache metadata/fingerprint, practical dataset identity,

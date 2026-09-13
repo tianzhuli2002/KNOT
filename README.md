@@ -54,12 +54,6 @@ model:
   encoder: {type: transformer, representation: four_vector, relations: physics}
   assignment:
     formulation: discriminative
-    refinement:
-      layers: 2
-      train_iterations: [1, 2, 3, 4]
-      inference_iterations: 4
-      feedback: soft
-      reinject_encoder_context: true
   invisible:
     coordinates: {type: met_residual}
     conditioning: {assignment: hypothesis}
@@ -136,5 +130,8 @@ jer study plan configs/studies/12_encoder_backbone.yaml
 
 The historical Study-01 reanalysis is under
 `results/studies/visible_recurrence/_reanalysis/2026-09-02-4e33113`. It did not
-retrain models and does not select a winner. Scientific campaign submission
-requires human review and is deliberately separate from framework validation.
+retrain models and does not select a winner. Ordinary downstream studies inherit
+the human-selected one-pass M1 assignment; recurrence is retained only in the
+explicit Study-01 and Study-11 diagnostics. Check the current campaign with
+`python scripts/submit_campaign.py --status` and submit only eligible work with
+`python scripts/submit_campaign.py --ready`.

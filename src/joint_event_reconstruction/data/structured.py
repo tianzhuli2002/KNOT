@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 import h5py
@@ -21,6 +22,9 @@ from joint_event_reconstruction.models.invisible.coordinates import (
 from joint_event_reconstruction.topology.assignments import build_assignment_template
 from joint_event_reconstruction.topology.candidates import build_event_candidates
 from joint_event_reconstruction.topology.compiler import load_topology
+
+
+logger = logging.getLogger(__name__)
 
 
 class StructuredCollator:
@@ -419,6 +423,7 @@ class StructuredDataModule(TransformerDataModule):
             return positions
 
         self.cache_payload = payload
+        logger.info("CACHE HIT: validated explicit tensor cache %s", self.tensor_cache)
         self.train_dataset = StructuredCachedDataset(
             payload, selected_positions(self.split_indices["train"])
         )

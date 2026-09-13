@@ -1,127 +1,103 @@
 study:
   name: generator_formulations
-  description: Compare DDIM, EDM, CFM, OT-CFM and condition-aware OT CFM in Cartesian coordinates with one frozen visible-assignment reference.
+  description: Compare DDIM, EDM, CFM, OT-CFM and condition-aware OT CFM with the human-selected visible system.
   experiment_pattern: configs/experiments/{topology}.yaml
   topologies: [ttbar2L]
-  seeds: [42]
+  seeds: [42, 43, 44]
   split: validation
+  requires: [visible_assignment]
+  inherit: [visible_assignment]
+  training: true
 
 variants:
-  assignment_reference:
-    label: Assignment reference (pending Study 01 gate)
-    reporting: setup
-    patch:
-      model:
-        assignment:
-          formulation: discriminative
-          refinement:
-            train_iterations: [1, 2, 3, 4]
-            inference_iterations: 4
-            feedback: soft
-        mode: factorized
-      training: {trainable: [visible, assignment]}
-    initialise_from:
-    initialise_components: []
-    predictions: {}
-
   ddim:
     label: DDIM
     reporting: primary
     patch:
       model:
-        assignment:
-          formulation: discriminative
-          refinement:
-            train_iterations: [1, 2, 3, 4]
-            inference_iterations: 4
-            feedback: soft
-        invisible: {conditioning: {assignment: none}, coordinates: {type: cartesian}, generator: {type: ddim}}
+        invisible:
+          conditioning: {assignment: none}
+          coordinates: {type: cartesian}
+          generator: {type: ddim}
         mode: factorized
       training: {trainable: [invisible]}
-    initialise_from: assignment_reference
+    initialise_from:
+    initialise_from_gate: visible_assignment
     initialise_components: [visible, assignment]
+    checkpoint_from:
     predictions:
-      nfe17: {label: DDIM NFE=17, patch: {inference: {invisible: {samples_per_assignment: 32, flow: {steps: 17}}}}, recurrent_steps: 4}
+      nfe17: {label: DDIM steps=17, patch: {inference: {invisible: {samples_per_assignment: 32, ddim: {steps: 17}}}}, recurrent_steps: null}
 
   edm:
     label: EDM
     reporting: primary
     patch:
       model:
-        assignment:
-          formulation: discriminative
-          refinement:
-            train_iterations: [1, 2, 3, 4]
-            inference_iterations: 4
-            feedback: soft
-        invisible: {conditioning: {assignment: none}, coordinates: {type: cartesian}, generator: {type: edm}}
+        invisible:
+          conditioning: {assignment: none}
+          coordinates: {type: cartesian}
+          generator: {type: edm}
         mode: factorized
       training: {trainable: [invisible]}
-    initialise_from: assignment_reference
+    initialise_from:
+    initialise_from_gate: visible_assignment
     initialise_components: [visible, assignment]
+    checkpoint_from:
     predictions:
-      nfe17: {label: EDM NFE=17, patch: {inference: {invisible: {samples_per_assignment: 32, edm: {nfe: 17}}}}, recurrent_steps: 4}
+      nfe17: {label: EDM NFE=17, patch: {inference: {invisible: {samples_per_assignment: 32, edm: {nfe: 17}}}}, recurrent_steps: null}
 
   cfm:
     label: CFM
     reporting: primary
     patch:
       model:
-        assignment:
-          formulation: discriminative
-          refinement:
-            train_iterations: [1, 2, 3, 4]
-            inference_iterations: 4
-            feedback: soft
-        invisible: {conditioning: {assignment: none}, coordinates: {type: cartesian}, generator: {type: cfm}}
+        invisible:
+          conditioning: {assignment: none}
+          coordinates: {type: cartesian}
+          generator: {type: cfm}
         mode: factorized
       training: {trainable: [invisible]}
-    initialise_from: assignment_reference
+    initialise_from:
+    initialise_from_gate: visible_assignment
     initialise_components: [visible, assignment]
+    checkpoint_from:
     predictions:
-      nfe17: {label: CFM Euler NFE=17, patch: {inference: {invisible: {samples_per_assignment: 32, flow: {steps: 17, solver: euler}}}}, recurrent_steps: 4}
+      nfe17: {label: CFM Euler NFE=17, patch: {inference: {invisible: {samples_per_assignment: 32, flow: {steps: 17, solver: euler}}}}, recurrent_steps: null}
 
   ot_cfm:
     label: OT-CFM
     reporting: primary
     patch:
       model:
-        assignment:
-          formulation: discriminative
-          refinement:
-            train_iterations: [1, 2, 3, 4]
-            inference_iterations: 4
-            feedback: soft
-        invisible: {conditioning: {assignment: none}, coordinates: {type: cartesian}, generator: {type: cfm, coupling: {type: minibatch_ot, condition_weight: 0.0}}}
+        invisible:
+          conditioning: {assignment: none}
+          coordinates: {type: cartesian}
+          generator: {type: cfm, coupling: {type: minibatch_ot, condition_weight: 0.0}}
         mode: factorized
       training: {trainable: [invisible]}
-    initialise_from: assignment_reference
+    initialise_from:
+    initialise_from_gate: visible_assignment
     initialise_components: [visible, assignment]
+    checkpoint_from:
     predictions:
-      nfe17: {label: OT-CFM Euler NFE=17, patch: {inference: {invisible: {samples_per_assignment: 32, flow: {steps: 17, solver: euler}}}}, recurrent_steps: 4}
+      nfe17: {label: OT-CFM Euler NFE=17, patch: {inference: {invisible: {samples_per_assignment: 32, flow: {steps: 17, solver: euler}}}}, recurrent_steps: null}
 
   conditional_ot_cfm:
     label: Condition-aware OT / C2OT-style CFM
     reporting: primary
     patch:
       model:
-        assignment:
-          formulation: discriminative
-          refinement:
-            train_iterations: [1, 2, 3, 4]
-            inference_iterations: 4
-            feedback: soft
         invisible:
-          conditioning:
-            assignment: none
+          conditioning: {assignment: none}
           coordinates: {type: cartesian}
           generator:
             type: cfm
             coupling: {condition_weight: 1.0, type: conditional_ot}
         mode: factorized
       training: {trainable: [invisible]}
-    initialise_from: assignment_reference
+    initialise_from:
+    initialise_from_gate: visible_assignment
     initialise_components: [visible, assignment]
+    checkpoint_from:
     predictions:
-      nfe17: {label: Condition-aware OT CFM Euler NFE=17, patch: {inference: {invisible: {samples_per_assignment: 32, flow: {steps: 17, solver: euler}}}},
-          recurrent_steps: 4}
+      nfe17: {label: Condition-aware OT CFM Euler NFE=17, patch: {inference: {invisible: {samples_per_assignment: 32, flow: {steps: 17, solver: euler}}}}, recurrent_steps: null}

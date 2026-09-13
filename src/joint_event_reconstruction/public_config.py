@@ -658,8 +658,11 @@ def _resolve_model(public, defaults) -> dict:
     c2 = _plain(defaults.c2)
     c2_enabled = c2_public is not None
     if c2_enabled:
-        if method != "discriminative" or not recurrent or not invisible["enabled"]:
-            raise ValueError("model.feedback.invisible_to_assignment requires recurrent discriminative assignment and invisible inference")
+        if method != "discriminative" or not invisible["enabled"]:
+            raise ValueError(
+                "model.feedback.invisible_to_assignment requires discriminative "
+                "assignment and invisible inference"
+            )
         _mapping(c2_public, "model.feedback.invisible_to_assignment")
         _required(c2_public, {"enabled"}, "model.feedback.invisible_to_assignment")
         c2_enabled = bool(c2_public.enabled)

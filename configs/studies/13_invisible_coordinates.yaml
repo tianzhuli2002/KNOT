@@ -1,62 +1,41 @@
 study:
   name: invisible_coordinates
-  description: Compare Cartesian, MET-residual and diagnostic MET-exact invisible coordinates at fixed visible assignment and generator semantics.
+  description: Compare Cartesian, MET-residual and diagnostic MET-exact invisible coordinates with selected visible and generator semantics.
   experiment_pattern: configs/experiments/{topology}.yaml
   topologies: [ttbar2L]
-  seeds: [42]
+  seeds: [42, 43, 44]
   split: validation
+  requires: [visible_assignment, invisible_generator]
+  inherit: [visible_assignment, invisible_generator]
+  training: true
 
 variants:
-  assignment_reference:
-    label: Visible-assignment reference (pending human gates)
-    reporting: setup
-    patch:
-      model:
-        assignment: {formulation: discriminative, refinement: {train_iterations: [1, 2, 3, 4], inference_iterations: 4, feedback: soft}}
-        mode: factorized
-      training: {trainable: [visible, assignment]}
-    initialise_from:
-    initialise_components: []
-    predictions: {}
-
   cartesian:
     label: Cartesian invisible coordinates
     reporting: primary
-    patch:
-      model:
-        assignment: {formulation: discriminative, refinement: {train_iterations: [1, 2, 3, 4], inference_iterations: 4, feedback: soft}}
-        invisible: {conditioning: {assignment: none}, coordinates: {type: cartesian}, generator: {type: cfm}}
-        mode: factorized
-      training: {trainable: [invisible]}
-    initialise_from: assignment_reference
+    patch: {model: {mode: factorized, invisible: {coordinates: {type: cartesian}}}, training: {trainable: [invisible]}}
+    initialise_from:
+    initialise_from_gate: visible_assignment
     initialise_components: [visible, assignment]
-    predictions:
-      default: {label: Cartesian, patch: {inference: {invisible: {samples_per_assignment: 32, flow: {steps: 17, solver: euler}}}}, recurrent_steps: 4}
+    checkpoint_from:
+    predictions: {default: {label: Cartesian, patch: {inference: {invisible: {samples_per_assignment: 32, flow: {steps: 17, solver: euler}}}}, recurrent_steps: null}}
 
   met_residual:
     label: MET-residual invisible coordinates
     reporting: primary
-    patch:
-      model:
-        assignment: {formulation: discriminative, refinement: {train_iterations: [1, 2, 3, 4], inference_iterations: 4, feedback: soft}}
-        invisible: {conditioning: {assignment: none}, coordinates: {type: met_residual}, generator: {type: cfm}}
-        mode: factorized
-      training: {trainable: [invisible]}
-    initialise_from: assignment_reference
+    patch: {model: {mode: factorized, invisible: {coordinates: {type: met_residual}}}, training: {trainable: [invisible]}}
+    initialise_from:
+    initialise_from_gate: visible_assignment
     initialise_components: [visible, assignment]
-    predictions:
-      default: {label: MET residual, patch: {inference: {invisible: {samples_per_assignment: 32, flow: {steps: 17, solver: euler}}}}, recurrent_steps: 4}
+    checkpoint_from:
+    predictions: {default: {label: MET residual, patch: {inference: {invisible: {samples_per_assignment: 32, flow: {steps: 17, solver: euler}}}}, recurrent_steps: null}}
 
   met_exact:
     label: MET-exact projection diagnostic
     reporting: diagnostic
-    patch:
-      model:
-        assignment: {formulation: discriminative, refinement: {train_iterations: [1, 2, 3, 4], inference_iterations: 4, feedback: soft}}
-        invisible: {conditioning: {assignment: none}, coordinates: {type: met_exact}, generator: {type: cfm}}
-        mode: factorized
-      training: {trainable: [invisible]}
-    initialise_from: assignment_reference
+    patch: {model: {mode: factorized, invisible: {coordinates: {type: met_exact}}}, training: {trainable: [invisible]}}
+    initialise_from:
+    initialise_from_gate: visible_assignment
     initialise_components: [visible, assignment]
-    predictions:
-      default: {label: MET exact diagnostic, patch: {inference: {invisible: {samples_per_assignment: 32, flow: {steps: 17, solver: euler}}}}, recurrent_steps: 4}
+    checkpoint_from:
+    predictions: {default: {label: MET exact diagnostic, patch: {inference: {invisible: {samples_per_assignment: 32, flow: {steps: 17, solver: euler}}}}, recurrent_steps: null}}

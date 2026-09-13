@@ -1,42 +1,30 @@
 study:
   name: discrete_assignment
-  description: Compare discriminative structured assignment and complete-state DFM on the same ttbar2L data and visible encoder scale.
+  description: Compare the selected visible encoder with one-pass discriminative assignment and complete-state DFM assignment on matched events.
   experiment_pattern: configs/experiments/{topology}.yaml
   topologies: [ttbar2L]
-  seeds: [42]
+  seeds: [42, 43, 44]
   split: validation
+  requires: [visible_assignment]
+  inherit: [visible_assignment]
+  training: true
 
 variants:
   m1:
-    label: discriminative M1
-    reporting: diagnostic
+    label: selected one-pass discriminative assignment
+    reporting: primary
     patch:
+      model: {mode: factorized}
       training: {trainable: [visible, assignment]}
     initialise_from:
+    initialise_from_gate:
     initialise_components: []
+    checkpoint_from:
     predictions:
       top1: {label: M1, patch: {inference: {assignment: {top_k: 1}}}, recurrent_steps: null}
 
-  m3:
-    label: discriminative recurrent-feedback candidate reference
-    reporting: primary
-    patch:
-      model:
-        assignment:
-          formulation: discriminative
-          refinement:
-            train_iterations: [1, 2, 3, 4]
-            inference_iterations: 4
-            feedback: soft
-        mode: factorized
-      training: {trainable: [visible, assignment]}
-    initialise_from:
-    initialise_components: []
-    predictions:
-      top1: {label: recurrent-feedback candidate, patch: {inference: {assignment: {top_k: 1}}}, recurrent_steps: 4}
-
   dfm:
-    label: complete-state DFM
+    label: complete-state DFM assignment
     reporting: primary
     patch:
       model:
@@ -44,7 +32,9 @@ variants:
         mode: factorized
       training: {trainable: [visible, assignment]}
     initialise_from:
+    initialise_from_gate:
     initialise_components: []
+    checkpoint_from:
     predictions:
       s64_t8: {label: DFM S=64 T=8, patch: {inference: {invisible: {samples_per_assignment: 64, flow: {steps: 8}}}}, recurrent_steps: null}
       s64_t16: {label: DFM S=64 T=16, patch: {inference: {invisible: {samples_per_assignment: 64, flow: {steps: 16}}}}, recurrent_steps: null}

@@ -9,16 +9,16 @@ only by a controlled physics comparison.
 - `experiment.seed` controls model/training randomness.
 - `data.subset_seed` fixes the EVENT_ID-based, nested train subset.
 - `prediction.seed` controls posterior sampling and is inference-only.
-- Studies 01--11 select configurations on `validation`. The held-out `test`
+- All scientific gates and maintained studies select configurations on
+  `validation`. The held-out `test`
   split is evaluated once, after the relevant model and inference choices are
   locked.
 - Compared products must contain the same ordered EVENT_ID sequence. Report
   native assignment support and, when supports differ, the common truth
   non-NULL subset separately.
-- Downstream manifests are explicit templates. Their assignment/generator
-  reference patches remain provisional until the human-reviewed gate in
-  `configs/studies/UPSTREAM_SELECTIONS.yaml` is locked and the matching patch is
-  updated.
+- Downstream manifests resolve the explicit human gates in
+  `configs/studies/UPSTREAM_SELECTIONS.yaml`. Configuration inheritance and
+  checkpoint initialisation are separate; a pending gate hard-blocks submission.
 - A mechanism being implemented or passing a smoke test is not evidence that it
   improves physics performance.
 
@@ -44,20 +44,23 @@ extrapolation/overthinking test; it is not a trained checkpoint or a primary
 depth choice.
 
 **Decision:** adopt recurrence only when the gain survives the capacity and
-training-compute controls. Confirm only decisive finalists with seeds 42, 123
-and 456 on the same fixed event subsets. Propagate the human-selected assignment
-reference to Study 02 and later studies. This study cannot establish that C2,
-generator formulation, jointness or compatibility helps.
+training-compute controls. The completed validation campaign locks
+`assignment_reasoning=m1`; this does not establish that recurrence is useless.
+Propagate the human-selected assignment reference to Study 02 and later studies.
+This study cannot establish that C2, generator formulation, jointness or
+compatibility helps.
 
 ## Study 02 — invisible generator formulation
 
 **Question:** Which invisible posterior formulation gives the best calibrated
 reconstruction for a reasonable inference cost?
 
-**Prerequisite:** locked Study 01 assignment reference.
+**Prerequisite:** locked `visible_assignment` gate and its exact per-seed
+visible/assignment checkpoints.
 
-**Primary variants:** DDIM/standard diffusion, EDM, CFM and OT-CFM, trained and
-evaluated with the same frozen assignment reference and validation event IDs.
+**Primary variants:** DDIM/standard diffusion, EDM, CFM, OT-CFM and
+condition-aware OT-CFM, trained for three model seeds with the same frozen M1
+visible/assignment system and validation event IDs.
 
 **Diagnostics and metrics:** energy score, component CRPS, finite-sample
 rank/PIT diagnostics, coverage curves, composite top-object posterior metrics,
@@ -72,7 +75,8 @@ it for Study 03. This study does not compare assignment architectures.
 
 **Question:** Does assignment information improve invisible reconstruction?
 
-**Prerequisite:** locked assignment and generator references.
+**Prerequisite:** locked `visible_assignment`, `assignment_formulation`,
+`invisible_generator` and `invisible_coordinates` gates.
 
 **Primary variants:** none; soft; predicted-hypothesis K=1, M=32 (controlled
 comparison); predicted-hypothesis K=5, M=32 (practical factorised posterior).
@@ -90,28 +94,33 @@ do not conflate predicted hypotheses with truth oracle.
 **Question:** Can invisible-posterior information resolve visible assignment
 ambiguity?
 
-**Prerequisite:** locked assignment, generator and conditioning references.
+**Prerequisite:** locked `visible_assignment`, `assignment_formulation`,
+`invisible_generator`, `invisible_coordinates` and `assignment_conditioning`
+gates.
 
 **Primary comparison:** continued assignment training without posterior feedback
 versus continued assignment training with detached C2 feedback. Both branches
 start from the same C1 checkpoint and receive the same epochs, optimiser and LR
 schedule. The pre-continuation C1 product is a diagnostic baseline only.
 
-**C2 contract:** its training sampler, posterior sample count and formulation
-are explicit training semantics; prediction sampler settings are inference-only.
-Report paired wrong-to-correct/correct-to-wrong transitions and calibration;
-do not claim a C2 gain from the unpaired C1-to-C2 change.
+**C2 contract:** the selected one-pass assignment is continued with either no
+posterior information or one explicitly defined detached posterior correction.
+Its training sampler, posterior sample count and formulation are explicit
+training semantics; prediction sampler settings are inference-only. Report
+paired wrong-to-correct/correct-to-wrong transitions and calibration; do not
+claim a C2 gain from the unpaired C1-to-C2 change.
 
 ## Study 05 — discriminative versus DFM assignment
 
 **Question:** Is complete-state generative assignment useful relative to the
 strongest discriminative structured assignment?
 
-**Prerequisite:** locked assignment reference; the selected assignment model is
-updated explicitly after Study 01.
+**Prerequisite:** locked `visible_assignment`; the formulation comparison is
+the selected-encoder M1 baseline versus complete-state DFM.
 
-**Primary variants:** selected discriminative assignment versus complete-state
-DFM. One-pass is a diagnostic where useful.
+**Primary variants:** selected one-pass discriminative assignment versus
+complete-state DFM. The old M3 recurrent-feedback baseline is not a primary
+variant.
 
 **Metrics and rule:** report native-support metrics and a common truth-non-NULL
 subset; never place incompatible support denominators on one misleading axis.
@@ -124,8 +133,9 @@ baseline is needed in Study 06. It cannot by itself establish a jointness gain.
 **Question:** Does native joint discrete-continuous inference improve over a
 strong controlled factorisation?
 
-**Prerequisite:** locked assignment and generator references, plus the Study 05
-decision about whether a factorised DFM baseline is required.
+**Prerequisite:** locked `visible_assignment`, `assignment_formulation`,
+`invisible_generator`, `invisible_coordinates`, `assignment_conditioning` and
+`invisible_feedback` gates.
 
 **Primary variants:** factorised and native joint DFM+CFM from a common visible
 reference state, with comparable training exposure. A warm-started joint model
@@ -144,7 +154,8 @@ imbalance; any loss-weight scan is validation-only.
 
 **Question:** Does a persistent topology-shaped state improve a plain joint flow?
 
-**Prerequisite:** a validation decision that the joint model is worth studying.
+**Prerequisite:** a locked `joint_model` gate. If it selects `factorized`, this
+study is explicitly `NOT APPLICABLE`, not an invented joint comparison.
 
 **Variants:** stateless joint flow versus persistent-state joint flow, with
 matched initialisation, training budget and inference settings. Report added
@@ -156,7 +167,10 @@ model that Study 06 does not justify.
 **Question:** What quality-cost point is sufficient at inference without
 retraining?
 
-**Prerequisite:** locked assignment, generator and conditioning policies.
+**Prerequisite:** locked visible assignment for the candidate Study-02
+checkpoints. It is an inference-only scan and may be submitted with `afterok`
+dependencies on known Study-02 candidate training jobs before the generator
+winner gate is locked.
 
 **Variants:** formulation-appropriate NFE/step scans; CFM Euler/Heun comparisons
 use actual network-call accounting. Select the validation Pareto point and lock
@@ -166,7 +180,8 @@ it before test evaluation. This is an inference scan, not a training comparison.
 
 **Question:** How many assignment hypotheses and invisible samples are needed?
 
-**Prerequisite:** locked factorised/joint model policy and generator.
+**Prerequisite:** locked factorised/joint model policy and selected generator;
+the maximum posterior is generated once and all reported prefixes are offline.
 
 **Design:** generate one factorised K=10, M=64 product and one joint S=64
 product. Evaluate deterministic nested prefixes offline: K=1,2,3,5,10;
@@ -182,7 +197,8 @@ stability. Never compare scans generated with different random posterior draws.
 **Question:** Does learned visible/invisible compatibility improve selection
 among already-generated hypotheses?
 
-**Prerequisite:** locked upstream assignment, generator and posterior size.
+**Prerequisite:** locked upstream assignment, generator, conditioning and
+coordinate policies.
 
 **Design:** generate one posterior at compatibility weight zero and scan weights
 offline. Report assignment-only and reranked top-1, paired transitions and
@@ -194,13 +210,13 @@ locked choice on test only afterward.
 
 **Question:** Is final performance architecture-limited or data-limited?
 
-**Prerequisite:** all relevant upstream architecture and inference decisions
-locked.
+**Prerequisite:** locked visible assignment for the primary M1 scaling curve.
 
-**Design:** train 10k, 25k, 50k, 100k, 250k and 500k nested EVENT_ID subsets;
-validation and test sets remain fixed. The primary curve uses a sufficiently
-high max-epoch bound, best validation checkpoint and real early stopping. A
-fixed-compute curve is optional and must be labelled separately.
+**Design:** train M1 at 10k, 25k, 50k, 100k, 250k and 500k nested EVENT_ID
+subsets; validation and test sets remain fixed. Retain only the limited,
+clearly labelled M3 diagnostic at 100k, 250k and 500k to test data hunger; it
+does not reopen Study 01. The primary curve uses a sufficiently high max-epoch
+bound, best validation checkpoint and real early stopping.
 
 **Decision:** describe scaling only after checking convergence and subset
 identity. Do not attribute a data-size trend to architecture without holding
@@ -219,28 +235,33 @@ they are not part of the current mechanism-discovery campaigns.
 
 ## Final framework extensions
 
-Study 12 (`configs/studies/12_encoder_backbone.yaml`) is the controlled visible
-backbone template: Transformer, physics Transformer, L-GATr and L-GATr-Slim all
-share the resolved `model.latent` and topology-reasoner contract. It requires
-the human-reviewed `assignment_reasoning` gate and does not select a winner by
-argmax in code.
+Study 12 (`configs/studies/12_encoder_backbone.yaml`) is the next eligible
+controlled visible-backbone campaign: transformed-feature Transformer,
+four-vector Transformer, relational Transformer, L-GATr and L-GATr-Slim all
+share the resolved `model.latent`, physical inputs and one-pass M1 assignment.
+It requires the human-reviewed `assignment_reasoning` gate and does not select
+a winner by argmax in code.
 
 Study 13 (`configs/studies/13_invisible_coordinates.yaml`) compares Cartesian,
 MET-residual and diagnostic MET-exact states after the upstream assignment and
 generator decisions. MET-residual preserves the physical truth exactly;
 MET-exact keeps the original truth as the primary metric target and reports the
-equal-shift projected target and residual separately. It is a template only.
+equal-shift projected target and residual separately. It is held behind the
+generator gate.
 
 Analysis 14 is the offline validation-split APS assignment-set calibration in
 `src/joint_event_reconstruction/calibration/`; calibration never changes model
 training or prediction probabilities and test data is rejected as a fit source.
 
 The maintained human gates are `assignment_reasoning`, `visible_assignment`,
+`assignment_formulation`, `assignment_conditioning`, `invisible_feedback`,
 `invisible_generator`, `invisible_coordinates`, and `joint_model` in
 `configs/studies/UPSTREAM_SELECTIONS.yaml`. The scientific order is Study 01 →
-assignment reasoning → Study 12 → visible assignment; Study 02 and Study 05/11
-then become available as their individual prerequisites are reviewed. No gate
-is locked automatically and no new study is submitted by this framework pass.
+assignment reasoning → Study 12 → visible assignment; Study 02, Study 05 and
+Study 11 then become available in parallel. No gate is locked automatically.
+`scripts/submit_campaign.py --ready` submits every currently eligible study
+once, records exact source identities and scheduler dependencies, and leaves
+scientific winner selection to the human gate.
 
 Study 01 historical products may use architecture signature v4. Study 12
 uses signature v5 and trains from scratch under its selected visible-backbone

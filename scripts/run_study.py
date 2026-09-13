@@ -41,7 +41,13 @@ from joint_event_reconstruction.prediction_schema import (
     validate_prediction,
 )
 from joint_event_reconstruction.public_config import resolve_public_experiment
-from joint_event_reconstruction.studies import PredictionSpec, StudySpec, VariantSpec, load_study
+from joint_event_reconstruction.studies import (
+    PredictionSpec,
+    StudySpec,
+    VariantSpec,
+    load_study,
+    resolve_study,
+)
 from joint_event_reconstruction.study_metrics import (
     assert_same_events,
     common_non_null_truth_assignment,
@@ -121,6 +127,112 @@ def _file_identity(path: str | Path) -> dict:
 def _repo_path(value: object) -> Path:
     path = Path(str(value)).expanduser()
     return (path if path.is_absolute() else ROOT / path).resolve()
+
+
+def _maintained_study_path(name: str) -> Path:
+    matches = []
+    for path in sorted((ROOT / "configs/studies").glob("[0-9][0-9]_*.yaml")):
+        if load_study(path).name == name:
+            matches.append(path)
+    if len(matches) != 1:
+        raise ValueError(
+            f"Checkpoint source study {name!r} must resolve to exactly one maintained "
+            f"manifest; matches={matches}"
+        )
+    return matches[0]
+
+
+def _gate_checkpoint(
+    study: StudySpec, gate_name: str, topology: str, seed: int
+) -> Path:
+    """Resolve and verify one immutable human-selected checkpoint artifact."""
+    entry = study.gate_artifact(gate_name, topology, seed)
+    checkpoint = _repo_path(entry["checkpoint"])
+    if not checkpoint.is_file() or checkpoint.stat().st_size <= 0:
+        raise FileNotFoundError(
+            f"Selected gate artifact is missing or empty: gate={gate_name}, "
+            f"topology={topology}, model_seed={seed}, checkpoint={checkpoint}"
+        )
+    observed_checkpoint = _file_identity(checkpoint)
+    if observed_checkpoint["sha256"] != entry["checkpoint_sha256"]:
+        raise RuntimeError(
+            f"Selected gate checkpoint checksum mismatch: gate={gate_name}, "
+            f"topology={topology}, model_seed={seed}, expected="
+            f"{entry['checkpoint_sha256']}, observed={observed_checkpoint['sha256']}"
+        )
+    identity_file = _repo_path(entry["identity_file"])
+    if not identity_file.is_file():
+        raise FileNotFoundError(
+            f"Selected gate artifact identity is missing: gate={gate_name}, "
+            f"topology={topology}, model_seed={seed}, identity={identity_file}"
+        )
+    if _sha256_file(identity_file) != entry["identity_sha256"]:
+        raise RuntimeError(
+            f"Selected gate identity checksum mismatch: gate={gate_name}, "
+            f"topology={topology}, model_seed={seed}, identity={identity_file}"
+        )
+    record = json.loads(identity_file.read_text())
+    identity = record.get("identity")
+    artifact = record.get("artifact")
+    if not isinstance(identity, dict) or not isinstance(artifact, dict):
+        raise ValueError(f"Selected gate identity is not a training artifact record: {identity_file}")
+    if artifact != observed_checkpoint:
+        raise RuntimeError(
+            f"Selected gate artifact record does not describe its checkpoint: {identity_file}"
+        )
+    expected_identity = {
+        "git_commit": entry["git_sha"],
+        "study": entry["source_study"],
+        "variant": entry["variant"],
+        "topology": topology,
+        "model_seed": int(entry["model_seed"]),
+        "data_subset_seed": int(entry["data_subset_seed"]),
+        "architecture_signature": entry["architecture_identity"],
+    }
+    mismatches = {
+        key: (identity.get(key), value)
+        for key, value in expected_identity.items()
+        if identity.get(key) != value
+    }
+    if mismatches:
+        raise RuntimeError(
+            f"Selected gate artifact identity mismatch for {gate_name}:{topology}:seed_{seed}: "
+            f"{mismatches}"
+        )
+    return checkpoint
+
+
+def _initial_checkpoint(
+    study: StudySpec,
+    variant: VariantSpec,
+    topology: str,
+    seed: int,
+    root: Path,
+) -> Path | None:
+    if variant.initialise_from_gate is not None:
+        return _gate_checkpoint(study, variant.initialise_from_gate, topology, seed)
+    if variant.initialise_from is not None:
+        return _checkpoint(root, study, topology, variant.initialise_from, seed)
+    return None
+
+
+def _prediction_checkpoint(
+    study: StudySpec,
+    variant: VariantSpec,
+    topology: str,
+    seed: int,
+    root: Path,
+) -> Path:
+    if variant.checkpoint_from is None:
+        return _checkpoint(root, study, topology, variant.name, seed)
+    source_study_name, source_variant = variant.checkpoint_from
+    source_study = load_study(_maintained_study_path(source_study_name))
+    if seed not in source_study.seeds:
+        raise ValueError(
+            f"Checkpoint source {source_study_name}:{source_variant} does not declare "
+            f"model seed {seed}"
+        )
+    return _checkpoint(root, source_study, topology, source_variant, seed)
 
 
 @lru_cache(maxsize=None)
@@ -229,6 +341,7 @@ def _training_identity(
         "base_experiment": str(experiment),
         "base_experiment_sha256": _sha256_file(experiment),
         "resolved_config": training_config,
+        "resolved_gate_digest": study.gates_digest,
         "precision": str(resolved.training.precision),
         "trainable_components": sorted(str(value) for value in resolved.training.trainable),
         "initial_checkpoint": None if initial is None else _file_identity(initial),
@@ -263,6 +376,7 @@ def _prediction_identity(
         "split": study.split,
         "checkpoint": _file_identity(checkpoint),
         "resolved_inference": resolved_inference,
+        "resolved_gate_digest": study.gates_digest,
         "prediction_seed": int(resolved.inference.seed),
         "recurrent_steps": recurrent_steps,
     }
@@ -456,9 +570,8 @@ def _train_one(study, topology, variant, seed, *, root, global_overrides, device
     experiment, public, resolved = _public_run_config(
         study, topology, variant, seed, root, global_overrides
     )
-    initial = None
-    if variant.initialise_from is not None:
-        initial = _checkpoint(root, study, topology, variant.initialise_from, seed)
+    initial = _initial_checkpoint(study, variant, topology, seed, root)
+    if initial is not None:
         if not initial.is_file() and not dry_run:
             raise FileNotFoundError(
                 f"Variant {variant.name!r} requires checkpoint {initial}"
@@ -511,7 +624,9 @@ def _train_one(study, topology, variant, seed, *, root, global_overrides, device
                     "base_experiment": str(experiment),
                     "variant_patch": variant.patch,
                     "initial_checkpoint": None if initial is None else str(initial),
+                    "initialise_from_gate": variant.initialise_from_gate,
                     "initial_components": list(variant.initialise_components),
+                    "resolved_gate_digest": study.gates_digest,
                     "model_seed": int(seed),
                     "data_subset_seed": int(resolved.data.subset_seed),
                     "data_subset": identity["data_subset"],
@@ -539,7 +654,7 @@ def _train_one(study, topology, variant, seed, *, root, global_overrides, device
 
 def _predict_one(study, topology, variant, prediction, seed, *, root, global_overrides, device, force, dry_run):
     run_dir = _run_dir(root, study, topology, variant.name, seed)
-    checkpoint = _checkpoint(root, study, topology, variant.name, seed)
+    checkpoint = _prediction_checkpoint(study, variant, topology, seed, root)
     if not checkpoint.is_file() and not dry_run:
         raise FileNotFoundError(f"Prediction requires checkpoint {checkpoint}")
     target = _prediction_path(root, study, topology, variant.name, seed, prediction.name)
@@ -551,33 +666,66 @@ def _predict_one(study, topology, variant, prediction, seed, *, root, global_ove
     identity_path = target.with_suffix(".identity.json")
     if not dry_run:
         git_commit = _require_clean_git()
-        training_identity_path = run_dir / "train/artifact_identity.json"
-        training_experiment, _, training_resolved = _public_run_config(
-            study, topology, variant, seed, root, global_overrides
-        )
-        initial = None
-        if variant.initialise_from is not None:
-            initial = _checkpoint(root, study, topology, variant.initialise_from, seed)
-            if not initial.is_file():
+        if variant.checkpoint_from is None:
+            training_identity_path = run_dir / "train/artifact_identity.json"
+            training_experiment, _, training_resolved = _public_run_config(
+                study, topology, variant, seed, root, global_overrides
+            )
+            initial = _initial_checkpoint(study, variant, topology, seed, root)
+            if initial is not None and not initial.is_file():
                 raise FileNotFoundError(
                     f"Variant {variant.name!r} requires checkpoint {initial}"
                 )
-        expected_training = _training_identity(
-            study,
-            topology,
-            variant,
-            seed,
-            training_experiment,
-            training_resolved,
-            initial,
-            git_commit,
-        )
-        _verify_artifact_record(
-            training_identity_path,
-            checkpoint,
-            expected_training,
-            "training checkpoint",
-        )
+            expected_training = _training_identity(
+                study,
+                topology,
+                variant,
+                seed,
+                training_experiment,
+                training_resolved,
+                initial,
+                git_commit,
+            )
+            _verify_artifact_record(
+                training_identity_path,
+                checkpoint,
+                expected_training,
+                "training checkpoint",
+            )
+        else:
+            source_study_name, source_variant = variant.checkpoint_from
+            source_record = checkpoint.parent.parent / "artifact_identity.json"
+            if not source_record.is_file():
+                raise FileNotFoundError(
+                    f"Prediction checkpoint source {source_study_name}:{source_variant} "
+                    f"has no artifact identity: {source_record}"
+                )
+            source_payload = json.loads(source_record.read_text())
+            source_identity = source_payload.get("identity", {})
+            source_artifact = source_payload.get("artifact", {})
+            if not isinstance(source_identity, dict) or not isinstance(source_artifact, dict):
+                raise ValueError(
+                    f"Prediction checkpoint source identity is malformed: {source_record}"
+                )
+            current_model = OmegaConf.to_container(resolved.model, resolve=True)
+            source_config = source_identity.get("resolved_config")
+            if not isinstance(source_config, dict) or not isinstance(source_config.get("model"), dict):
+                raise ValueError(
+                    f"Prediction checkpoint source has no resolved model identity: {source_record}"
+                )
+            source_model = source_config["model"]
+            if (
+                source_identity.get("study") != source_study_name
+                or source_identity.get("variant") != source_variant
+                or source_identity.get("topology") != topology
+                or int(source_identity.get("model_seed", -1)) != int(seed)
+                or source_artifact.get("sha256") != _sha256_file(checkpoint)
+                or source_model != current_model
+            ):
+                raise RuntimeError(
+                    f"Prediction checkpoint identity does not match declared source "
+                    f"{source_study_name}:{source_variant}:seed_{seed}: {source_record}"
+                )
         identity = _prediction_identity(
             study,
             topology,
@@ -803,6 +951,162 @@ def _compare(study, topology, variants, seed, *, root, formats, include_diagnost
 
 
 def _study_specific_analysis(study, topologies, variants, seeds, *, root, dry_run):
+    if study.name == "encoder_backbone":
+        required = {
+            "transformer_baseline",
+            "fourvector_transformer",
+            "relational_transformer",
+            "lgatr",
+            "lgatr_slim",
+        }
+        selected = {variant.name for variant in variants}
+        if not required <= selected:
+            print(
+                "Skip Study-12 complementarity for partial variant selection; "
+                f"missing={sorted(required - selected)}"
+            )
+            return
+        arguments = []
+        for topology in topologies:
+            for seed in seeds:
+                for variant in variants:
+                    if variant.name not in required:
+                        continue
+                    if len(variant.predictions) != 1:
+                        raise ValueError(
+                            f"Study-12 variant {variant.name!r} must have one prediction "
+                            "for complementarity analysis"
+                        )
+                    prediction = variant.predictions[0]
+                    path = _prediction_path(
+                        root, study, topology, variant.name, seed, prediction.name
+                    )
+                    arguments.extend(
+                        ["--prediction", f"seed_{seed}/{variant.name}={path}"]
+                    )
+        output = root / study.name
+        command = [
+            sys.executable,
+            str(ROOT / "scripts/analyze_pairwise_complementarity.py"),
+            "--output",
+            str(output),
+            *arguments,
+        ]
+        print(shlex.join(command))
+        if not dry_run:
+            subprocess.run(command, cwd=ROOT, check=True)
+        uncertainty_arguments = []
+        for topology in topologies:
+            for seed in seeds:
+                for variant in variants:
+                    if variant.name not in required:
+                        continue
+                    prediction = variant.predictions[0]
+                    path = _prediction_path(
+                        root, study, topology, variant.name, seed, prediction.name
+                    )
+                    uncertainty_arguments.extend(
+                        ["--prediction", f"{variant.name}/seed_{seed}={path}"]
+                    )
+        uncertainty_command = [
+            sys.executable,
+            str(ROOT / "scripts/analyze_study14.py"),
+            "--output",
+            str(output),
+            *uncertainty_arguments,
+        ]
+        print(shlex.join(uncertainty_command))
+        if not dry_run:
+            subprocess.run(uncertainty_command, cwd=ROOT, check=True)
+        return
+    if study.name == "assignment_conditioning":
+        arguments = []
+        for topology in topologies:
+            for seed in seeds:
+                for variant in variants:
+                    for prediction in variant.predictions:
+                        path = _prediction_path(
+                            root, study, topology, variant.name, seed, prediction.name
+                        )
+                        arguments += [
+                            "--prediction",
+                            f"{variant.name}/{prediction.name}/seed_{seed}={path}",
+                        ]
+        command = [
+            sys.executable,
+            str(ROOT / "scripts/analyze_assignment_conditioning.py"),
+            "--output",
+            str(root / study.name),
+            *arguments,
+        ]
+        print(shlex.join(command))
+        if not dry_run:
+            subprocess.run(command, cwd=ROOT, check=True)
+        return
+    if study.name == "c2_feedback":
+        selected = {variant.name: variant for variant in variants}
+        if not {"continued_no_feedback", "posterior_feedback"} <= set(selected):
+            print("Skip Study-04 transition analysis for a partial variant selection.")
+            return
+        for topology in topologies:
+            for seed in seeds:
+                base_variant = selected["continued_no_feedback"]
+                feedback_variant = selected["posterior_feedback"]
+                if len(base_variant.predictions) != 1 or len(feedback_variant.predictions) != 1:
+                    raise ValueError("Study-04 transition diagnostics require one prediction per variant")
+                base_prediction = base_variant.predictions[0]
+                feedback_prediction = feedback_variant.predictions[0]
+                base = _prediction_path(
+                    root, study, topology, base_variant.name, seed, base_prediction.name
+                )
+                feedback = _prediction_path(
+                    root, study, topology, feedback_variant.name, seed, feedback_prediction.name
+                )
+                output = root / study.name / topology / "analysis" / f"seed_{seed}"
+                command = [
+                    sys.executable,
+                    str(ROOT / "scripts/analyze_feedback_transitions.py"),
+                    "--base", str(base),
+                    "--feedback", str(feedback),
+                    "--output", str(output),
+                ]
+                print(shlex.join(command))
+                if not dry_run:
+                    subprocess.run(command, cwd=ROOT, check=True)
+        return
+    if study.name == "data_scaling":
+        arguments_m1 = []
+        arguments_m3 = []
+        for topology in topologies:
+            for seed in seeds:
+                for variant in variants:
+                    if len(variant.predictions) != 1:
+                        raise ValueError("Study-11 scaling diagnostics require one prediction per variant")
+                    prediction = variant.predictions[0]
+                    path = _prediction_path(
+                        root, study, topology, variant.name, seed, prediction.name
+                    )
+                    if variant.name.startswith("n"):
+                        count = int(variant.name[1:-1]) * 1000
+                        arguments_m1 += ["--m1", f"M1:{count}:{seed}={path}"]
+                    elif variant.name.startswith("m3_n"):
+                        count = int(variant.name[3:-1]) * 1000
+                        arguments_m3 += ["--m3", f"M3:{count}:{seed}={path}"]
+        if not arguments_m1:
+            print("Skip Study-11 scaling analysis without an M1 primary curve.")
+            return
+        command = [
+            sys.executable,
+            str(ROOT / "scripts/analyze_data_scaling.py"),
+            "--output",
+            str(root / study.name),
+            *arguments_m1,
+            *arguments_m3,
+        ]
+        print(shlex.join(command))
+        if not dry_run:
+            subprocess.run(command, cwd=ROOT, check=True)
+        return
     if study.name == "posterior_size":
         required = {"factorized", "joint"}
         selected = {variant.name for variant in variants}
@@ -947,15 +1251,26 @@ def main() -> None:
     )
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--expected-gates-digest",
+        help="Fail if the locked gate selections changed after Slurm submission.",
+    )
     args = parser.parse_args()
 
-    study = load_study(args.study)
+    study = resolve_study(args.study)
+    if args.expected_gates_digest is not None and study.gates_digest != args.expected_gates_digest:
+        raise RuntimeError(
+            "Scientific gate selections changed after submission: "
+            f"expected={args.expected_gates_digest}, found={study.gates_digest}"
+        )
     topologies = _selected(args.topologies, study.topologies, "topologies")
     names = tuple(variant.name for variant in study.variants)
     requested_names = _selected(args.variants, names, "variants")
     requested = tuple(study.variant_map[name] for name in requested_names)
     if args.variants == "all":
-        training = study.dependency_order()
+        training = study.dependency_order() if study.training else ()
+    elif not study.training:
+        training = ()
     elif args.exact_variants:
         training = requested
     else:
@@ -978,7 +1293,9 @@ def main() -> None:
         for topology in topologies:
             for variant in training:
                 for seed in seeds:
-                    _public_run_config(study, topology, variant, seed, root, global_overrides)
+                    _public_run_config(
+                        study, topology, variant, seed, root, global_overrides
+                    )
             for variant in requested:
                 for seed in seeds:
                     for prediction in variant.predictions:
@@ -996,6 +1313,9 @@ def main() -> None:
     )
     for stage in stages:
         if stage == "train":
+            if not study.training:
+                print(f"No training stage for inference-only study {study.name}.")
+                continue
             for topology in topologies:
                 for variant in training:
                     for seed in seeds:

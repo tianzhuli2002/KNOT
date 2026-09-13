@@ -1,72 +1,48 @@
 study:
   name: generator_inference
-  description: Scan generator sampling cost without retraining, using the assignment reference selected by Study 01.
+  description: Scan generator solver and NFE cost from Study-02 checkpoints without retraining.
   experiment_pattern: configs/experiments/{topology}.yaml
   topologies: [ttbar2L]
-  seeds: [42]
+  seeds: [42, 43, 44]
   split: validation
+  requires: [visible_assignment]
+  inherit: [visible_assignment]
+  training: false
 
 variants:
-  assignment_reference:
-    label: Assignment reference (pending Study 01 gate)
-    reporting: setup
-    patch:
-      model:
-        assignment:
-          formulation: discriminative
-          refinement:
-            train_iterations: [1, 2, 3, 4]
-            inference_iterations: 4
-            feedback: soft
-        mode: factorized
-      training: {trainable: [visible, assignment]}
-    initialise_from:
-    initialise_components: []
-    predictions: {}
-
   edm:
-    label: EDM
+    label: EDM inference scan from Study 02
     reporting: primary
     patch:
       model:
-        assignment:
-          formulation: discriminative
-          refinement:
-            train_iterations: [1, 2, 3, 4]
-            inference_iterations: 4
-            feedback: soft
-        invisible: {conditioning: {assignment: none}, generator: {type: edm}}
+        invisible: {conditioning: {assignment: none}, coordinates: {type: cartesian}, generator: {type: edm}}
         mode: factorized
-      training: {trainable: [invisible]}
-    initialise_from: assignment_reference
-    initialise_components: [visible, assignment]
+    initialise_from:
+    initialise_from_gate:
+    initialise_components: []
+    checkpoint_from: {study: generator_formulations, variant: edm}
     predictions:
-      nfe5: {label: EDM NFE=5, patch: {inference: {invisible: {samples_per_assignment: 32, edm: {nfe: 5}}}}, recurrent_steps: 4}
-      nfe9: {label: EDM NFE=9, patch: {inference: {invisible: {samples_per_assignment: 32, edm: {nfe: 9}}}}, recurrent_steps: 4}
-      nfe17: {label: EDM NFE=17, patch: {inference: {invisible: {samples_per_assignment: 32, edm: {nfe: 17}}}}, recurrent_steps: 4}
-      nfe33: {label: EDM NFE=33, patch: {inference: {invisible: {samples_per_assignment: 32, edm: {nfe: 33}}}}, recurrent_steps: 4}
-      nfe49: {label: EDM NFE=49, patch: {inference: {invisible: {samples_per_assignment: 32, edm: {nfe: 49}}}}, recurrent_steps: 4}
+      nfe5: {label: EDM NFE=5, patch: {inference: {invisible: {samples_per_assignment: 32, edm: {nfe: 5}}}}, recurrent_steps: null}
+      nfe9: {label: EDM NFE=9, patch: {inference: {invisible: {samples_per_assignment: 32, edm: {nfe: 9}}}}, recurrent_steps: null}
+      nfe17: {label: EDM NFE=17, patch: {inference: {invisible: {samples_per_assignment: 32, edm: {nfe: 17}}}}, recurrent_steps: null}
+      nfe33: {label: EDM NFE=33, patch: {inference: {invisible: {samples_per_assignment: 32, edm: {nfe: 33}}}}, recurrent_steps: null}
+      nfe49: {label: EDM NFE=49, patch: {inference: {invisible: {samples_per_assignment: 32, edm: {nfe: 49}}}}, recurrent_steps: null}
 
   cfm:
-    label: CFM
+    label: CFM inference scan from Study 02
     reporting: primary
     patch:
       model:
-        assignment:
-          formulation: discriminative
-          refinement:
-            train_iterations: [1, 2, 3, 4]
-            inference_iterations: 4
-            feedback: soft
-        invisible: {conditioning: {assignment: none}, generator: {type: cfm}}
+        invisible: {conditioning: {assignment: none}, coordinates: {type: cartesian}, generator: {type: cfm}}
         mode: factorized
-      training: {trainable: [invisible]}
-    initialise_from: assignment_reference
-    initialise_components: [visible, assignment]
+    initialise_from:
+    initialise_from_gate:
+    initialise_components: []
+    checkpoint_from: {study: generator_formulations, variant: cfm}
     predictions:
-      euler8: {label: Euler NFE=8, patch: {inference: {invisible: {samples_per_assignment: 32, flow: {steps: 8, solver: euler}}}}, recurrent_steps: 4}
-      heun4: {label: Heun NFE≈8, patch: {inference: {invisible: {samples_per_assignment: 32, flow: {steps: 4, solver: heun}}}}, recurrent_steps: 4}
-      euler16: {label: Euler NFE=16, patch: {inference: {invisible: {samples_per_assignment: 32, flow: {steps: 16, solver: euler}}}}, recurrent_steps: 4}
-      heun8: {label: Heun NFE≈16, patch: {inference: {invisible: {samples_per_assignment: 32, flow: {steps: 8, solver: heun}}}}, recurrent_steps: 4}
-      euler32: {label: Euler NFE=32, patch: {inference: {invisible: {samples_per_assignment: 32, flow: {steps: 32, solver: euler}}}}, recurrent_steps: 4}
-      heun16: {label: Heun NFE≈32, patch: {inference: {invisible: {samples_per_assignment: 32, flow: {steps: 16, solver: heun}}}}, recurrent_steps: 4}
+      euler8: {label: Euler NFE=8, patch: {inference: {invisible: {samples_per_assignment: 32, flow: {steps: 8, solver: euler}}}}, recurrent_steps: null}
+      heun4: {label: Heun NFE≈8, patch: {inference: {invisible: {samples_per_assignment: 32, flow: {steps: 4, solver: heun}}}}, recurrent_steps: null}
+      euler16: {label: Euler NFE=16, patch: {inference: {invisible: {samples_per_assignment: 32, flow: {steps: 16, solver: euler}}}}, recurrent_steps: null}
+      heun8: {label: Heun NFE≈16, patch: {inference: {invisible: {samples_per_assignment: 32, flow: {steps: 8, solver: heun}}}}, recurrent_steps: null}
+      euler32: {label: Euler NFE=32, patch: {inference: {invisible: {samples_per_assignment: 32, flow: {steps: 32, solver: euler}}}}, recurrent_steps: null}
+      heun16: {label: Heun NFE≈32, patch: {inference: {invisible: {samples_per_assignment: 32, flow: {steps: 16, solver: heun}}}}, recurrent_steps: null}

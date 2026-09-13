@@ -1,60 +1,43 @@
 study:
   name: posterior_size
-  description: Generate maximum factorized and joint posteriors once, then evaluate deterministic nested prefixes offline on validation data.
+  description: Generate maximum selected factorised/joint posteriors once, then evaluate deterministic nested prefixes offline.
   experiment_pattern: configs/experiments/{topology}.yaml
   topologies: [ttbar2L]
-  seeds: [42]
+  seeds: [42, 43, 44]
   split: validation
+  requires: [visible_assignment, assignment_formulation, invisible_generator, invisible_coordinates, joint_model]
+  inherit: [visible_assignment, assignment_formulation, invisible_generator, invisible_coordinates]
+  training: false
 
 variants:
-  assignment_reference:
-    label: Assignment reference (pending Study 01 gate)
-    reporting: setup
-    patch:
-      model:
-        assignment:
-          formulation: discriminative
-          refinement:
-            train_iterations: [1, 2, 3, 4]
-            inference_iterations: 4
-            feedback: soft
-        mode: factorized
-      training: {trainable: [visible, assignment]}
-    initialise_from:
-    initialise_components: []
-    predictions: {}
-
   factorized:
-    label: factorized hypothesis CFM
+    label: selected factorized maximum posterior
     reporting: primary
     patch:
       model:
-        assignment:
-          formulation: discriminative
-          refinement:
-            train_iterations: [1, 2, 3, 4]
-            inference_iterations: 4
-            feedback: soft
-        invisible: {conditioning: {assignment: hypothesis}, generator: {type: cfm}}
         mode: factorized
-      training: {trainable: [invisible]}
-    initialise_from: assignment_reference
-    initialise_components: [visible, assignment]
+        invisible: {conditioning: {assignment: hypothesis}, generator: {type: cfm}}
+    initialise_from:
+    initialise_from_gate: invisible_generator
+    initialise_components: [visible, assignment, invisible]
+    checkpoint_from:
     predictions:
-      k10_m64: {label: Generate once at Kmax=10 Mmax=64, patch: {inference: {assignment: {top_k: 10}, invisible: {samples_per_assignment: 64, flow: {steps: 17,
-                  solver: euler}}}}, recurrent_steps: 4}
+      k10_m64: {label: Generate once at Kmax=10 Mmax=64, patch: {inference: {assignment: {top_k: 10}, invisible: {samples_per_assignment: 64, flow: {steps: 17, solver: euler}}}}, recurrent_steps: null}
 
   joint:
-    label: joint DFM+CFM
+    label: selected joint maximum posterior
     reporting: primary
     patch:
       model:
-        assignment:
         mode: joint
+        assignment: null
+        invisible: null
+        feedback: null
+        compatibility: null
         joint: {recurrent: false}
-      training: {trainable: [assignment, invisible]}
-    initialise_from: assignment_reference
+    initialise_from:
+    initialise_from_gate: joint_model
     initialise_components: [visible]
+    checkpoint_from:
     predictions:
-      s64: {label: Generate once at Smax=64, patch: {inference: {invisible: {samples_per_assignment: 64, flow: {steps: 8}}, sample_chunk_size: 8}},
-          recurrent_steps: null}
+      s64: {label: Generate once at Smax=64, patch: {inference: {invisible: {samples_per_assignment: 64, flow: {steps: 8}}, sample_chunk_size: 8}}, recurrent_steps: null}

@@ -80,14 +80,29 @@ winner is selected automatically.  The intended dependency is:
 
 ```text
 Study 01 → assignment_reasoning → Study 12
-Study 12 → visible_assignment → Study 02 / Study 05 / Study 11 / Analysis 14
+Study 12 → visible_assignment → Study 02 / Study 05 / Study 11
 Study 02 → invisible_generator → Study 13
-Study 13 → invisible_coordinates → generator-dependent studies
-Study 06 → joint_model → Study 07
+Study 05 → assignment_formulation
+Study 13 → invisible_coordinates
+visible_assignment + assignment_formulation + invisible_generator + invisible_coordinates
+  → Study 03 → assignment_conditioning
+assignment_conditioning → Study 04 → invisible_feedback
+all preceding factorised decisions → Study 06 → joint_model
+joint_model → Study 09 / conditional Study 07
+Study 12 predictions → Analysis 14 (offline; no encoder selection)
 ```
 
-Study 12 (encoder backbones) and Study 13 (invisible coordinates) are templates
-only in this branch; they are not submitted automatically.
+configs/studies/UPSTREAM_SELECTIONS.yaml is the small human gate registry.
+Locked gates contain an explicit selected patch and, where weights are reused,
+an exact per-topology/per-seed checkpoint identity. Pending gates hard-block
+real submission; not_applicable is reported explicitly. Configuration
+inheritance and checkpoint initialisation are separate manifest fields.
+
+python scripts/submit_campaign.py --ready dry-plans every maintained study,
+submits each currently eligible study once, and leaves scientific winner
+selection to the human gate. scripts/run_study.py runs Analysis 14 on the
+paired Study-12 validation predictions; it is a review diagnostic, never an
+encoder-selection rule.
 
 ## Identity and execution
 

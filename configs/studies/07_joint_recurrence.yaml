@@ -1,55 +1,51 @@
 study:
   name: joint_recurrence
-  description: Compare stateless and persistent-topology-state joint DFM+CFM on ttbar2L.
+  description: Conditional diagnostic for persistent joint topology state after the joint-model gate; final recurrence design remains a human scientific choice.
   experiment_pattern: configs/experiments/{topology}.yaml
   topologies: [ttbar2L]
-  seeds: [42]
+  seeds: [42, 43, 44]
   split: validation
+  requires: [visible_assignment, assignment_formulation, invisible_generator, invisible_coordinates, assignment_conditioning, invisible_feedback, joint_model]
+  inherit: [visible_assignment, assignment_formulation, invisible_generator, invisible_coordinates, assignment_conditioning, joint_model]
+  training: true
 
 variants:
-  assignment_reference:
-    label: Assignment reference (pending Study 01 gate)
-    reporting: setup
-    patch:
-      model:
-        assignment:
-          formulation: discriminative
-          refinement:
-            train_iterations: [1, 2, 3, 4]
-            inference_iterations: 4
-            feedback: soft
-        mode: factorized
-      training: {trainable: [visible, assignment]}
-    initialise_from:
-    initialise_components: []
-    predictions: {}
-
   stateless:
-    label: joint stateless
+    label: joint stateless diagnostic
     reporting: primary
     patch:
       model:
-        assignment:
         mode: joint
+        assignment: null
+        invisible: null
+        feedback: null
+        compatibility: null
         joint: {recurrent: false}
       training: {trainable: [assignment, invisible]}
-    initialise_from: assignment_reference
+    initialise_from:
+    initialise_from_gate: joint_model
     initialise_components: [visible]
+    checkpoint_from:
     predictions:
       t8: {label: stateless T=8, patch: {inference: {invisible: {samples_per_assignment: 64, flow: {steps: 8}}, sample_chunk_size: 8}}, recurrent_steps: null}
       t16: {label: stateless T=16, patch: {inference: {invisible: {samples_per_assignment: 64, flow: {steps: 16}}, sample_chunk_size: 8}}, recurrent_steps: null}
 
   recurrent:
-    label: joint recurrent topology state
-    reporting: primary
+    label: existing persistent joint topology state (conditional diagnostic)
+    reporting: diagnostic
     patch:
       model:
-        assignment:
         mode: joint
+        assignment: null
+        invisible: null
+        feedback: null
+        compatibility: null
         joint: {recurrent: true, train_steps: [1, 2, 3, 4]}
       training: {trainable: [assignment, invisible]}
-    initialise_from: assignment_reference
+    initialise_from:
+    initialise_from_gate: joint_model
     initialise_components: [visible]
+    checkpoint_from:
     predictions:
       t8: {label: recurrent T=8, patch: {inference: {invisible: {samples_per_assignment: 64, flow: {steps: 8}}, sample_chunk_size: 8}}, recurrent_steps: null}
       t16: {label: recurrent T=16, patch: {inference: {invisible: {samples_per_assignment: 64, flow: {steps: 16}}, sample_chunk_size: 8}}, recurrent_steps: null}

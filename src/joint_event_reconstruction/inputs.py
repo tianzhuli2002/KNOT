@@ -8,7 +8,10 @@ from omegaconf import OmegaConf
 
 from joint_event_reconstruction.configuration import load_experiment
 from joint_event_reconstruction.public_config import resolve_public_experiment
-from joint_event_reconstruction.studies import load_study
+from joint_event_reconstruction.studies import resolve_study
+
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def encoder_input_contract(experiment) -> dict:
@@ -50,10 +53,10 @@ def load_input_contract(path: str | Path) -> dict:
 
 
 def study_input_contracts(path: str | Path) -> dict[str, dict]:
-    study = load_study(path)
+    study = resolve_study(path)
     contracts = {}
     for topology in study.topologies:
-        experiment_path = study.experiment_path(Path.cwd(), topology)
+        experiment_path = study.experiment_path(REPO_ROOT, topology)
         public = OmegaConf.load(experiment_path)
         for variant in study.variants:
             resolved = resolve_public_experiment(

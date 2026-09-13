@@ -334,10 +334,11 @@ def validate_experiment(config: DictConfig) -> None:
     if c2.enabled and (
         mode != "factorized"
         or formulation != "discriminative"
-        or not reasoning.enabled
         or not invisible.enabled
     ):
-        raise ValueError("C2 requires recurrent factorized discriminative assignment plus invisible inference")
+        raise ValueError(
+            "C2 requires factorized discriminative assignment plus invisible inference"
+        )
     if model.compatibility.enabled and (
         mode != "factorized" or formulation != "discriminative" or not invisible.enabled
     ):

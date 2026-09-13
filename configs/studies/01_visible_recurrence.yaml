@@ -5,6 +5,9 @@ study:
   topologies: [ttbar2L]
   seeds: [42, 43, 44]
   split: validation
+  requires: []
+  inherit: []
+  training: true
 
 variants:
   m1:
@@ -13,7 +16,9 @@ variants:
     patch:
       training: {trainable: [visible, assignment]}
     initialise_from:
+    initialise_from_gate:
     initialise_components: []
+    checkpoint_from:
     predictions:
       default: {label: One pass, patch: {inference: {assignment: {top_k: 5}}}, recurrent_steps: null}
 
@@ -30,7 +35,9 @@ variants:
         mode: factorized
       training: {trainable: [visible, assignment]}
     initialise_from:
+    initialise_from_gate:
     initialise_components: []
+    checkpoint_from:
     predictions:
       r1: {label: R=1, patch: {inference: {assignment: {top_k: 5}}}, recurrent_steps: 1}
       r2: {label: R=2, patch: {inference: {assignment: {top_k: 5}}}, recurrent_steps: 2}
@@ -52,7 +59,9 @@ variants:
         mode: factorized
       training: {trainable: [visible, assignment]}
     initialise_from:
+    initialise_from_gate:
     initialise_components: []
+    checkpoint_from:
     predictions:
       r1: {label: R=1, patch: {inference: {assignment: {top_k: 5}}}, recurrent_steps: 1}
       r2: {label: R=2, patch: {inference: {assignment: {top_k: 5}}}, recurrent_steps: 2}
@@ -69,7 +78,9 @@ variants:
         mode: factorized
       training: {trainable: [visible, assignment]}
     initialise_from:
+    initialise_from_gate:
     initialise_components: []
+    checkpoint_from:
     predictions:
       default: {label: Parameter control, patch: {inference: {assignment: {top_k: 5}}}, recurrent_steps: null}
 
@@ -82,7 +93,9 @@ variants:
         mode: factorized
       training: {trainable: [visible, assignment]}
     initialise_from:
+    initialise_from_gate:
     initialise_components: []
+    checkpoint_from:
     predictions:
       default: {label: Training-compute control, patch: {inference: {assignment: {top_k: 5}}}, recurrent_steps: null}
 
@@ -95,7 +108,9 @@ variants:
         mode: factorized
       training: {trainable: [visible, assignment]}
     initialise_from:
+    initialise_from_gate:
     initialise_components: []
+    checkpoint_from:
     predictions:
       default: {label: Parameter control, patch: {inference: {assignment: {top_k: 5}}}, recurrent_steps: null}
 
@@ -108,6 +123,8 @@ variants:
         mode: factorized
       training: {trainable: [visible, assignment]}
     initialise_from:
+    initialise_from_gate:
     initialise_components: []
+    checkpoint_from:
     predictions:
       default: {label: Training-compute control, patch: {inference: {assignment: {top_k: 5}}}, recurrent_steps: null}

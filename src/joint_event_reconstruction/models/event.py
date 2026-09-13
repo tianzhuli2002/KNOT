@@ -157,10 +157,9 @@ class JointEventModel(nn.Module):
             and coupling_config is not None
             and bool(coupling_config.invisible_to_assignment.enabled)
         ):
-            if not reasoning_enabled or self.invisible is None:
+            if self.invisible is None:
                 raise ValueError(
-                    "Invisible posterior feedback requires assignment reasoning and "
-                    "an invisible generator"
+                    "Invisible posterior feedback requires an invisible generator"
                 )
             self.posterior_feedback = InvisiblePosteriorFeedback(
                 spec,
@@ -260,7 +259,13 @@ class JointEventModel(nn.Module):
                 "recurrent_steps": 0,
                 "recurrent_predictions": (),
             }
-            return self._invisible_result(result, batch, visible, None)
+            if self.posterior_feedback is not None:
+                result = self._one_pass_posterior_correction(
+                    result, batch, visible, assignment
+                )
+            return self._invisible_result(
+                result, batch, visible, result.get("node_context")
+            )
 
         steps = self._steps(recurrent_steps)
         fixed = torch.cat(
@@ -381,6 +386,77 @@ class JointEventModel(nn.Module):
             visible,
             result.get("node_context"),
         )
+
+    def _one_pass_posterior_correction(
+        self, result: dict, batch: dict, visible: dict, assignment: dict
+    ) -> dict:
+        """Apply one detached posterior-informed assignment update.
+
+        This narrow C2 diagnostic starts from the selected one-pass
+        assignment, samples one invisible posterior, and updates the
+        assignment scorer once. It deliberately does not create a
+        visible-only recurrent loop.
+        """
+        feedback_config = self.coupling_config.invisible_to_assignment
+        parent = self.invisible.parent_context(
+            assignment,
+            batch["structured"],
+            visible["pooled"],
+            None,
+        )
+        with torch.no_grad():
+            samples, nfe = self.invisible.sample(
+                visible,
+                parent,
+                samples=int(feedback_config.posterior_samples),
+                budget=int(feedback_config.training_sampler.budget),
+                sampler=feedback_config.training_sampler.solver,
+            )
+            if self.invisible.scaler is None:
+                raise RuntimeError("C2 sampling requires invisible scaler metadata")
+            physical_samples = self.invisible.decode_state(
+                samples, batch["met_xy"], self.invisible.scaler
+            )
+
+        # With no persistent reasoner, the probability-weighted candidate
+        # embeddings are the explicit initial assignment state.
+        initial_node_context = {
+            node: (
+                assignment["candidate_embeddings"][node]
+                * assignment["assignment_probabilities"][node][:, 1:].unsqueeze(-1)
+            ).sum(dim=1)
+            for node in self.spec.dag_order
+        }
+        updated, gates = self.posterior_feedback(
+            initial_node_context,
+            physical_samples,
+            detach=True,
+        )
+        logits, probabilities = self.reconstruction.score_candidates(
+            assignment["candidate_embeddings"],
+            visible["pooled"],
+            batch["structured"],
+            node_context=updated,
+        )
+        assignment_update = self.reconstruction.assignment_loss(
+            logits, batch["structured"]
+        )
+        result.update(
+            assignment_update,
+            assignment_logits=logits,
+            assignment_probabilities=probabilities,
+            node_context=updated,
+        )
+        result["loss"] = self.assignment_loss_weight * assignment_update["assignment_loss"]
+        result["posterior_feedback"] = {
+            "samples": physical_samples,
+            "nfe": nfe,
+            "gates": gates,
+            "detached": True,
+            "correction_steps": 1,
+            "base_recurrent_steps": 0,
+        }
+        return result
 
     def encode_visible(self, batch: dict) -> dict:
         return self.visible(batch)

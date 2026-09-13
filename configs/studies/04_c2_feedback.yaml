@@ -1,88 +1,43 @@
 study:
   name: c2_feedback
-  description: Test whether detached posterior neutrino information improves recurrent assignment on ttbar2L.
+  description: Test one explicitly defined detached invisible-posterior assignment correction against matched continued one-pass training.
   experiment_pattern: configs/experiments/{topology}.yaml
   topologies: [ttbar2L]
-  seeds: [42]
+  seeds: [42, 43, 44]
   split: validation
+  requires: [visible_assignment, assignment_formulation, invisible_generator, invisible_coordinates, assignment_conditioning]
+  inherit: [visible_assignment, assignment_formulation, invisible_generator, invisible_coordinates, assignment_conditioning]
+  training: true
 
 variants:
-  assignment_reference:
-    label: Assignment reference (pending Study 01 gate)
-    reporting: setup
-    patch:
-      model:
-        assignment:
-          formulation: discriminative
-          refinement:
-            train_iterations: [1, 2, 3, 4]
-            inference_iterations: 4
-            feedback: soft
-        mode: factorized
-      training: {trainable: [visible, assignment]}
-    initialise_from:
-    initialise_components: []
-    predictions: {}
-
-  c1:
-    label: Assignment reference + soft CFM C1
-    reporting: diagnostic
-    patch:
-      model:
-        assignment:
-          formulation: discriminative
-          refinement:
-            train_iterations: [1, 2, 3, 4]
-            inference_iterations: 4
-            feedback: soft
-        invisible: {conditioning: {assignment: soft}, generator: {type: cfm}}
-        mode: factorized
-      training: {trainable: [invisible]}
-    initialise_from: assignment_reference
-    initialise_components: [visible, assignment]
-    predictions:
-      baseline: {label: C1 baseline, patch: {inference: {invisible: {samples_per_assignment: 32, flow: {steps: 17, solver: euler}}}}, recurrent_steps: 4}
-
   continued_no_feedback:
-    label: Continued assignment training without posterior feedback
+    label: matched continued one-pass assignment training
     reporting: primary
     patch:
-      model:
-        assignment:
-          formulation: discriminative
-          refinement:
-            train_iterations: [1, 2, 3, 4]
-            inference_iterations: 4
-            feedback: soft
-        invisible: {conditioning: {assignment: soft}, generator: {type: cfm}}
-        mode: factorized
+      model: {mode: factorized}
       training: {trainable: [assignment]}
-    initialise_from: c1
+    initialise_from:
+    initialise_from_gate: assignment_conditioning
     initialise_components: [visible, assignment, invisible]
+    checkpoint_from:
     predictions:
-      continued: {label: Matched continued training, patch: {inference: {invisible: {samples_per_assignment: 32, flow: {steps: 17, solver: euler}}}},
-          recurrent_steps: 4}
+      continued: {label: Matched continued training, patch: {inference: {assignment: {top_k: 5}, invisible: {samples_per_assignment: 32, flow: {steps: 17, solver: euler}}}}, recurrent_steps: null}
 
-  c2:
-    label: Continued assignment training + detached posterior feedback
+  posterior_feedback:
+    label: one-pass assignment plus one detached posterior correction
     reporting: primary
     patch:
       model:
-        assignment:
-          formulation: discriminative
-          refinement:
-            train_iterations: [1, 2, 3, 4]
-            inference_iterations: 4
-            feedback: soft
-        invisible: {conditioning: {assignment: soft}, generator: {type: cfm}}
         mode: factorized
         feedback:
           invisible_to_assignment:
+            enabled: true
             posterior_samples: 8
             training_sampler: {steps: 17, solver: euler}
-            enabled: true
       training: {trainable: [assignment, c2]}
-    initialise_from: c1
+    initialise_from:
+    initialise_from_gate: assignment_conditioning
     initialise_components: [visible, assignment, invisible]
+    checkpoint_from:
     predictions:
-      feedback: {label: C2 feedback, patch: {inference: {invisible: {samples_per_assignment: 32, flow: {steps: 17, solver: euler}}}}, recurrent_steps: 4}
+      feedback: {label: Detached posterior correction, patch: {inference: {assignment: {top_k: 5}, invisible: {samples_per_assignment: 32, flow: {steps: 17, solver: euler}}}}, recurrent_steps: null}

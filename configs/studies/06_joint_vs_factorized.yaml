@@ -1,62 +1,44 @@
 study:
   name: joint_vs_factorized
-  description: Compare explicit p(A|X)p(nu|X,A) with native joint DFM+CFM on ttbar2L.
+  description: Compare the strongest gate-resolved factorised p(A|X)p(nu|A,X) baseline with native joint DFM+CFM inference; invisible_feedback is a prerequisite evidence gate, not silently folded into the factorised hypothesis.
   experiment_pattern: configs/experiments/{topology}.yaml
   topologies: [ttbar2L]
-  seeds: [42]
+  seeds: [42, 43, 44]
   split: validation
+  requires: [visible_assignment, assignment_formulation, invisible_generator, invisible_coordinates, assignment_conditioning, invisible_feedback]
+  inherit: [visible_assignment, assignment_formulation, invisible_generator, invisible_coordinates, assignment_conditioning]
+  training: true
 
 variants:
-  assignment_reference:
-    label: Assignment reference (pending Study 01 gate)
-    reporting: setup
-    patch:
-      model:
-        assignment:
-          formulation: discriminative
-          refinement:
-            train_iterations: [1, 2, 3, 4]
-            inference_iterations: 4
-            feedback: soft
-        mode: factorized
-      training: {trainable: [visible, assignment]}
-    initialise_from:
-    initialise_components: []
-    predictions: {}
-
   factorized:
-    label: factorized hypothesis CFM
+    label: strongest factorised baseline
     reporting: primary
     patch:
-      model:
-        assignment:
-          formulation: discriminative
-          refinement:
-            train_iterations: [1, 2, 3, 4]
-            inference_iterations: 4
-            feedback: soft
-        invisible: {conditioning: {assignment: hypothesis}, generator: {type: cfm}}
-        mode: factorized
+      model: {mode: factorized}
       training: {trainable: [assignment, invisible]}
-    initialise_from: assignment_reference
-    initialise_components: [visible, assignment]
+    initialise_from:
+    initialise_from_gate: assignment_conditioning
+    initialise_components: [visible, assignment, invisible]
+    checkpoint_from:
     predictions:
-      k5_m16: {label: factorized K=5 M=16, patch: {inference: {assignment: {top_k: 5}, invisible: {samples_per_assignment: 16, flow: {steps: 17, solver: euler}}}},
-        recurrent_steps: 4}
+      k5_m16: {label: factorized K=5 M=16, patch: {inference: {assignment: {top_k: 5}, invisible: {samples_per_assignment: 16, flow: {steps: 17, solver: euler}}}}, recurrent_steps: null}
 
   joint:
-    label: joint DFM+CFM from common visible reference
+    label: native joint DFM+CFM
     reporting: primary
     patch:
       model:
-        assignment:
         mode: joint
+        assignment: null
+        invisible: null
+        feedback: null
+        compatibility: null
         joint: {recurrent: false}
       training: {trainable: [assignment, invisible]}
-    initialise_from: assignment_reference
+    initialise_from:
+    initialise_from_gate: visible_assignment
     initialise_components: [visible]
+    checkpoint_from:
     predictions:
-      s64_t8: {label: joint S=64 T=8, patch: {inference: {invisible: {samples_per_assignment: 64, flow: {steps: 8}}, sample_chunk_size: 8}}, recurrent_steps:
-          null}
-      s64_t16: {label: joint S=64 T=16, patch: {inference: {invisible: {samples_per_assignment: 64, flow: {steps: 16}}, sample_chunk_size: 8}}, recurrent_steps:
-          null}
+      s64_t8: {label: joint S=64 T=8, patch: {inference: {invisible: {samples_per_assignment: 64, flow: {steps: 8}}, sample_chunk_size: 8}}, recurrent_steps: null}
+      s64_t16: {label: joint S=64 T=16, patch: {inference: {invisible: {samples_per_assignment: 64, flow: {steps: 16}}, sample_chunk_size: 8}}, recurrent_steps: null}

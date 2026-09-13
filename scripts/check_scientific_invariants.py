@@ -358,6 +358,116 @@ def check_slurm_snapshot_contract() -> None:
             raise AssertionError("Changed base experiment was not rejected before work")
 
 
+def check_campaign_gate_contract() -> None:
+    """The current gate state resolves Study 12 and blocks downstream science."""
+    from joint_event_reconstruction.studies import (
+        ScientificGatePending,
+        load_scientific_gates,
+        load_study,
+        resolve_study,
+    )
+
+    gates = load_scientific_gates()
+    expected_gates = {
+        "assignment_reasoning",
+        "visible_assignment",
+        "invisible_generator",
+        "invisible_coordinates",
+        "joint_model",
+        "assignment_formulation",
+        "assignment_conditioning",
+        "invisible_feedback",
+    }
+    if set(gates) != expected_gates:
+        raise AssertionError(f"Unexpected scientific gate set: {sorted(gates)}")
+    assignment = gates["assignment_reasoning"]
+    if (
+        assignment["status"] != "locked"
+        or assignment["selected_variant"] != "m1"
+        or assignment["validated_sha"] != "b0fc3583c94640fa7ec8b281935204c8bda64f16"
+    ):
+        raise AssertionError("Study-01 assignment_reasoning gate is not locked to m1")
+
+    study12 = resolve_study("configs/studies/12_encoder_backbone.yaml")
+    if study12.seeds != (42, 43, 44):
+        raise AssertionError("Study 12 must use model seeds 42, 43 and 44")
+    for variant in study12.variants:
+        assignment_patch = variant.patch.get("model", {}).get("assignment", {})
+        if "refinement" in assignment_patch:
+            raise AssertionError(f"Study 12 inherited visible recurrence: {variant.name}")
+        if any(prediction.recurrent_steps is not None for prediction in variant.predictions):
+            raise AssertionError(f"Study 12 has recurrent prediction steps: {variant.name}")
+    try:
+        resolve_study("configs/studies/02_generator_formulations.yaml")
+    except ScientificGatePending as error:
+        if "visible_assignment" not in str(error):
+            raise AssertionError(f"Unexpected Study-02 gate barrier: {error}") from error
+    else:
+        raise AssertionError("Study 02 resolved while visible_assignment is pending")
+
+    for path in sorted((ROOT / "configs/studies").glob("[0-9][0-9]_*.yaml")):
+        study = load_study(path)
+        if study.split != "validation":
+            raise AssertionError(f"Study selection split is not validation: {study.name}")
+    stale_allowed = {"visible_recurrence", "data_scaling"}
+    for path in sorted((ROOT / "configs/studies").glob("[0-9][0-9]_*.yaml")):
+        study = load_study(path)
+        text = path.read_text()
+        if any(token in text for token in ("train_iterations", "inference_iterations", "feedback: soft", "recurrent_steps: 4")) and study.name not in stale_allowed:
+            raise AssertionError(f"Unapproved inherited recurrence remains in {path}")
+
+
+def check_slurm_option_routing_contract() -> None:
+    """GPU-only options never leak into the CPU postprocess command."""
+    import scripts.submit_study_slurm as scheduler
+
+    worker = ROOT / "scripts/run_study.py"
+    gpu = scheduler._sbatch_array(
+        worker=worker,
+        task_count=1,
+        job_name="gpu-contract",
+        log_dir=ROOT / "results/engineering",
+        partition="gpuL",
+        gres="gpu:1",
+        cpus=1,
+        memory="1G",
+        time_limit="00:05:00",
+        dependency=None,
+        extra=("--account=gpu-project",),
+    )
+    cpu = scheduler._sbatch_array(
+        worker=worker,
+        task_count=1,
+        job_name="cpu-contract",
+        log_dir=ROOT / "results/engineering",
+        partition="multicore",
+        gres=None,
+        cpus=1,
+        memory="1G",
+        time_limit="00:05:00",
+        dependency=None,
+        extra=("--account=cpu-project",),
+    )
+    if "--gres=gpu:1" not in gpu or "--account=gpu-project" not in gpu:
+        raise AssertionError(f"GPU Slurm options were not routed: {gpu}")
+    if any(value.startswith("--gres=gpu") or value == "--account=gpu-project" for value in cpu):
+        raise AssertionError(f"GPU Slurm options leaked into CPU postprocess: {cpu}")
+    if "--account=cpu-project" not in cpu:
+        raise AssertionError(f"CPU Slurm option was not routed: {cpu}")
+
+
+def check_campaign_identity_contract() -> None:
+    """The campaign identity is deterministic and includes the resolved gate patch."""
+    from scripts.submit_campaign import _identity
+    from joint_event_reconstruction.studies import resolve_study
+
+    study = resolve_study("configs/studies/12_encoder_backbone.yaml")
+    first = _identity(study, "b0fc3583c94640fa7ec8b281935204c8bda64f16")
+    second = _identity(study, "b0fc3583c94640fa7ec8b281935204c8bda64f16")
+    if first != second or len(first[0]) != 64:
+        raise AssertionError("Campaign identity is not deterministic")
+
+
 def _component_signatures(overrides: list[str] | None = None) -> dict[str, str]:
     config = load_experiment("configs/experiments/ttbar2L.yaml", overrides or [])
     from joint_event_reconstruction.training.joint import architecture_component_signatures
@@ -841,6 +951,25 @@ def check_freeze_contract() -> None:
         "assignment+c2",
     )
 
+    one_pass_c2 = configure_factorized(base, "edm_c2_detached")
+    one_pass_c2.model.assignment.reasoning.enabled = False
+    one_pass_c2.model.assignment.feedback.enabled = False
+    one_pass_c2.training.trainable = ["assignment", "c2"]
+    one_pass_c2.training.loss_weights.assignment = 1.0
+    one_pass_c2.training.loss_weights.invisible = 0.0
+    one_pass_c2.training.loss_weights.compatibility = 0.0
+    from joint_event_reconstruction.configuration import validate_experiment
+
+    validate_experiment(one_pass_c2)
+    _check_one_freeze_case(
+        one_pass_c2,
+        visible,
+        batch,
+        scaler,
+        ("event_model.reconstruction.", "event_model.posterior_feedback."),
+        "one-pass assignment+c2",
+    )
+
     compatibility = configure_factorized(base, "joint_compatibility")
     compatibility.training.trainable = ["compatibility"]
     compatibility.training.loss_weights.assignment = 0.0
@@ -884,10 +1013,14 @@ def main() -> None:
     check_exchange_and_permutation_contract()
     check_freeze_contract()
     check_slurm_snapshot_contract()
+    check_campaign_gate_contract()
+    check_slurm_option_routing_contract()
+    check_campaign_identity_contract()
     print(
         "PASS: architecture, training-identity, partial-checkpoint, split-seed, "
         "nested-subset, coordinate, truth-oracle, exchange, permutation, "
-        "freeze, public-input, same-flavour-role and Slurm-snapshot contracts"
+        "freeze, public-input, same-flavour-role, campaign-gate, Slurm-option, "
+        "campaign-identity and Slurm-snapshot contracts"
     )
 
 

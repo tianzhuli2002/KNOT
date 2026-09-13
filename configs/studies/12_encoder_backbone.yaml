@@ -1,107 +1,61 @@
 study:
   name: encoder_backbone
-  description: Isolate transformed-token, four-vector, relational, and geometric visible representations at fixed assignment reasoning.
+  description: Compare five visible encoders at fixed M1 one-pass assignment reasoning and identical physical inputs.
   experiment_pattern: configs/experiments/{topology}.yaml
   topologies: [ttbar2L]
-  seeds: [42]
+  seeds: [42, 43, 44]
   split: validation
+  requires: [assignment_reasoning]
+  inherit: [assignment_reasoning]
+  training: true
 
 variants:
   transformer_baseline:
-    label: Historical transformed-feature Transformer
-    reporting: diagnostic
-    patch:
-      model:
-        mode: factorized
-        encoder:
-          type: transformer
-          representation: features
-          relations: none
-          layers: 4
-        assignment: &assignment
-          formulation: discriminative
-          refinement:
-            train_iterations: [1, 2, 3, 4]
-            inference_iterations: 4
-            feedback: soft
-      training: &training
-        precision: 32-true
-        runtime: {compile: false, activation_checkpointing: false}
-        trainable: [visible, assignment]
-    initialise_from: null
+    label: Transformed-feature Transformer
+    reporting: primary
+    patch: {model: {mode: factorized, encoder: {type: transformer, representation: features, relations: none, layers: 4}}, training: {precision: 32-true, runtime: {compile: false, activation_checkpointing: false}, trainable: [visible, assignment]}}
+    initialise_from:
+    initialise_from_gate:
     initialise_components: []
-    predictions:
-      topk5: {label: Transformer top-K=5, patch: {inference: {assignment: {top_k: 5}}}, recurrent_steps: 4}
+    checkpoint_from:
+    predictions: {topk5: {label: Transformer top-K=5, patch: {inference: {assignment: {top_k: 5}}}, recurrent_steps: null}}
 
   fourvector_transformer:
     label: Four-vector Transformer (no pairwise relations)
     reporting: primary
-    patch:
-      model:
-        mode: factorized
-        encoder: &physical_encoder
-          type: transformer
-          representation: four_vector
-          relations: none
-          layers: 4
-          n_heads: 4
-        assignment: *assignment
-      training: *training
-    initialise_from: null
+    patch: {model: {mode: factorized, encoder: {type: transformer, representation: four_vector, relations: none, layers: 4, n_heads: 4}}, training: {precision: 32-true, runtime: {compile: false, activation_checkpointing: false}, trainable: [visible, assignment]}}
+    initialise_from:
+    initialise_from_gate:
     initialise_components: []
-    predictions:
-      topk5: {label: Four-vector Transformer top-K=5, patch: {inference: {assignment: {top_k: 5}}}, recurrent_steps: 4}
+    checkpoint_from:
+    predictions: {topk5: {label: Four-vector Transformer top-K=5, patch: {inference: {assignment: {top_k: 5}}}, recurrent_steps: null}}
 
   relational_transformer:
-    label: Relational Transformer
+    label: Relational four-vector Transformer
     reporting: primary
-    patch:
-      model:
-        mode: factorized
-        encoder:
-          <<: *physical_encoder
-          relations: physics
-        assignment: *assignment
-      training: *training
-    initialise_from: null
+    patch: {model: {mode: factorized, encoder: {type: transformer, representation: four_vector, relations: physics, layers: 4, n_heads: 4}}, training: {precision: 32-true, runtime: {compile: false, activation_checkpointing: false}, trainable: [visible, assignment]}}
+    initialise_from:
+    initialise_from_gate:
     initialise_components: []
-    predictions:
-      topk5: {label: Relational Transformer top-K=5, patch: {inference: {assignment: {top_k: 5}}}, recurrent_steps: 4}
+    checkpoint_from:
+    predictions: {topk5: {label: Relational Transformer top-K=5, patch: {inference: {assignment: {top_k: 5}}}, recurrent_steps: null}}
 
   lgatr:
     label: L-GATr
     reporting: primary
-    patch:
-      model:
-        mode: factorized
-        encoder:
-          type: lgatr
-          layers: 4
-          n_heads: 4
-          hidden: {multivector_channels: 8, scalar_channels: 64}
-          symmetry_breaking: {beam: xyplane, time: true}
-        assignment: *assignment
-      training: *training
-    initialise_from: null
+    patch: {model: {mode: factorized, encoder: {type: lgatr, layers: 4, n_heads: 4, hidden: {multivector_channels: 8, scalar_channels: 64}, symmetry_breaking: {beam: xyplane, time: true}}}, training: {precision: 32-true, runtime: {compile: false, activation_checkpointing: false}, trainable: [visible, assignment]}}
+    initialise_from:
+    initialise_from_gate:
     initialise_components: []
-    predictions:
-      topk5: {label: L-GATr top-K=5, patch: {inference: {assignment: {top_k: 5}}}, recurrent_steps: 4}
+    checkpoint_from:
+    predictions: {topk5: {label: L-GATr top-K=5, patch: {inference: {assignment: {top_k: 5}}}, recurrent_steps: null}}
 
   lgatr_slim:
     label: L-GATr-Slim efficiency diagnostic
     reporting: diagnostic
-    patch:
-      model:
-        mode: factorized
-        encoder:
-          type: lgatr_slim
-          layers: 4
-          n_heads: 4
-          hidden: {vector_channels: 16, scalar_channels: 64}
-          symmetry_breaking: {beam: xyplane, time: true}
-        assignment: *assignment
-      training: *training
-    initialise_from: null
+    patch: {model: {mode: factorized, encoder: {type: lgatr_slim, layers: 4, n_heads: 4, hidden: {vector_channels: 16, scalar_channels: 64}, symmetry_breaking: {beam: xyplane, time: true}}}, training: {precision: 32-true, runtime: {compile: false, activation_checkpointing: false}, trainable: [visible, assignment]}}
+    initialise_from:
+    initialise_from_gate:
     initialise_components: []
-    predictions:
-      topk5: {label: L-GATr-Slim top-K=5, patch: {inference: {assignment: {top_k: 5}}}, recurrent_steps: 4}
+    checkpoint_from:
+    predictions: {topk5: {label: L-GATr-Slim top-K=5, patch: {inference: {assignment: {top_k: 5}}}, recurrent_steps: null}}

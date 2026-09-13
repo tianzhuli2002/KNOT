@@ -1,123 +1,87 @@
 study:
   name: assignment_conditioning
-  description: Test how assignment information changes CFM invisible inference on one frozen assignment-reference template after Study 01.
+  description: Measure how selected assignment information changes invisible reconstruction, including wrong-assignment damage and top-K headroom.
   experiment_pattern: configs/experiments/{topology}.yaml
   topologies: [ttbar2L]
-  seeds: [42]
+  seeds: [42, 43, 44]
   split: validation
+  requires: [visible_assignment, assignment_formulation, invisible_generator, invisible_coordinates]
+  inherit: [visible_assignment, assignment_formulation, invisible_generator, invisible_coordinates]
+  training: true
 
 variants:
-  assignment_reference:
-    label: Assignment reference (pending Study 01 gate)
-    reporting: setup
-    patch:
-      model:
-        assignment:
-          formulation: discriminative
-          refinement:
-            train_iterations: [1, 2, 3, 4]
-            inference_iterations: 4
-            feedback: soft
-        mode: factorized
-      training: {trainable: [visible, assignment]}
-    initialise_from:
-    initialise_components: []
-    predictions: {}
-
   none:
     label: no assignment conditioning
     reporting: primary
     patch:
       model:
-        assignment:
-          formulation: discriminative
-          refinement:
-            train_iterations: [1, 2, 3, 4]
-            inference_iterations: 4
-            feedback: soft
-        invisible: {conditioning: {assignment: none}, generator: {type: cfm}}
+        invisible: {conditioning: {assignment: none}}
         mode: factorized
       training: {trainable: [invisible]}
-    initialise_from: assignment_reference
+    initialise_from:
+    initialise_from_gate: visible_assignment
     initialise_components: [visible, assignment]
+    checkpoint_from:
     predictions:
-      default: {label: none, patch: {inference: {invisible: {samples_per_assignment: 32, flow: {steps: 17, solver: euler}}}}, recurrent_steps: 4}
+      default: {label: none, patch: {inference: {invisible: {samples_per_assignment: 32, flow: {steps: 17, solver: euler}}}}, recurrent_steps: null}
 
   soft:
-    label: soft C1 conditioning
+    label: soft assignment conditioning
     reporting: primary
     patch:
       model:
-        assignment:
-          formulation: discriminative
-          refinement:
-            train_iterations: [1, 2, 3, 4]
-            inference_iterations: 4
-            feedback: soft
-        invisible: {conditioning: {assignment: soft}, generator: {type: cfm}}
+        invisible: {conditioning: {assignment: soft}}
         mode: factorized
       training: {trainable: [invisible]}
-    initialise_from: assignment_reference
+    initialise_from:
+    initialise_from_gate: visible_assignment
     initialise_components: [visible, assignment]
+    checkpoint_from:
     predictions:
-      default: {label: soft, patch: {inference: {invisible: {samples_per_assignment: 32, flow: {steps: 17, solver: euler}}}}, recurrent_steps: 4}
+      default: {label: soft, patch: {inference: {invisible: {samples_per_assignment: 32, flow: {steps: 17, solver: euler}}}}, recurrent_steps: null}
 
   hypothesis:
     label: predicted-hypothesis factorisation
     reporting: primary
     patch:
       model:
-        assignment:
-          formulation: discriminative
-          refinement:
-            train_iterations: [1, 2, 3, 4]
-            inference_iterations: 4
-            feedback: soft
-        invisible: {conditioning: {assignment: hypothesis}, generator: {type: cfm}}
+        invisible: {conditioning: {assignment: hypothesis}}
         mode: factorized
       training: {trainable: [invisible]}
-    initialise_from: assignment_reference
+    initialise_from:
+    initialise_from_gate: visible_assignment
     initialise_components: [visible, assignment]
+    checkpoint_from:
     predictions:
-      k1_m32: {label: hypothesis K=1 M=32 controlled compute, patch: {inference: {assignment: {top_k: 1}, invisible: {samples_per_assignment: 32, flow: {steps:
-                  17, solver: euler}}}}, recurrent_steps: 4}
-      k5_m32: {label: hypothesis K=5 M=32, patch: {inference: {assignment: {top_k: 5}, invisible: {samples_per_assignment: 32, flow: {steps: 17, solver: euler}}}},
-        recurrent_steps: 4}
+      k1_m32: {label: hypothesis K=1 M=32, patch: {inference: {assignment: {top_k: 1}, invisible: {samples_per_assignment: 32, flow: {steps: 17, solver: euler}}}}, recurrent_steps: null}
+      k5_m32: {label: hypothesis K=5 M=32, patch: {inference: {assignment: {top_k: 5}, invisible: {samples_per_assignment: 32, flow: {steps: 17, solver: euler}}}}, recurrent_steps: null}
 
   hard:
     label: hard local assignment diagnostic
     reporting: diagnostic
     patch:
       model:
-        assignment:
-          formulation: discriminative
-          refinement:
-            train_iterations: [1, 2, 3, 4]
-            inference_iterations: 4
-            feedback: soft
-        invisible: {conditioning: {assignment: hard}, generator: {type: cfm}}
+        invisible: {conditioning: {assignment: hard}}
         mode: factorized
       training: {trainable: [invisible]}
-    initialise_from: assignment_reference
+    initialise_from:
+    initialise_from_gate: visible_assignment
     initialise_components: [visible, assignment]
+    checkpoint_from:
     predictions:
-      default: {label: hard, patch: {inference: {invisible: {samples_per_assignment: 32, flow: {steps: 17, solver: euler}}}}, recurrent_steps: 4}
+      default: {label: hard, patch: {inference: {invisible: {samples_per_assignment: 32, flow: {steps: 17, solver: euler}}}}, recurrent_steps: null}
 
   truth_oracle:
     label: truth-assignment oracle
     reporting: oracle
     patch:
       model:
-        assignment:
-          formulation: discriminative
-          refinement:
-            train_iterations: [1, 2, 3, 4]
-            inference_iterations: 4
-            feedback: soft
-        invisible: {conditioning: {assignment: truth_oracle}, generator: {type: cfm}}
+        invisible: {conditioning: {assignment: truth_oracle}}
         mode: factorized
       training: {trainable: [invisible]}
-    initialise_from: assignment_reference
+    initialise_from:
+    initialise_from_gate: visible_assignment
     initialise_components: [visible, assignment]
+    checkpoint_from:
     predictions:
-      oracle: {label: truth oracle, patch: {inference: {invisible: {samples_per_assignment: 32, flow: {steps: 17, solver: euler}}}}, recurrent_steps: 4}
+      oracle: {label: truth oracle, patch: {inference: {invisible: {samples_per_assignment: 32, flow: {steps: 17, solver: euler}}}}, recurrent_steps: null}
