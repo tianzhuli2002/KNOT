@@ -367,6 +367,7 @@ def _prediction_identity(
     seed,
     resolved,
     checkpoint,
+    checkpoint_training_sha,
     recurrent_steps,
     git_commit,
 ) -> dict:
@@ -389,6 +390,10 @@ def _prediction_identity(
         "resolved_gate_digest": study.gates_digest,
         "prediction_seed": int(resolved.inference.seed),
         "recurrent_steps": recurrent_steps,
+        # A recovered prediction may consume a checkpoint trained at an older
+        # source revision.  Keep that training provenance separate from the
+        # revision that produced this prediction artifact.
+        "checkpoint_training_sha": checkpoint_training_sha,
     }
 
 
@@ -674,10 +679,35 @@ def _predict_one(study, topology, variant, prediction, seed, *, root, global_ove
     recurrent_steps = prediction.recurrent_steps
     identity = None
     identity_path = target.with_suffix(".identity.json")
+    checkpoint_training_sha = None
     if not dry_run:
         git_commit = _require_clean_git()
         if variant.checkpoint_from is None and variant.checkpoint_from_gate is None:
             training_identity_path = run_dir / "train/artifact_identity.json"
+            if not training_identity_path.is_file():
+                raise FileNotFoundError(
+                    f"Prediction checkpoint has no training identity: "
+                    f"{training_identity_path}"
+                )
+            source_payload = json.loads(training_identity_path.read_text())
+            source_identity = source_payload.get("identity", {})
+            if not isinstance(source_identity, dict):
+                raise ValueError(
+                    f"Prediction checkpoint training identity is malformed: "
+                    f"{training_identity_path}"
+                )
+            _verify_artifact_record(
+                training_identity_path,
+                checkpoint,
+                source_identity,
+                "prediction checkpoint source",
+            )
+            if source_identity.get("kind") != "training":
+                raise ValueError(
+                    f"Prediction checkpoint source is not a training artifact: "
+                    f"{training_identity_path}"
+                )
+            checkpoint_training_sha = source_identity.get("git_commit")
             training_experiment, _, training_resolved = _public_run_config(
                 study, topology, variant, seed, root, global_overrides
             )
@@ -694,7 +724,14 @@ def _predict_one(study, topology, variant, prediction, seed, *, root, global_ove
                 training_experiment,
                 training_resolved,
                 initial,
-                git_commit,
+                checkpoint_training_sha,
+            )
+            # A gate can be locked after a model has been trained.  The
+            # selected patch must still resolve identically, while the gate
+            # digest itself is expected to change.  Compare the historical
+            # identity with all other training fields unchanged.
+            expected_training["resolved_gate_digest"] = source_identity.get(
+                "resolved_gate_digest"
             )
             _verify_artifact_record(
                 training_identity_path,
@@ -724,6 +761,17 @@ def _predict_one(study, topology, variant, prediction, seed, *, root, global_ove
                 raise ValueError(
                     f"Prediction checkpoint source identity is malformed: {source_record}"
                 )
+            _verify_artifact_record(
+                source_record,
+                checkpoint,
+                source_identity,
+                "prediction checkpoint source",
+            )
+            if source_identity.get("kind") != "training":
+                raise ValueError(
+                    f"Prediction checkpoint source is not a training artifact: {source_record}"
+                )
+            checkpoint_training_sha = source_identity.get("git_commit")
             current_model = OmegaConf.to_container(resolved.model, resolve=True)
             source_config = source_identity.get("resolved_config")
             if not isinstance(source_config, dict) or not isinstance(source_config.get("model"), dict):
@@ -751,6 +799,7 @@ def _predict_one(study, topology, variant, prediction, seed, *, root, global_ove
             seed,
             resolved,
             checkpoint,
+            checkpoint_training_sha,
             recurrent_steps,
             git_commit,
         )
@@ -967,7 +1016,66 @@ def _compare(study, topology, variants, seed, *, root, formats, include_diagnost
         )
 
 
-def _study_specific_analysis(study, topologies, variants, seeds, *, root, dry_run):
+def _training_event_count(
+    study,
+    topology: str,
+    variant,
+    seed: int,
+    *,
+    root: Path,
+    global_overrides: tuple[str, ...],
+) -> int:
+    """Return the authoritative training-event count from semantic provenance."""
+    run_dir = _run_dir(root, study, topology, variant.name, seed)
+    sources: dict[str, int] = {}
+    identity_path = run_dir / "train/artifact_identity.json"
+    if identity_path.is_file():
+        try:
+            payload = json.loads(identity_path.read_text())
+            selected = payload["identity"]["data_subset"]["splits"]["train"][
+                "selected_events"
+            ]
+            sources["training artifact identity"] = int(selected)
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
+            raise ValueError(
+                f"Malformed training-event provenance for {study.name}:{topology}:"
+                f"{variant.name}:seed_{seed}: {identity_path}"
+            ) from error
+
+    _, _, resolved = _public_run_config(
+        study, topology, variant, seed, root, global_overrides
+    )
+    resolved_count = resolved.data.max_events.train
+    if resolved_count is not None:
+        sources["resolved variant configuration"] = int(resolved_count)
+
+    patch_data = variant.patch.get("data", {})
+    patch_events = patch_data.get("events", {}) if isinstance(patch_data, dict) else {}
+    patch_count = patch_events.get("train") if isinstance(patch_events, dict) else None
+    if patch_count is not None:
+        sources["variant patch"] = int(patch_count)
+
+    if not sources:
+        raise ValueError(
+            f"No semantic training-event count for {study.name}:{topology}:"
+            f"{variant.name}:seed_{seed}"
+        )
+    if any(value <= 0 for value in sources.values()):
+        raise ValueError(
+            f"Training-event count must be positive for {study.name}:{topology}:"
+            f"{variant.name}:seed_{seed}: {sources}"
+        )
+    if len(set(sources.values())) != 1:
+        raise ValueError(
+            f"Conflicting training-event provenance for {study.name}:{topology}:"
+            f"{variant.name}:seed_{seed}: {sources}"
+        )
+    return next(iter(sources.values()))
+
+
+def _study_specific_analysis(
+    study, topologies, variants, seeds, *, root, global_overrides, dry_run
+):
     if study.name == "encoder_backbone":
         required = {
             "transformer_baseline",
@@ -1103,11 +1211,17 @@ def _study_specific_analysis(study, topologies, variants, seeds, *, root, dry_ru
                     path = _prediction_path(
                         root, study, topology, variant.name, seed, prediction.name
                     )
-                    if variant.name.startswith("n"):
-                        count = int(variant.name[1:-1]) * 1000
+                    count = _training_event_count(
+                        study,
+                        topology,
+                        variant,
+                        seed,
+                        root=root,
+                        global_overrides=global_overrides,
+                    )
+                    if variant.name == "n500k":
                         arguments_m1 += ["--m1", f"M1:{count}:{seed}={path}"]
-                    elif variant.name.startswith("m3_n"):
-                        count = int(variant.name[3:-1]) * 1000
+                    elif variant.name == "m3_n500k":
                         arguments_m3 += ["--m3", f"M3:{count}:{seed}={path}"]
         if not arguments_m1:
             print("Skip Study-11 scaling analysis without an M1 primary curve.")
@@ -1387,6 +1501,7 @@ def main() -> None:
                 requested,
                 seeds,
                 root=root,
+                global_overrides=global_overrides,
                 dry_run=args.dry_run,
             )
 

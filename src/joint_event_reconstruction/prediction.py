@@ -33,6 +33,18 @@ def _append(dataset: h5py.Dataset, values: np.ndarray) -> None:
 def _create(
     group: h5py.Group, name: str, tail: tuple[int, ...], dtype
 ) -> h5py.Dataset:
+    # ``Tensor.shape`` is a torch.Size, whose ``__radd__`` preserves the
+    # torch.Size type.  Passing ``(None,) + torch.Size(...)`` to h5py then
+    # makes h5py construct a torch.Size containing the extendible ``None``
+    # dimension, which fails before the first prediction is written.  HDF5
+    # dataset shapes are ordinary Python tuples; materialise that contract
+    # before adding the extendible leading dimension.
+    try:
+        tail = tuple(int(dimension) for dimension in tail)
+    except (TypeError, ValueError) as error:
+        raise ValueError(
+            f"Prediction dataset {name!r} has a non-integer trailing shape: {tail!r}"
+        ) from error
     return group.create_dataset(
         name,
         (0,) + tail,

@@ -112,6 +112,67 @@ def _write_task_file(path: Path, tasks: list[tuple[str, str, int]]) -> None:
     )
 
 
+def _prediction_task_complete(
+    study: StudySpec,
+    topology: str,
+    variant: VariantSpec,
+    seed: int,
+    *,
+    output_root: Path,
+    overrides: tuple[str, ...],
+    git_commit: str,
+) -> bool:
+    """Check every prediction identity for one Slurm task before resubmission."""
+    from scripts.run_study import (
+        _prediction_checkpoint,
+        _prediction_identity,
+        _prediction_path,
+        _public_run_config,
+        _validate_prediction_artifact,
+        _verify_artifact_record,
+    )
+
+    for prediction in variant.predictions:
+        target = _prediction_path(
+            output_root, study, topology, variant.name, seed, prediction.name
+        )
+        record = target.with_suffix(".identity.json")
+        checkpoint = _prediction_checkpoint(study, variant, topology, seed, output_root)
+        source_record = checkpoint.parent.parent / "artifact_identity.json"
+        if not target.is_file() or not record.is_file() or not source_record.is_file():
+            return False
+        try:
+            _validate_prediction_artifact(target)
+            source_payload = json.loads(source_record.read_text())
+            source_identity = source_payload["identity"]
+            checkpoint_training_sha = source_identity["git_commit"]
+            _, _, resolved = _public_run_config(
+                study,
+                topology,
+                variant,
+                seed,
+                output_root,
+                overrides,
+                prediction,
+            )
+            expected = _prediction_identity(
+                study,
+                topology,
+                variant,
+                prediction,
+                seed,
+                resolved,
+                checkpoint,
+                checkpoint_training_sha,
+                prediction.recurrent_steps,
+                git_commit,
+            )
+            _verify_artifact_record(record, target, expected, "prediction")
+        except (KeyError, OSError, TypeError, ValueError, RuntimeError):
+            return False
+    return True
+
+
 def _worker_script(
     path: Path,
     *,
@@ -342,6 +403,11 @@ def main() -> None:
     )
     parser.add_argument("--no-postprocess", action="store_true")
     parser.add_argument(
+        "--prediction-only",
+        action="store_true",
+        help="Skip all training layers and submit only missing prediction tasks.",
+    )
+    parser.add_argument(
         "--dependency-afterok",
         help="External job ID that must succeed before the first training layer starts.",
     )
@@ -361,7 +427,9 @@ def main() -> None:
     variant_names = tuple(variant.name for variant in study.variants)
     requested_names = _selected(args.variants, variant_names, "variants")
     requested = tuple(study.variant_map[name] for name in requested_names)
-    if not study.training:
+    if args.prediction_only:
+        training = ()
+    elif not study.training:
         training = ()
     elif args.variants == "all":
         training = study.training_order()
@@ -543,12 +611,41 @@ def main() -> None:
         variant for variant in requested if variant.reporting != "setup"
     )
     if prediction_variants:
-        prediction_tasks = [
+        all_prediction_tasks = [
             (topology, variant.name, seed)
             for topology in topologies
             for variant in prediction_variants
             for seed in seeds
         ]
+        if args.prediction_only:
+            prediction_tasks = [
+                task
+                for task in all_prediction_tasks
+                if not _prediction_task_complete(
+                    study,
+                    task[0],
+                    study.variant_map[task[1]],
+                    task[2],
+                    output_root=output_root,
+                    overrides=overrides,
+                    git_commit=git_commit,
+                )
+            ]
+            submitted["skipped_complete_prediction_tasks"] = [
+                list(task) for task in all_prediction_tasks if task not in prediction_tasks
+            ]
+        else:
+            prediction_tasks = all_prediction_tasks
+        if not prediction_tasks:
+            submitted["prediction_tasks"] = 0
+            submitted["prediction_job"] = None
+            submitted["postprocess_job"] = None
+            _save_submission(submission_path, submitted)
+            slurm_base.mkdir(parents=True, exist_ok=True)
+            (slurm_base / "latest.txt").write_text(str(slurm_root) + "\n")
+            print("All requested prediction identities are already complete; no jobs submitted.")
+            print(json.dumps(submitted, indent=2, sort_keys=True))
+            return
         prediction_file = slurm_root / "predict.tsv"
         prediction_worker = slurm_root / "predict.sh"
         _write_task_file(prediction_file, prediction_tasks)
@@ -584,6 +681,7 @@ def main() -> None:
         )
         fake_id += 1
         submitted["prediction_job"] = prediction_job
+        submitted["prediction_tasks"] = len(prediction_tasks)
         submitted["prediction_depends_on"] = dependency
         submitted["prediction_task_file"] = str(prediction_file)
         submitted["prediction_worker"] = str(prediction_worker)

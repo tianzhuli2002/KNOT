@@ -373,6 +373,33 @@ def check_conditional_lgatr_contract() -> None:
         raise AssertionError("Non-zero fixed-mass CFM smoke is not on shell")
 
 
+def check_prediction_writer_shape_contract() -> None:
+    """HDF5 prediction shapes must not inherit torch's extendible-dimension type."""
+    import h5py
+
+    from joint_event_reconstruction.prediction import _create
+
+    with tempfile.TemporaryDirectory(prefix="jer-prediction-writer-") as directory:
+        path = Path(directory) / "prediction.h5"
+        with h5py.File(path, "w") as handle:
+            dataset = _create(
+                handle,
+                "physical_samples",
+                torch.Size((2, 2, 4)),
+                "<f4",
+            )
+            if dataset.shape != (0, 2, 2, 4):
+                raise AssertionError(f"Unexpected prediction dataset shape: {dataset.shape}")
+            if dataset.maxshape != (None, 2, 2, 4):
+                raise AssertionError(
+                    f"Unexpected prediction dataset maxshape: {dataset.maxshape}"
+                )
+            dataset.resize(1, axis=0)
+            dataset[0] = np.zeros((2, 2, 4), dtype=np.float32)
+            if not np.isfinite(dataset[:]).all():
+                raise AssertionError("Prediction writer produced non-finite smoke output")
+
+
 def check_flow_coupling_context_contract() -> None:
     """Conditional OT must use role contexts before coordinate-token expansion."""
     import torch
@@ -1353,6 +1380,7 @@ def main() -> None:
     check_coordinate_contract()
     check_mass_shell_contract()
     check_conditional_lgatr_contract()
+    check_prediction_writer_shape_contract()
     check_flow_coupling_context_contract()
     check_truth_oracle_unreconstructable_contract()
     check_exchange_and_permutation_contract()
@@ -1365,7 +1393,8 @@ def main() -> None:
         "PASS: architecture, training-identity, partial-checkpoint, split-seed, "
         "nested-subset, coordinate, truth-oracle, exchange, permutation, "
         "freeze, public-input, same-flavour-role, campaign-gate, Slurm-option, "
-        "campaign-identity, mass-shell, Conditional-L-GATr and Slurm-snapshot contracts"
+        "campaign-identity, prediction-writer, mass-shell, Conditional-L-GATr "
+        "and Slurm-snapshot contracts"
     )
 
 
