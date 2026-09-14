@@ -105,13 +105,53 @@ visible_assignment:
         identity_sha256: 0975dbc0e0e24090a37a39f8b3bb6b93b37f1779da7eceaf93de5208d669b75a
 
 assignment_formulation:
-  status: pending
+  status: locked
   source_study: discrete_assignment
-  selected_variant:
-  validated_sha:
+  selected_variant: m1
+  # This gate was authorised from the Study-05 review at the prediction-only
+  # repair commit below.  The selected checkpoints retain their historical
+  # training SHA in each artifact record.
+  validated_sha: e0ee7b3114ce413b0bb9ea7f96e786e13c4da4f1
   required_by: [assignment_conditioning, c2_feedback, joint_vs_factorized, joint_recurrence, posterior_size, compatibility_reranking, lgatr_invisible_generator]
-  selected_patch: {}
-  artifacts: {}
+  selected_patch:
+    model:
+      assignment:
+        formulation: discriminative
+  artifacts:
+    ttbar2L:
+      seed_42:
+        source_study: discrete_assignment
+        variant: m1
+        model_seed: 42
+        data_subset_seed: 42
+        git_sha: 752c52df8887dee9f8f04ab16ed0fe1175b8012f
+        architecture_identity: 433aeb2f33b4abdb1e1cf896ee02588aa4d3602d44a256ff57fc9b78e3a7cdfa
+        checkpoint: /net/scratch/w00238tl/JointEventReconstruction/results/studies/discrete_assignment/ttbar2L/m1/seed_42/train/checkpoints/best-loss.ckpt
+        checkpoint_sha256: c643bd5e594ab0717e1cd1fb546d50ad539d65a7d5821567e866e5aca7d486d4
+        identity_file: /net/scratch/w00238tl/JointEventReconstruction/results/studies/discrete_assignment/ttbar2L/m1/seed_42/train/artifact_identity.json
+        identity_sha256: f57f4e837177a0dc514f4501a680dd4a6d6859c6b9750b033121914ec9ab4687
+      seed_43:
+        source_study: discrete_assignment
+        variant: m1
+        model_seed: 43
+        data_subset_seed: 42
+        git_sha: 752c52df8887dee9f8f04ab16ed0fe1175b8012f
+        architecture_identity: 433aeb2f33b4abdb1e1cf896ee02588aa4d3602d44a256ff57fc9b78e3a7cdfa
+        checkpoint: /net/scratch/w00238tl/JointEventReconstruction/results/studies/discrete_assignment/ttbar2L/m1/seed_43/train/checkpoints/best-loss.ckpt
+        checkpoint_sha256: aa76e7119f14e04bdff3c76e8ab624e8a1f4b87a65cbf01c1af92b092f3f92d6
+        identity_file: /net/scratch/w00238tl/JointEventReconstruction/results/studies/discrete_assignment/ttbar2L/m1/seed_43/train/artifact_identity.json
+        identity_sha256: b1ee801a027f5cc1227843b14319875952d22747fef239ae5bea91ef0bc13cce
+      seed_44:
+        source_study: discrete_assignment
+        variant: m1
+        model_seed: 44
+        data_subset_seed: 42
+        git_sha: 752c52df8887dee9f8f04ab16ed0fe1175b8012f
+        architecture_identity: 433aeb2f33b4abdb1e1cf896ee02588aa4d3602d44a256ff57fc9b78e3a7cdfa
+        checkpoint: /net/scratch/w00238tl/JointEventReconstruction/results/studies/discrete_assignment/ttbar2L/m1/seed_44/train/checkpoints/best-loss.ckpt
+        checkpoint_sha256: 3f7e7c19dc71574978a425d8646493c6d123d2abfaf6d3f39a925aac72838894
+        identity_file: /net/scratch/w00238tl/JointEventReconstruction/results/studies/discrete_assignment/ttbar2L/m1/seed_44/train/artifact_identity.json
+        identity_sha256: e5d87a313d7b3a9c73efe4aa5c75ac028d86bb9d258abf1833fd27264076482a
 
 assignment_conditioning:
   status: pending

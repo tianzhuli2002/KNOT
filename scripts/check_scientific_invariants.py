@@ -654,6 +654,35 @@ def check_campaign_gate_contract() -> None:
     ):
         raise AssertionError("Visible-assignment gate contains training or recurrent settings")
 
+    formulation = gates["assignment_formulation"]
+    if (
+        formulation["status"] != "locked"
+        or formulation["selected_variant"] != "m1"
+        or formulation["validated_sha"]
+        != "e0ee7b3114ce413b0bb9ea7f96e786e13c4da4f1"
+    ):
+        raise AssertionError(
+            "Study-05 assignment_formulation gate is not locked to m1"
+        )
+    if formulation["selected_patch"] != {
+        "model": {"assignment": {"formulation": "discriminative"}}
+    }:
+        raise AssertionError("Study-05 assignment gate selected an unexpected patch")
+    if set(formulation["artifacts"]["ttbar2L"]) != {
+        "seed_42", "seed_43", "seed_44"
+    }:
+        raise AssertionError("Study-05 assignment gate is missing a model seed artifact")
+    for seed in (42, 43, 44):
+        artifact = formulation["artifacts"]["ttbar2L"][f"seed_{seed}"]
+        if (
+            artifact["source_study"] != "discrete_assignment"
+            or artifact["variant"] != "m1"
+            or int(artifact["model_seed"]) != seed
+            or artifact["git_sha"]
+            != "752c52df8887dee9f8f04ab16ed0fe1175b8012f"
+        ):
+            raise AssertionError(f"Study-05 assignment gate has wrong seed-{seed} provenance")
+
     with tempfile.TemporaryDirectory(prefix="jer-pending-gate-") as directory:
         pending_path = Path(directory) / "gates.yaml"
         pending = copy.deepcopy(gates)
