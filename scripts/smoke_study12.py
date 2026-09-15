@@ -93,7 +93,7 @@ def main() -> None:
                 data,
                 None,
                 prediction,
-                split="test",
+                split="validation",
                 top_k=2,
                 posterior_samples=1,
                 recurrent_steps=None,

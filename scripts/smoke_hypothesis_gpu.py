@@ -21,10 +21,10 @@ from joint_event_reconstruction.cli.run import (
 from joint_event_reconstruction.configuration import load_experiment, load_visible_config
 from joint_event_reconstruction.hypothesis import write_hypothesis_group
 from joint_event_reconstruction.prediction import (
-    _node_indices,
-    _to_device,
     decode_batch,
+    node_indices_for_hypothesis,
     predict_hdf5,
+    to_device,
 )
 from joint_event_reconstruction.prediction_schema import (
     validate_hypothesis_group,
@@ -97,7 +97,7 @@ def _assert_probability(name: str, value: torch.Tensor) -> None:
         raise RuntimeError(f"{name} is not normalised over valid hypotheses")
 
 
-def run(output_dir: Path, device: str) -> None:
+def run(output_dir: Path, device: str, expected_source_sha: str | None = None) -> None:
     if device != "cuda" or not torch.cuda.is_available():
         raise RuntimeError("The hypothesis smoke requires a CUDA device")
     for path in (VISIBLE_EXPERIMENT, VISIBLE_CHECKPOINT, CFM_EXPERIMENT, CFM_CHECKPOINT):
@@ -111,6 +111,16 @@ def run(output_dir: Path, device: str) -> None:
         ["git", "rev-parse", "HEAD"], cwd=ROOT, check=True, text=True,
         capture_output=True,
     ).stdout.strip()
+    if expected_source_sha is not None and source_sha != expected_source_sha:
+        raise RuntimeError(
+            f"SOURCE SHA MISMATCH: expected {expected_source_sha}, found {source_sha}"
+        )
+    dirty = subprocess.run(
+        ["git", "status", "--porcelain"], cwd=ROOT, check=True,
+        text=True, capture_output=True,
+    ).stdout.strip()
+    if dirty:
+        raise RuntimeError(f"GPU smoke requires a clean checkout; found {dirty!r}")
     print(f"SOURCE_SHA={source_sha}", flush=True)
     print(f"GPU={torch.cuda.get_device_name(0)}", flush=True)
 
@@ -172,7 +182,7 @@ def run(output_dir: Path, device: str) -> None:
     print("PASS: one unconditioned posterior branch reused for K=5", flush=True)
 
     batch = next(iter(data.val_dataloader()))
-    batch = _to_device(batch, device)
+    batch = to_device(batch, device)
     if not torch.equal(batch["event_index"].detach().cpu(), torch.from_numpy(event_ids)):
         raise RuntimeError("Prediction EVENT_ID order disagrees with validation batch")
     with torch.inference_mode():
@@ -181,7 +191,10 @@ def run(output_dir: Path, device: str) -> None:
     node_indices = torch.stack(
         [
             torch.stack(
-                [_node_indices(module.spec, batch, event, hypothesis) for hypothesis in event],
+                [
+                    node_indices_for_hypothesis(module.spec, batch, event, hypothesis)
+                    for hypothesis in event
+                ],
             )
             for event, hypotheses in enumerate(decoded)
         ]
@@ -291,8 +304,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--device", default="cuda")
+    parser.add_argument("--expected-source-sha")
     args = parser.parse_args()
-    run(args.output_dir.expanduser().resolve(), args.device)
+    run(
+        args.output_dir.expanduser().resolve(),
+        args.device,
+        expected_source_sha=args.expected_source_sha,
+    )
 
 
 if __name__ == "__main__":

@@ -274,9 +274,13 @@ def check_mass_shell_contract() -> None:
 def check_topology_physics_contract() -> None:
     """Protect the compact topology physics grammar and hypothesis evaluator."""
     import h5py
+    import inspect
 
     from joint_event_reconstruction.hypothesis import write_hypothesis_group
-    from joint_event_reconstruction.prediction_schema import validate_hypothesis_group
+    from joint_event_reconstruction.prediction_schema import (
+        _iter_hdf5_chunks,
+        validate_hypothesis_group,
+    )
     from joint_event_reconstruction.topology import (
         HypothesisEvaluator,
         LearnedHypothesisScorer,
@@ -290,6 +294,13 @@ def check_topology_physics_contract() -> None:
     )
     from joint_event_reconstruction.topology.compiler import compile_topology
     from joint_event_reconstruction.physics import compose_assignment_state
+    from joint_event_reconstruction.prediction import predict_hdf5
+
+    split_parameter = inspect.signature(predict_hdf5).parameters["split"]
+    if split_parameter.default is not inspect.Parameter.empty:
+        raise AssertionError("Factorized prediction split must be explicit")
+    if split_parameter.kind is not inspect.Parameter.KEYWORD_ONLY:
+        raise AssertionError("Factorized prediction split must be keyword-only")
 
     current = load_topology("configs/topology/ttbar2L.yaml")
     topology_only = compile_topology(
@@ -473,6 +484,14 @@ def check_topology_physics_contract() -> None:
         if not torch.allclose(scorer(reduction.as_tensor()), restored(reduction.as_tensor())):
             raise AssertionError("Reloaded learned scorer is not deterministic")
 
+        from joint_event_reconstruction.topology import MatchedVisibleOnlyScorer
+
+        visible_control = MatchedVisibleOnlyScorer(hidden=8)
+        visible_input = torch.zeros(1, 2, len(visible_control.input_names))
+        visible_output = visible_control(visible_input)
+        if visible_output.shape != (1, 2) or not torch.isfinite(visible_output).all():
+            raise AssertionError("Matched visible-only scorer has an invalid interface")
+
         evaluator = HypothesisEvaluator(
             current,
             scaler=restored_scaler,
@@ -506,7 +525,28 @@ def check_topology_physics_contract() -> None:
             padded_evaluation.final_probability, torch.tensor([[1.0, 0.0]])
         ):
             raise AssertionError("Padded assignment hypotheses were not masked safely")
-        with h5py.File(Path(directory) / "hypotheses.h5", "w") as handle:
+        alpha_zero = HypothesisEvaluator(
+            current, scaler=restored_scaler, mode="physics", alpha=0.0
+        ).evaluate(
+            torch.tensor([[0.0, -torch.inf]]),
+            pools,
+            vectors,
+            padded,
+            invisible_momenta=posterior,
+            observed_met=torch.zeros(1, 2),
+            valid_hypotheses=torch.tensor([[True, False]]),
+        )
+        if not torch.isfinite(alpha_zero.final_probability).all():
+            raise AssertionError("alpha=0 physics evaluation produced non-finite probabilities")
+        if not torch.allclose(alpha_zero.final_probability, torch.tensor([[1.0, 0.0]])):
+            raise AssertionError("alpha=0 physics evaluation did not preserve visible ranking")
+        if alpha_zero.learned_delta[0, 1] != 0 or not torch.isneginf(
+            alpha_zero.final_log_score[0, 1]
+        ):
+            raise AssertionError("alpha=0 padded compatibility correction was not masked")
+
+        all_valid_path = Path(directory) / "hypotheses-all-valid.h5"
+        with h5py.File(all_valid_path, "w") as handle:
             write_hypothesis_group(
                 handle,
                 states=assignments,
@@ -515,7 +555,28 @@ def check_topology_physics_contract() -> None:
                 scaler_identity=restored_scaler.identity_sha256,
                 scorer_type="learned",
             )
+        with h5py.File(all_valid_path, "r") as handle:
             validate_hypothesis_group(handle, count=1, top_k=2)
+
+        padded_path = Path(directory) / "hypotheses-padded.h5"
+        with h5py.File(padded_path, "w") as handle:
+            write_hypothesis_group(
+                handle,
+                states=padded,
+                truth=torch.tensor([[True, False]]),
+                evaluation=padded_evaluation,
+                scaler_identity=restored_scaler.identity_sha256,
+                scorer_type="learned",
+            )
+        with h5py.File(padded_path, "r") as handle:
+            validate_hypothesis_group(handle, count=1, top_k=2)
+
+        chunk_path = Path(directory) / "chunked.h5"
+        with h5py.File(chunk_path, "w") as handle:
+            dataset = handle.create_dataset("large", data=np.arange(40, dtype=np.float32).reshape(10, 4))
+            chunks = list(_iter_hdf5_chunks(dataset, target_bytes=32))
+        if len(chunks) != 5 or any(chunk.shape[0] != 2 for chunk in chunks):
+            raise AssertionError("HDF5 deep-validation chunking is not bounded by target bytes")
 
     reused, branches = reuse_unconditioned_posterior(posterior, 5)
     if branches != 1 or reused.shape != (1, 5, 3, 2, 3):
@@ -628,12 +689,12 @@ def check_prediction_writer_shape_contract() -> None:
     """HDF5 prediction shapes must not inherit torch's extendible-dimension type."""
     import h5py
 
-    from joint_event_reconstruction.prediction import _create
+    from joint_event_reconstruction.prediction import create_prediction_dataset
 
     with tempfile.TemporaryDirectory(prefix="jer-prediction-writer-") as directory:
         path = Path(directory) / "prediction.h5"
         with h5py.File(path, "w") as handle:
-            dataset = _create(
+            dataset = create_prediction_dataset(
                 handle,
                 "physical_samples",
                 torch.Size((2, 2, 4)),
@@ -1350,6 +1411,38 @@ def check_nested_subsets() -> None:
         previous = selected
 
 
+def check_campaign_scheduler_contract() -> None:
+    """Pending Slurm arrays and study filters must never look like failures."""
+    from scripts.submit_campaign import _classify_array, _parse_study_filter
+
+    cases = (
+        (("PENDING", {}, 4), "PENDING"),
+        (("CONFIGURING", {}, 4), "PENDING"),
+        (("RUNNING", {0: "RUNNING"}, 4), "RUNNING"),
+        (("COMPLETED", {}, 4), "PENDING"),
+        (("COMPLETED", {0: "COMPLETED", 1: "COMPLETED"}, 2), "COMPLETED"),
+        (("COMPLETED", {0: "COMPLETED", 1: "FAILED"}, 2), "FAILED"),
+        (("TIMEOUT", {}, 4), "FAILED"),
+    )
+    for (parent, children, expected_tasks), expected in cases:
+        observed, _ = _classify_array(parent, children, expected_tasks)
+        if observed != expected:
+            raise AssertionError(
+                f"Unexpected Slurm array classification for {parent!r}, "
+                f"children={children}: {observed!r} != {expected!r}"
+            )
+    if _parse_study_filter(None, {"a"}) is not None:
+        raise AssertionError("Missing study filter must select the maintained campaign")
+    if _parse_study_filter("a,b,a", {"a", "b"}) != {"a", "b"}:
+        raise AssertionError("Study filter did not normalise selected names")
+    try:
+        _parse_study_filter("missing", {"a"})
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("Unknown study filter name was accepted")
+
+
 def check_loader_split_seed_contract() -> None:
     base = load_experiment("configs/experiments/ttbar2L.yaml")
     changed_model_seed = load_experiment(
@@ -1467,7 +1560,7 @@ def check_truth_oracle_unreconstructable_contract() -> None:
         raise AssertionError("Unreconstructable truth-oracle event was not masked")
 
     from joint_event_reconstruction.physics import compose_assignment_state
-    from joint_event_reconstruction.prediction import _compose_physics, _truth_node_indices
+    from joint_event_reconstruction.prediction import compose_physics, truth_node_indices
 
     valid_batch = copy.deepcopy(batch)
     valid_batch["structured"]["pools"][node]["truth_index"][0] = 0
@@ -1478,14 +1571,14 @@ def check_truth_oracle_unreconstructable_contract() -> None:
     samples = torch.zeros(
         (2, 1, 2, len(module.spec.invisible_roles), 3), dtype=torch.float32
     )
-    composites, _, _ = _compose_physics(
+    composites, _, _ = compose_physics(
         module,
         valid_batch,
         [(), ()],
         samples,
         truth_assignment=True,
     )
-    truth_indices = _truth_node_indices(module.spec, valid_batch, 1)
+    truth_indices = truth_node_indices(module.spec, valid_batch, 1)
     oracle_invisible = {
         role.key: samples[1, 0, 0, role_index]
         for role_index, role in enumerate(module.spec.invisible_roles)
@@ -1508,7 +1601,7 @@ def check_truth_oracle_unreconstructable_contract() -> None:
                 "Truth-oracle composite output did not use the truth assignment"
             )
 
-    alternative, _, _ = _compose_physics(
+    alternative, _, _ = compose_physics(
         module,
         valid_batch,
         [[object()], [object()]],
@@ -1523,7 +1616,7 @@ def check_truth_oracle_unreconstructable_contract() -> None:
 
     changed_samples = samples.clone()
     changed_samples[1, 0, 0, 0, 0] = 1.0
-    changed, _, _ = _compose_physics(
+    changed, _, _ = compose_physics(
         module,
         valid_batch,
         [(), ()],
@@ -1538,7 +1631,7 @@ def check_truth_oracle_unreconstructable_contract() -> None:
             "Truth-oracle composite is insensitive to its generated invisible sample"
         )
 
-    unsupported, _, _ = _compose_physics(
+    unsupported, _, _ = compose_physics(
         module,
         batch,
         [(), ()],
@@ -1786,13 +1879,14 @@ def main() -> None:
     check_slurm_snapshot_contract()
     check_postprocess_recovery_contract()
     check_campaign_gate_contract()
+    check_campaign_scheduler_contract()
     check_slurm_option_routing_contract()
     check_campaign_identity_contract()
     print(
         "PASS: architecture, training-identity, partial-checkpoint, split-seed, "
         "nested-subset, coordinate, truth-oracle, exchange, permutation, "
         "freeze, public-input, same-flavour-role, campaign-gate, Slurm-option, "
-        "campaign-identity, prediction-writer, mass-shell, Conditional-L-GATr "
+        "campaign-identity, campaign-scheduler, prediction-writer, mass-shell, Conditional-L-GATr "
         "Slurm-snapshot and resumable-postprocess contracts"
     )
 

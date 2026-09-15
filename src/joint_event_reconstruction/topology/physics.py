@@ -829,7 +829,31 @@ class LearnedHypothesisScorer(nn.Module):
 
 
 class MatchedVisibleOnlyScorer(LearnedHypothesisScorer):
-    """Capacity-matched control whose inputs contain no invisible physics."""
+    """Capacity-matched control using only pre-invisible visible summaries.
+
+    The four inputs are, in order, visible log score, visible probability,
+    event assignment entropy, and the top-1/top-2 margin.  Keeping this input
+    contract explicit prevents a control study from accidentally receiving
+    neutrino-derived physics features.
+    """
+
+    input_names = (
+        "visible_log_score",
+        "visible_probability",
+        "assignment_entropy",
+        "top1_top2_margin",
+    )
+
+    def __init__(self, hidden: int = 32):
+        super().__init__(len(self.input_names), hidden=hidden)
+
+    def forward(self, visible_features: torch.Tensor) -> torch.Tensor:
+        if visible_features.shape[-1] != len(self.input_names):
+            raise ValueError(
+                "MatchedVisibleOnlyScorer expects exactly four visible-only features: "
+                f"{self.input_names}"
+            )
+        return super().forward(visible_features)
 
 
 def reuse_unconditioned_posterior(
@@ -943,17 +967,28 @@ class HypothesisEvaluator:
                 valid_samples=valid_samples,
                 valid_hypotheses=valid_hypotheses,
             )
-            analytic_score = self.analytic(reduction).masked_fill(
+            raw_analytic = self.analytic(reduction)
+            if not torch.isfinite(raw_analytic[valid_hypotheses]).all():
+                raise ValueError(
+                    "Physics compatibility produced a non-finite score for a valid hypothesis"
+                )
+            analytic_score = raw_analytic.masked_fill(
                 ~valid_hypotheses, -torch.inf
             )
             if self.mode == "physics":
-                learned_delta = self.alpha * analytic_score
+                # Keep the invalid support out of the correction before applying
+                # alpha.  In particular, ``0 * -inf`` would otherwise create a
+                # NaN for the natural visible-only (alpha=0) control.
+                safe_analytic = torch.where(
+                    valid_hypotheses, raw_analytic, torch.zeros_like(raw_analytic)
+                )
+                learned_delta = self.alpha * safe_analytic
             else:
                 scorer_input = torch.nan_to_num(
                     reduction.as_tensor(), nan=0.0, posinf=0.0, neginf=0.0
                 )
                 learned_delta = self.scorer(scorer_input)
-                learned_delta = learned_delta.masked_fill(~valid_hypotheses, -torch.inf)
+                learned_delta = learned_delta.masked_fill(~valid_hypotheses, 0.0)
         final_score = (visible_score + learned_delta).masked_fill(
             ~valid_hypotheses, -torch.inf
         )

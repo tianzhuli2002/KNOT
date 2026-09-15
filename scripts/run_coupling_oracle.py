@@ -66,6 +66,28 @@ def _configure_cpu_data(config):
     return visible
 
 
+def _canonical_data_identity(data) -> str:
+    """Reuse the maintained tensor-cache and split identity for provenance."""
+    if data.tensor_cache is None:
+        raise ValueError("Coupling oracle requires the maintained tensor cache identity")
+    manifest_path = Path(data.tensor_cache).with_suffix(".json")
+    if not manifest_path.is_file():
+        raise FileNotFoundError(f"Tensor cache manifest is missing: {manifest_path}")
+    manifest = json.loads(manifest_path.read_text())
+    source_identity = manifest.get("source_identity")
+    cache_key = manifest.get("cache_key")
+    if not isinstance(source_identity, dict) or not cache_key:
+        raise ValueError(
+            f"Tensor cache manifest has no stable source identity: {manifest_path}"
+        )
+    payload = {
+        "cache_key": str(cache_key),
+        "source_identity": source_identity,
+        "split_identity": data.split_metadata,
+    }
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+
+
 def _static_pools(batches: list[dict], spec) -> dict:
     result = {}
     for node_name in spec.dag_order:
@@ -436,7 +458,7 @@ def main() -> None:
     kinematics = TopologyKinematics(spec)
     features = PhysicsFeatureEngine(spec.physics)
     scaler = _fit_scaler(
-        data, spec, kinematics, features, str(Path(data.h5_path).resolve())
+        data, spec, kinematics, features, _canonical_data_identity(data)
     )
     validation = _collect_validation(data, spec)
     source_sha = _git_sha()

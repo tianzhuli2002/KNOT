@@ -81,16 +81,17 @@ winner is selected automatically.  The intended dependency is:
 ```text
 Study 01 → assignment_reasoning → Study 12
 Study 12 → visible_assignment → Study 02 / Study 05 / Study 11
-Study 02 → invisible_generator → Study 13
-Study 05 → assignment_formulation
+Study 02 + Study 08 → invisible_generator + inference budget
 Study 13 → invisible_coordinates
-visible_assignment + assignment_formulation + invisible_generator + invisible_coordinates
-  → Study 03 → assignment_conditioning
-assignment_conditioning → Study 04 → invisible_feedback
-all preceding factorised decisions → Study 06 → joint_model
-joint_model → Study 09 / conditional Study 07
+Study 15 → invisible_backbone
+Study 10 → assignment_coupling
+optional slim Study 03 → one reverse assignment-conditioned pass
 Study 12 predictions → Analysis 14 (offline; no encoder selection)
 ```
+
+The historical branches `assignment_conditioning → Study 04`, the joint-model
+comparison in Study 06, and recurrent Study 07 remain available as follow-up
+research. They are not Paper-1 dependencies.
 
 configs/studies/UPSTREAM_SELECTIONS.yaml is the small human gate registry.
 Locked gates contain an explicit selected patch and, where weights are reused,
@@ -98,11 +99,41 @@ an exact per-topology/per-seed checkpoint identity. Pending gates hard-block
 real submission; not_applicable is reported explicitly. Configuration
 inheritance and checkpoint initialisation are separate manifest fields.
 
-python scripts/submit_campaign.py --ready dry-plans every maintained study,
-submits each currently eligible study once, and leaves scientific winner
-selection to the human gate. scripts/run_study.py runs Analysis 14 on the
-paired Study-12 validation predictions; it is a review diagnostic, never an
-encoder-selection rule.
+The Paper-1 critical path is intentionally shorter:
+
+```text
+Study 02 + Study 08
+    ↓ generator objective + CFM inference budget
+Study 13
+    ↓ invisible_coordinates
+Study 15
+    ↓ invisible_backbone
+Study 10
+    ↓ assignment_coupling
+optional slim Study 03
+    ↓ one possible refined-assignment → invisible pass
+freeze the model, then evaluate the sealed test split once
+```
+
+Study 10 compares the visible baseline, a matched visible-only control, analytic
+physics compatibility, a small learned correction, and a truth-neutrino oracle.
+Studies 04, 06 and 07 remain documented follow-up work and are not released by
+the Paper-1 campaign command. `python scripts/submit_campaign.py --ready`
+supports an explicit study allowlist for this reason. The Study-10 physics score
+is an interpretable unnormalised compatibility/evidence-like score, not a
+normalised likelihood; its feature scaler is fit on the training split only.
+
+The optional `HYPOTHESES` prediction group stores padded top-K support and
+physics summaries without invalidating historical prediction files that do not
+contain it. For an unconditioned invisible posterior, one generated posterior
+is broadcast over all assignment hypotheses; generator cost therefore scales
+with posterior samples rather than `K × samples`.
+
+`python scripts/submit_campaign.py --status` reports every maintained study,
+while `--ready --studies study_name,...` releases only the named eligible
+studies. Scientific winner selection remains a human-gated validation decision.
+scripts/run_study.py runs Analysis 14 on paired Study-12 validation predictions;
+it is a review diagnostic, never an encoder-selection rule.
 
 ## Identity and execution
 

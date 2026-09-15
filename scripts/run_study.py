@@ -1362,24 +1362,23 @@ def _study_specific_analysis(
                 f"missing={sorted(required - selected)}"
             )
             return
+        arguments = []
         for topology in topologies:
             for seed in seeds:
                 prediction = _prediction_path(
                     root, study, topology, "compatibility", seed, "posterior"
                 )
-                output = (
-                    root / study.name / topology / "analysis" / f"seed_{seed}"
-                    / "compatibility_scan.json"
-                )
-                command = [
-                    sys.executable,
-                    str(ROOT / "scripts/analyze_compatibility_scan.py"),
-                    "--prediction", str(prediction),
-                    "--output", str(output),
-                ]
-                print(shlex.join(command))
-                if not dry_run:
-                    subprocess.run(command, cwd=ROOT, check=True)
+                arguments.extend(["--prediction", str(prediction)])
+        output = root / study.name / "study10_human_review"
+        command = [
+            sys.executable,
+            str(ROOT / "scripts/analyze_study10.py"),
+            "--output", str(output),
+            *arguments,
+        ]
+        print(shlex.join(command))
+        if not dry_run:
+            subprocess.run(command, cwd=ROOT, check=True)
         return
     if study.name != "visible_recurrence":
         print(f"No dedicated analysis is maintained for {study.name}.")

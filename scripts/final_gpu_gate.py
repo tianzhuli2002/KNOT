@@ -358,7 +358,7 @@ def _checkpoint_prediction(modules, output: Path, device: torch.device):
         data,
         data.invisible_scaler,
         prediction_path,
-        split="test",
+        split="validation",
         top_k=2,
         posterior_samples=2,
         recurrent_steps=None,

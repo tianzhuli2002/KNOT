@@ -2,7 +2,7 @@ name: synthetic-smoke
 
 on:
   push:
-    branches: [main]
+    branches: [main, study-finalisation]
     paths:
       - "src/**"
       - "scripts/**"
@@ -32,7 +32,7 @@ jobs:
       - name: Compile maintained Python
         run: python -m compileall -q src scripts
       - name: Check fatal static errors
-        run: ruff check src scripts --select E9,F63,F7,F82
+        run: ruff check src scripts --select E9,F63,F7,F82,F401,F811
       - name: Validate compact experiment configs
         run: |
           python - <<'PY'
@@ -48,15 +48,35 @@ jobs:
       - name: Validate maintained study manifests and resolved patches
         if: matrix.topology == 'ttbar2L'
         run: |
-          set -euo pipefail
-          for study in configs/studies/*.yaml; do
-            python scripts/run_study.py "$study" plan --device cpu --dry-run
-          done
+          python - <<'PY'
+          from pathlib import Path
+          from joint_event_reconstruction.studies import (
+              ScientificGateNotApplicable,
+              ScientificGatePending,
+              load_study,
+              resolve_study,
+          )
+
+          for path in sorted(Path("configs/studies").glob("[0-9][0-9]_*.yaml")):
+              manifest = load_study(path)
+              try:
+                  resolve_study(path)
+              except (ScientificGatePending, ScientificGateNotApplicable) as error:
+                  print(f"loaded {manifest.name}: {error}")
+              else:
+                  print(f"resolved {manifest.name}")
+          PY
+      - name: Import the maintained GPU smoke without running it
+        run: |
+          python - <<'PY'
+          import scripts.smoke_hypothesis_gpu
+          print("PASS: smoke_hypothesis_gpu imports cleanly")
+          PY
       - name: Validate filtered dependency closure and Slurm planning
         if: matrix.topology == 'ttbar2L'
         run: |
-          python scripts/submit_study_slurm.py configs/studies/04_c2_feedback.yaml \
-            --variants c2 --dry-run --no-postprocess --output-root /tmp/jer-study-slurm
+          python scripts/submit_study_slurm.py configs/studies/13_invisible_coordinates.yaml \
+            --dry-run --no-postprocess --output-root /tmp/jer-study-slurm
       - name: Synthetic smoke
         run: python scripts/smoke_synthetic.py --topology ${{ matrix.topology }} --device cpu --events 4
       - name: Synthetic benchmark smoke

@@ -36,7 +36,12 @@ def write_hypothesis_group(
     if not torch.isfinite(truth.to(torch.float32)).all():
         raise ValueError("Hypothesis truth indicators must be finite")
     group = destination.create_group("HYPOTHESES")
+    valid_hypotheses = torch.isfinite(evaluation.visible_log_score)
+    group.attrs["schema_version"] = "physics_hypotheses_v1"
     group.create_dataset("state", data=_numpy(states, np.int32))
+    group.create_dataset(
+        "valid_hypotheses", data=_numpy(valid_hypotheses, np.bool_)
+    )
     group.create_dataset(
         "visible_log_score", data=_numpy(evaluation.visible_log_score, np.float32)
     )

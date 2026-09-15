@@ -48,6 +48,49 @@ def _require_finite(values: np.ndarray, label: str) -> None:
         raise ValueError(f"{label} contains non-finite values")
 
 
+def _iter_hdf5_chunks(
+    dataset: h5py.Dataset, *, target_bytes: int = 32 * 1024 * 1024
+):
+    """Yield bounded first-axis chunks without materialising a large dataset."""
+    if dataset.ndim == 0:
+        yield dataset[()]
+        return
+    if dataset.shape[0] == 0:
+        return
+    trailing = int(np.prod(dataset.shape[1:], dtype=np.int64))
+    row_bytes = max(1, trailing * dataset.dtype.itemsize)
+    rows = max(1, int(target_bytes) // row_bytes)
+    for start in range(0, dataset.shape[0], rows):
+        yield dataset[start : min(dataset.shape[0], start + rows)]
+
+
+def _require_finite_dataset(
+    dataset: h5py.Dataset, label: str, *, deep: bool = True
+) -> None:
+    if not deep:
+        return
+    for chunk in _iter_hdf5_chunks(dataset):
+        if not np.isfinite(chunk).all():
+            raise ValueError(f"{label} contains non-finite values")
+
+
+def _require_score_dataset(
+    dataset: h5py.Dataset,
+    valid: np.ndarray,
+    label: str,
+    *,
+    deep: bool = True,
+) -> None:
+    """Allow ``-inf`` only on padded score entries."""
+    if not deep:
+        return
+    values = dataset[:]
+    if np.isnan(values).any() or np.isposinf(values).any():
+        raise ValueError(f"{label} contains NaN or +inf")
+    if not np.isfinite(values[valid]).all():
+        raise ValueError(f"{label} contains a non-finite valid value")
+
+
 def _require_finite_or_missing(values: np.ndarray, label: str) -> None:
     """Allow an all-NaN four-vector for an undefined composite hypothesis."""
     if np.isinf(values).any() or (
@@ -154,6 +197,7 @@ def validate_hypothesis_group(
     count: int,
     top_k: int,
     label: str = "Prediction HYPOTHESES",
+    deep: bool = True,
 ) -> None:
     """Validate the optional physics-aware hypothesis extension.
 
@@ -163,17 +207,28 @@ def validate_hypothesis_group(
     if "HYPOTHESES" not in source:
         return
     hypotheses = source["HYPOTHESES"]
-    required = ("state", "visible_log_score", "visible_probability", "truth")
+    if hypotheses.attrs.get("schema_version") != "physics_hypotheses_v1":
+        raise ValueError(f"{label} has an unsupported schema_version")
+    required = (
+        "state",
+        "valid_hypotheses",
+        "visible_log_score",
+        "visible_probability",
+        "truth",
+    )
     missing = [name for name in required if name not in hypotheses]
     if missing:
         raise ValueError(f"{label} is missing datasets {missing}")
     state = hypotheses["state"][:]
+    valid = hypotheses["valid_hypotheses"][:]
     log_score = hypotheses["visible_log_score"][:]
     probability = hypotheses["visible_probability"][:]
     truth = hypotheses["truth"][:]
     if (
         state.ndim != 3
         or state.shape[:2] != (count, top_k)
+        or valid.shape != (count, top_k)
+        or valid.dtype != np.bool_
         or log_score.shape != (count, top_k)
         or probability.shape != (count, top_k)
         or truth.shape != (count, top_k)
@@ -181,12 +236,30 @@ def validate_hypothesis_group(
     ):
         raise ValueError(f"{label} has invalid core dataset shapes")
     _require_integer(state, f"{label}/state")
-    _require_finite(log_score, f"{label}/visible_log_score")
-    _require_finite(probability, f"{label}/visible_probability")
-    if (probability < 0).any() or (probability.sum(axis=1) <= 0).any():
+    if not valid.any(axis=1).all():
+        raise ValueError(f"{label}/valid_hypotheses has an empty event")
+    if not valid[:, 0].all() or (
+        np.diff(valid.astype(np.int8), axis=1) > 0
+    ).any():
+        raise ValueError(f"{label}/valid_hypotheses must be a non-empty prefix")
+    _require_score_dataset(
+        hypotheses["visible_log_score"], valid, f"{label}/visible_log_score", deep=deep
+    )
+    _require_finite_dataset(
+        hypotheses["visible_probability"],
+        f"{label}/visible_probability",
+        deep=deep,
+    )
+    if deep and ((probability < 0).any() or (probability.sum(axis=1) <= 0).any()):
         raise ValueError(f"{label}/visible_probability is invalid")
-    if not np.allclose(probability.sum(axis=1), 1.0, rtol=1.0e-5, atol=1.0e-6):
+    if (probability[~valid] != 0).any():
+        raise ValueError(f"{label}/visible_probability is non-zero outside support")
+    if deep and not np.allclose(
+        probability.sum(axis=1), 1.0, rtol=1.0e-5, atol=1.0e-6
+    ):
         raise ValueError(f"{label}/visible_probability is not normalised")
+    if truth[~valid].any():
+        raise ValueError(f"{label}/truth is true outside valid support")
 
     physics = hypotheses.get("PHYSICS")
     if physics is not None:
@@ -210,9 +283,13 @@ def validate_hypothesis_group(
             ("feature_mean", means),
             ("feature_std", std),
             ("feature_rms", rms),
-            ("analytic_score", analytic),
         ):
-            _require_finite(values, f"{label}/PHYSICS/{name}")
+            _require_finite_dataset(physics[name], f"{label}/PHYSICS/{name}", deep=deep)
+            if (values[~valid] != 0).any():
+                raise ValueError(f"{label}/PHYSICS/{name} is non-zero outside support")
+        _require_score_dataset(
+            physics["analytic_score"], valid, f"{label}/PHYSICS/analytic_score", deep=deep
+        )
         raw_names = physics.attrs.get("feature_names")
         if raw_names is not None:
             if isinstance(raw_names, bytes):
@@ -235,13 +312,34 @@ def validate_hypothesis_group(
             raise ValueError(f"{label}/{name} has invalid shape")
         if name == "final_rank":
             _require_integer(values, f"{label}/{name}")
+            if (values < 0).any() or (values >= top_k).any():
+                raise ValueError(f"{label}/{name} contains an out-of-range index")
             if not np.all(np.sort(values, axis=1) == np.arange(top_k)[None, :]):
                 raise ValueError(f"{label}/final_rank is not a permutation")
+            ordered_valid = np.take_along_axis(valid, values, axis=1)
+            if not ordered_valid[:, 0].all() or (
+                np.diff(ordered_valid.astype(np.int8), axis=1) > 0
+            ).any():
+                raise ValueError(f"{label}/final_rank puts invalid hypotheses before valid ones")
+        elif name in {"final_log_score"}:
+            _require_score_dataset(
+                hypotheses[name], valid, f"{label}/{name}", deep=deep
+            )
+        elif name == "learned_delta":
+            _require_finite_dataset(hypotheses[name], f"{label}/{name}", deep=deep)
+            if (values[~valid] != 0).any():
+                raise ValueError(f"{label}/{name} is non-zero outside support")
         else:
-            _require_finite(values, f"{label}/{name}")
+            _require_finite_dataset(hypotheses[name], f"{label}/{name}", deep=deep)
+            if (values[~valid] != 0).any():
+                raise ValueError(f"{label}/{name} is non-zero outside support")
+            if deep and not np.allclose(
+                values.sum(axis=1), 1.0, rtol=1.0e-5, atol=1.0e-6
+            ):
+                raise ValueError(f"{label}/{name} is not normalised")
 
 
-def validate_prediction(path: str | Path) -> None:
+def validate_prediction(path: str | Path, *, deep: bool = True) -> None:
     with h5py.File(path, "r") as source:
         _optional_framework_metadata(source, "Prediction output")
         if source.attrs.get("schema_version") != PREDICTION_SCHEMA:
@@ -355,27 +453,28 @@ def validate_prediction(path: str | Path) -> None:
                 or samples.shape[1] != top_k
                 or samples.shape[2] != posterior_samples
                 or samples.shape[4] != 3
-                or not np.isfinite(samples[:]).all()
             ):
                 raise ValueError("Prediction output has invalid invisible samples")
+            _require_finite_dataset(samples, "INVISIBLE/samples", deep=deep)
             roles = _read_invisible_roles(source, samples.shape[3], "Prediction output")
             for name in ("INVISIBLE/mean", "INVISIBLE/std"):
-                values = source[name][:]
+                values = source[name]
                 if values.shape != (count, top_k, len(roles), 3):
                     raise ValueError(f"Prediction output has invalid {name}")
-                _require_finite(values, name)
+                _require_finite_dataset(values, name, deep=deep)
             physical = source.get("INVISIBLE/four_vectors")
             if physical is not None:
-                values = physical[:]
                 expected = (count, top_k, posterior_samples, len(roles), 4)
-                if values.shape != expected:
+                if physical.shape != expected:
                     raise ValueError("Prediction output has invalid invisible four-vectors")
-                _require_finite(values, "INVISIBLE/four_vectors")
+                _require_finite_dataset(
+                    physical, "INVISIBLE/four_vectors", deep=deep
+                )
                 for name in ("INVISIBLE/four_vector_mean", "INVISIBLE/four_vector_std"):
-                    values = source[name][:]
+                    values = source[name]
                     if values.shape != (count, top_k, len(roles), 4):
                         raise ValueError(f"Prediction output has invalid {name}")
-                    _require_finite(values, name)
+                    _require_finite_dataset(values, name, deep=deep)
             if "TRUTH/NEUTRINO" not in source:
                 raise ValueError("Prediction output has invalid invisible truth")
             truth = source["TRUTH/NEUTRINO"][:]
@@ -389,7 +488,9 @@ def validate_prediction(path: str | Path) -> None:
                 values = truth_physical[:]
                 if values.shape != (count, samples.shape[3], 4):
                     raise ValueError("Prediction output has invalid invisible truth four-vectors")
-                _require_finite(values, "TRUTH/INVISIBLE_FOUR_VECTOR")
+                _require_finite_dataset(
+                    truth_physical, "TRUTH/INVISIBLE_FOUR_VECTOR", deep=deep
+                )
             branches = int(
                 source["INVISIBLE"].attrs[
                     "unique_assignment_conditioning_branches"
@@ -408,17 +509,20 @@ def validate_prediction(path: str | Path) -> None:
                 raise ValueError("Prediction output is missing truth composites")
             truth_composites = source["TRUTH/COMPOSITES"]
             for node in source["COMPOSITES"]:
-                values = source[f"COMPOSITES/{node}"][:]
-                truth_values = truth_composites[node][:]
+                values = source[f"COMPOSITES/{node}"]
+                truth_values = truth_composites[node]
                 if (
                     values.shape != (count, top_k, posterior_samples, 4)
                     or truth_values.shape != (count, 4)
                 ):
                     raise ValueError(f"Prediction output has invalid composite {node}")
-                _require_finite_or_missing(values, f"Prediction COMPOSITES/{node}")
-                _require_finite_or_missing(
-                    truth_values, f"Prediction TRUTH/COMPOSITES/{node}"
-                )
+                if deep:
+                    for chunk in _iter_hdf5_chunks(values):
+                        _require_finite_or_missing(chunk, f"Prediction COMPOSITES/{node}")
+                    for chunk in _iter_hdf5_chunks(truth_values):
+                        _require_finite_or_missing(
+                            chunk, f"Prediction TRUTH/COMPOSITES/{node}"
+                        )
         joint = source["JOINT"]
         if "compatibility_logit" in joint:
             for name in ("compatibility_logit", "final_score", "rank_indices"):
@@ -439,10 +543,10 @@ def validate_prediction(path: str | Path) -> None:
                 raise ValueError("Prediction compatibility_weight is not finite")
         elif any(name in joint for name in ("final_score", "rank_indices")):
             raise ValueError("Prediction output has incomplete JOINT compatibility data")
-        validate_hypothesis_group(source, count=count, top_k=top_k)
+        validate_hypothesis_group(source, count=count, top_k=top_k, deep=deep)
 
 
-def validate_discrete_prediction(path: str | Path) -> None:
+def validate_discrete_prediction(path: str | Path, *, deep: bool = True) -> None:
     with h5py.File(path, "r") as source:
         _optional_framework_metadata(source, "Discrete-flow prediction")
         if source.attrs.get("schema_version") != DISCRETE_PREDICTION_SCHEMA:
@@ -511,7 +615,7 @@ def validate_discrete_prediction(path: str | Path) -> None:
             raise ValueError("Discrete-flow prediction contains invalid clean state indices")
 
 
-def validate_joint_prediction(path: str | Path) -> None:
+def validate_joint_prediction(path: str | Path, *, deep: bool = True) -> None:
     with h5py.File(path, "r") as source:
         _optional_framework_metadata(source, "Joint-flow prediction")
         if source.attrs.get("schema_version") != JOINT_PREDICTION_SCHEMA:

@@ -85,12 +85,30 @@ version reported by `importlib.metadata`; standard and physics Transformer paths
 remain usable without that extra. Studies 02--13 now use strict gate resolution
 and explicit checkpoint provenance rather than copied provisional reference
 patches. The completed Study-01 validation decision is locked as
-`assignment_reasoning=m1`; `visible_assignment` remains a pending human gate.
-Study 12 and its validation-only Analysis-14 package are the current eligible
-campaign wave, while downstream training remains held at its scientific gates.
+At that recorded point, `assignment_reasoning=m1` was locked while
+`visible_assignment` remained a pending human gate. Study 12 and its
+validation-only Analysis-14 package were the eligible campaign wave, while
+downstream training was held at its scientific gates.
 
 Every new training directory records the public and resolved configuration, the
 resolved input contract, cache metadata/fingerprint, practical dataset identity,
 split identity, architecture identity, Git SHA and package versions. Cache
 storage location is operational provenance, not scientific identity: compatible
 contents are identified by the fingerprint stored inside the cache.
+
+## Paper-1 finalisation status — 2026-09-16
+
+The maintained critical path is `02/08 → 13 → 15 → 10 → optional 03`.
+The current branch is `study-finalisation`. The locked gates are
+`assignment_reasoning=m1`, `visible_assignment=lgatr`,
+`assignment_formulation=discriminative`, and `invisible_generator=cfm`.
+The CFM training checkpoints retain their original training SHA and checkpoint
+hashes; later evaluation and campaign code does not rewrite that provenance.
+
+`invisible_coordinates`, `invisible_backbone`, and `assignment_coupling` remain
+validation gates. The topology-configurable physics interface uses a separate
+physics signature, a train-only residual scaler, and an explicit optional
+`HYPOTHESES` prediction group. The truth-neutrino coupling oracle is a
+validation-only, non-deployable diagnostic; it does not use the sealed test
+split. Studies 04, 06 and 07 are deferred follow-up work, not Paper-1
+blockers.

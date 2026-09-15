@@ -20,9 +20,10 @@ variants:
         mode: factorized
       training: {trainable: [invisible]}
     initialise_from:
-    initialise_from_gate: visible_assignment
-    initialise_components: [visible, assignment]
+    initialise_from_gate:
+    initialise_components: []
     checkpoint_from:
+    checkpoint_from_gate: invisible_backbone
     predictions:
       default: {label: none, patch: {inference: {invisible: {samples_per_assignment: 32, flow: {steps: 4, solver: heun}}}}, recurrent_steps: null}
 

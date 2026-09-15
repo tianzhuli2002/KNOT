@@ -16,6 +16,15 @@ Studies apply controlled patches to a maintained experiment.
 
 ## Normal configuration
 
+### Current Paper-1 selection status
+
+The maintained Paper-1 path is selected in `configs/studies/UPSTREAM_SELECTIONS.yaml`:
+L-GATr visible representation, one-pass M1/discriminative assignment, and CFM
+invisible generation. Invisible coordinates, invisible-generator backbone and
+physics coupling remain validation gates. The example below is deliberately a
+feature-rich configuration example; its MET-residual coordinates, hypothesis
+conditioning and conditional-OT coupling are not implied to be selected.
+
 This excerpt uses the maintained ttbar2L feature ranges. `count` is the maximum
 number of retained objects from that collection.
 
@@ -133,5 +142,6 @@ The historical Study-01 reanalysis is under
 retrain models and does not select a winner. Ordinary downstream studies inherit
 the human-selected one-pass M1 assignment; recurrence is retained only in the
 explicit Study-01 and Study-11 diagnostics. Check the current campaign with
-`python scripts/submit_campaign.py --status` and submit only eligible work with
-`python scripts/submit_campaign.py --ready`.
+`python scripts/submit_campaign.py --status` and release only an intentional
+Paper-1 study, for example
+`python scripts/submit_campaign.py --ready --studies invisible_coordinates`.

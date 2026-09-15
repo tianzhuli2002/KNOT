@@ -30,7 +30,7 @@ def _append(dataset: h5py.Dataset, values: np.ndarray) -> None:
     dataset[old:] = values
 
 
-def _create(
+def create_prediction_dataset(
     group: h5py.Group, name: str, tail: tuple[int, ...], dtype
 ) -> h5py.Dataset:
     # ``Tensor.shape`` is a torch.Size, whose ``__radd__`` preserves the
@@ -106,7 +106,7 @@ def decode_batch(spec, batch: dict, output: dict, k: int):
     return decoded
 
 
-def _node_indices(spec, batch: dict, event: int, hypothesis) -> torch.Tensor:
+def node_indices_for_hypothesis(spec, batch: dict, event: int, hypothesis) -> torch.Tensor:
     selected = dict(hypothesis.roots)
     for node in reversed(spec.dag_order):
         if node not in selected or selected[node] < 0:
@@ -129,7 +129,7 @@ def _node_indices(spec, batch: dict, event: int, hypothesis) -> torch.Tensor:
     )
 
 
-def _truth_node_indices(spec, batch: dict, event: int) -> torch.Tensor:
+def truth_node_indices(spec, batch: dict, event: int) -> torch.Tensor:
     return torch.stack(
         [
             batch["structured"]["pools"][node]["truth_index"][event]
@@ -138,7 +138,7 @@ def _truth_node_indices(spec, batch: dict, event: int) -> torch.Tensor:
     ).to(torch.long)
 
 
-def _compose_physics(
+def compose_physics(
     module,
     batch: dict,
     assignments,
@@ -186,9 +186,9 @@ def _compose_physics(
         hypotheses = range(samples.shape[1]) if truth_assignment else assignments[event]
         for hypothesis_index, hypothesis in enumerate(hypotheses):
             indices = (
-                _truth_node_indices(module.spec, batch, event)
+                truth_node_indices(module.spec, batch, event)
                 if truth_assignment
-                else _node_indices(module.spec, batch, event, hypothesis)
+                else node_indices_for_hypothesis(module.spec, batch, event, hypothesis)
             )
             hypothesis_values = {node: [] for node in module.spec.dag_order}
             for sample_index in range(posterior_samples):
@@ -222,7 +222,7 @@ def _compose_physics(
             composite_values[node].append(torch.stack(event_values[node]))
 
         if truth_supported:
-            truth_indices = _truth_node_indices(module.spec, batch, event)
+            truth_indices = truth_node_indices(module.spec, batch, event)
             truth_invisible = {
                 role.key: batch["invisible_truth"][event, role_index]
                 for role_index, role in enumerate(module.spec.invisible_roles)
@@ -352,7 +352,7 @@ def predict_hdf5(
     scaler,
     output_path: str | Path,
     *,
-    split: str = "test",
+    split: str,
     top_k: int = 1,
     posterior_samples: int = 1,
     recurrent_steps: int | None = None,
@@ -361,6 +361,10 @@ def predict_hdf5(
     checkpoint_path: str = "",
     compatibility_weight: float = 1.0,
 ) -> None:
+    if split not in {"train", "validation", "test"}:
+        raise ValueError(
+            f"Prediction split must be one of train, validation, test; got {split!r}"
+        )
     if top_k <= 0 or posterior_samples <= 0:
         raise ValueError("Prediction K and M must be positive")
     loader = {
@@ -450,7 +454,7 @@ def predict_hdf5(
         )
 
         for batch in iterator:
-            batch = _to_device(batch, device)
+            batch = to_device(batch, device)
             output = module(batch, recurrent_steps=recurrent_steps)
             decoded = decode_batch(module.spec, batch, output, top_k)
             assignments = [item.assignments for item in decoded]
@@ -530,7 +534,7 @@ def predict_hdf5(
                 physical_mean = physical_samples.mean(dim=2).cpu().numpy().astype(np.float32)
                 physical_std = physical_samples.std(dim=2).cpu().numpy().astype(np.float32)
                 projection = _met_exact_truth_projection(module, batch)
-                composites, truth_composites, observed_met = _compose_physics(
+                composites, truth_composites, observed_met = compose_physics(
                     module,
                     batch,
                     assignments,
@@ -588,84 +592,84 @@ def predict_hdf5(
                 truth_group = destination.create_group("TRUTH")
                 observed_group = destination.create_group("OBSERVED")
                 datasets = {
-                    "event": _create(destination, "EVENT_ID", (), "<i8"),
-                    "roots": _create(
+                    "event": create_prediction_dataset(destination, "EVENT_ID", (), "<i8"),
+                    "roots": create_prediction_dataset(
                         visible_group,
                         "root_candidate_indices",
                         root_indices.shape[1:],
                         "<i4",
                     ),
-                    "log_scores": _create(
+                    "log_scores": create_prediction_dataset(
                         visible_group, "assignment_log_scores", (top_k,), "<f4"
                     ),
-                    "logz": _create(visible_group, "exact_logZ", (), "<f4"),
-                    "probabilities": _create(
+                    "logz": create_prediction_dataset(visible_group, "exact_logZ", (), "<f4"),
+                    "probabilities": create_prediction_dataset(
                         visible_group, "constrained_probabilities", (top_k,), "<f4"
                     ),
-                    "valid_hypotheses": _create(
+                    "valid_hypotheses": create_prediction_dataset(
                         visible_group, "valid_hypotheses", (top_k,), "?"
                     ),
-                    "truth_assignment": _create(
+                    "truth_assignment": create_prediction_dataset(
                         truth_group, "topk_assignment", (top_k,), "?"
                     ),
-                    "njet": _create(observed_group, "njet", (), "<i2"),
+                    "njet": create_prediction_dataset(observed_group, "njet", (), "<i2"),
                 }
                 destination.attrs["root_order"] = json.dumps(list(roots))
                 for node in module.spec.dag_order:
                     node_group = visible_group.create_group(f"nodes/{node}")
-                    datasets[f"{node}/selected"] = _create(
+                    datasets[f"{node}/selected"] = create_prediction_dataset(
                         node_group, "selected_candidate", (), "<i4"
                     )
-                    datasets[f"{node}/truth"] = _create(
+                    datasets[f"{node}/truth"] = create_prediction_dataset(
                         node_group, "truth_candidate", (), "<i4"
                     )
-                    datasets[f"{node}/reconstructable"] = _create(
+                    datasets[f"{node}/reconstructable"] = create_prediction_dataset(
                         node_group, "reconstructable", (), "?"
                     )
-                    datasets[f"{node}/truth_probability"] = _create(
+                    datasets[f"{node}/truth_probability"] = create_prediction_dataset(
                         node_group, "truth_probability", (), "<f4"
                     )
-                    datasets[f"{node}/entropy"] = _create(
+                    datasets[f"{node}/entropy"] = create_prediction_dataset(
                         node_group, "entropy", (), "<f4"
                     )
-                    datasets[f"{node}/margin"] = _create(
+                    datasets[f"{node}/margin"] = create_prediction_dataset(
                         node_group, "margin", (), "<f4"
                     )
                 if samples is not None:
-                    datasets["samples"] = _create(
+                    datasets["samples"] = create_prediction_dataset(
                         invisible_group, "samples", samples.shape[1:], "<f4"
                     )
-                    datasets["mean"] = _create(
+                    datasets["mean"] = create_prediction_dataset(
                         invisible_group, "mean", mean.shape[1:], "<f4"
                     )
-                    datasets["std"] = _create(
+                    datasets["std"] = create_prediction_dataset(
                         invisible_group, "std", std.shape[1:], "<f4"
                     )
-                    datasets["four_vectors"] = _create(
+                    datasets["four_vectors"] = create_prediction_dataset(
                         invisible_group,
                         "four_vectors",
                         physical_samples.shape[1:],
                         "<f4",
                     )
-                    datasets["four_vector_mean"] = _create(
+                    datasets["four_vector_mean"] = create_prediction_dataset(
                         invisible_group,
                         "four_vector_mean",
                         physical_mean.shape[1:],
                         "<f4",
                     )
-                    datasets["four_vector_std"] = _create(
+                    datasets["four_vector_std"] = create_prediction_dataset(
                         invisible_group,
                         "four_vector_std",
                         physical_std.shape[1:],
                         "<f4",
                     )
-                    datasets["nu_truth"] = _create(
+                    datasets["nu_truth"] = create_prediction_dataset(
                         truth_group,
                         "NEUTRINO",
                         tuple(batch["invisible_truth"].shape[1:]),
                         "<f4",
                     )
-                    datasets["truth_four_vector"] = _create(
+                    datasets["truth_four_vector"] = create_prediction_dataset(
                         truth_group,
                         "INVISIBLE_FOUR_VECTOR",
                         tuple(truth_physical.shape[1:]),
@@ -678,19 +682,19 @@ def predict_hdf5(
                         projection_group.attrs["definition"] = (
                             "orthogonal equal transverse shift to measured MET"
                         )
-                        datasets["projected_truth"] = _create(
+                        datasets["projected_truth"] = create_prediction_dataset(
                             projection_group,
                             "NEUTRINO_PROJECTED",
                             tuple(projection["projected"].shape[1:]),
                             "<f4",
                         )
-                        datasets["projection_px_shift"] = _create(
+                        datasets["projection_px_shift"] = create_prediction_dataset(
                             projection_group, "px_shift", (), "<f4"
                         )
-                        datasets["projection_py_shift"] = _create(
+                        datasets["projection_py_shift"] = create_prediction_dataset(
                             projection_group, "py_shift", (), "<f4"
                         )
-                        datasets["projection_per_role_magnitude"] = _create(
+                        datasets["projection_per_role_magnitude"] = create_prediction_dataset(
                             projection_group,
                             "per_role_transverse_magnitude",
                             (projection["per_role_magnitude"].shape[1],),
@@ -707,24 +711,24 @@ def predict_hdf5(
                         composite_group = destination.create_group("COMPOSITES")
                         truth_composite_group = truth_group.create_group("COMPOSITES")
                         for node, values in composites.items():
-                            datasets[f"composite/{node}"] = _create(
+                            datasets[f"composite/{node}"] = create_prediction_dataset(
                                 composite_group, node, values.shape[1:], "<f4"
                             )
-                            datasets[f"truth_composite/{node}"] = _create(
+                            datasets[f"truth_composite/{node}"] = create_prediction_dataset(
                                 truth_composite_group, node, (4,), "<f4"
                             )
                     if observed_met is not None:
-                        datasets["observed_met"] = _create(
+                        datasets["observed_met"] = create_prediction_dataset(
                             observed_group, "MET", (4,), "<f4"
                         )
                 if compatibility is not None:
-                    datasets["compatibility"] = _create(
+                    datasets["compatibility"] = create_prediction_dataset(
                         joint_group, "compatibility_logit", (top_k,), "<f4"
                     )
-                    datasets["final_score"] = _create(
+                    datasets["final_score"] = create_prediction_dataset(
                         joint_group, "final_score", (top_k,), "<f4"
                     )
-                    datasets["final_rank"] = _create(
+                    datasets["final_rank"] = create_prediction_dataset(
                         joint_group, "rank_indices", (top_k,), "<i4"
                     )
                     joint_group.attrs["compatibility_weight"] = compatibility_weight
@@ -839,9 +843,29 @@ def predict_hdf5(
     os.replace(temporary, target)
 
 
-def _to_device(value, device):
+def to_device(value, device):
     if torch.is_tensor(value):
         return value.to(device)
     if isinstance(value, dict):
-        return {key: _to_device(item, device) for key, item in value.items()}
+        return {key: to_device(item, device) for key, item in value.items()}
     return value
+
+
+# Private aliases remain for older internal diagnostics; maintained new code
+# should import the public names above.
+_create = create_prediction_dataset
+_truth_node_indices = truth_node_indices
+_compose_physics = compose_physics
+_node_indices = node_indices_for_hypothesis
+_to_device = to_device
+
+
+__all__ = [
+    "decode_batch",
+    "compose_physics",
+    "create_prediction_dataset",
+    "node_indices_for_hypothesis",
+    "predict_hdf5",
+    "truth_node_indices",
+    "to_device",
+]

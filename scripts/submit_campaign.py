@@ -70,6 +70,16 @@ def _study_paths() -> dict[str, Path]:
     return paths
 
 
+def _parse_study_filter(value: str | None, available: set[str]) -> set[str] | None:
+    if value is None:
+        return None
+    selected = {item.strip() for item in value.split(",") if item.strip()}
+    unknown = sorted(selected - available)
+    if unknown:
+        raise ValueError(f"Unknown maintained study names: {unknown}")
+    return selected
+
+
 def _identity(study: StudySpec, commit: str) -> tuple[str, dict]:
     payload = {
         "source_sha": commit,
@@ -164,6 +174,38 @@ def _task_count(path: str | Path | None) -> int:
     return sum(bool(line.strip()) for line in task_file.read_text().splitlines())
 
 
+def _classify_array(
+    parent_state: str,
+    child_states: dict[int, str],
+    expected_tasks: int,
+) -> tuple[str, str]:
+    """Classify an array without mistaking delayed accounting for failure."""
+    parent_state = _normalise_state(parent_state)
+    active = {"PENDING", "CONFIGURING", "RUNNING", "COMPLETING"}
+    terminal_failure = {"FAILED", "CANCELLED", "TIMEOUT", "OUT_OF_MEMORY", "NODE_FAIL"}
+    if parent_state in {"PENDING", "CONFIGURING"}:
+        return "PENDING", f"array parent is {parent_state}; child accounting may not exist yet"
+    if parent_state in {"RUNNING", "COMPLETING"}:
+        return "RUNNING", f"array parent is {parent_state}; observed {len(child_states)}/{expected_tasks} tasks"
+    if parent_state in terminal_failure:
+        return "FAILED", f"array parent is terminal failure state {parent_state}"
+    if parent_state == "COMPLETED" and len(child_states) < expected_tasks:
+        return "PENDING", (
+            f"array parent completed but child accounting is delayed: "
+            f"observed {len(child_states)}/{expected_tasks}"
+        )
+    failed = sorted(index for index, state in child_states.items() if state in terminal_failure)
+    if failed:
+        return "FAILED", f"array {expected_tasks} tasks: failed task indices {failed}"
+    if any(state in active for state in child_states.values()):
+        return "RUNNING", f"array: observed {len(child_states)}/{expected_tasks} task states"
+    if len(child_states) == expected_tasks and all(
+        state == "COMPLETED" for state in child_states.values()
+    ):
+        return "COMPLETED", f"array: {expected_tasks}/{expected_tasks} tasks completed"
+    return "PENDING", f"array accounting is incomplete or unknown: {sorted(set(child_states.values()))}"
+
+
 def _array_completion(job_id: str, expected: int) -> tuple[str, str]:
     """Check every array element, not only the parent array record."""
     result = subprocess.run(
@@ -179,19 +221,9 @@ def _array_completion(job_id: str, expected: int) -> tuple[str, str]:
         suffix = fields[0][len(prefix):]
         if suffix.isdigit():
             elements[int(suffix)] = _normalise_state(fields[1])
-    if len(elements) != expected:
-        return "FAILED", f"array {job_id}: observed {len(elements)}/{expected} task states"
-    failed = sorted(index for index, state in elements.items() if state in {
-        "FAILED", "CANCELLED", "TIMEOUT", "OUT_OF_MEMORY", "NODE_FAIL"
-    })
-    if failed:
-        return "FAILED", f"array {job_id}: failed task indices {failed}"
-    if any(state in {"PENDING", "RUNNING", "CONFIGURING", "COMPLETING"}
-           for state in elements.values()):
-        return "RUNNING", f"array {job_id}: {expected} task states observed"
-    if all(state == "COMPLETED" for state in elements.values()):
-        return "COMPLETED", f"array {job_id}: {expected}/{expected} tasks completed"
-    return "FAILED", f"array {job_id}: unexpected task states {sorted(set(elements.values()))}"
+    parent = _job_state(str(job_id))
+    state, reason = _classify_array(parent, elements, expected)
+    return state, f"array {job_id}: {reason}"
 
 
 def _validate_prediction_output(path: Path) -> None:
@@ -204,7 +236,7 @@ def _validate_prediction_output(path: Path) -> None:
     }
     if schema not in validators:
         raise ValueError(f"Unsupported prediction schema {schema!r}: {path}")
-    validators[schema](path)
+    validators[schema](path, deep=False)
 
 
 def _outputs_complete(study: StudySpec, record: dict) -> tuple[bool, str]:
@@ -249,6 +281,10 @@ def _outputs_complete(study: StudySpec, record: dict) -> tuple[bool, str]:
         ),
         "assignment_conditioning": (output_root / study.name / "assignment_conditioning.json",),
         "data_scaling": (output_root / study.name / "data_scaling_recurrence.json",),
+        "compatibility_reranking": (
+            output_root / study.name / "study10_human_review.json",
+            output_root / study.name / "study10_human_review.md",
+        ),
     }
     if study.name in analysis_roots:
         for required in analysis_roots[study.name]:
@@ -306,10 +342,15 @@ def _historical_study01() -> dict:
         str(record["prediction_job"]), prediction_expected
     )
     post_state = _job_state(str(record.get("postprocess_job")))
-    if train_state != "COMPLETED" or prediction_state != "COMPLETED" or post_state != "COMPLETED":
+    if any(state == "FAILED" for state in (train_state, prediction_state, post_state)):
         return {
             "status": "FAILED",
             "reason": f"Study 01 historical jobs: {train_reason}; {prediction_reason}; post={post_state}",
+        }
+    if train_state != "COMPLETED" or prediction_state != "COMPLETED" or post_state != "COMPLETED":
+        return {
+            "status": "RUNNING",
+            "reason": f"Study 01 historical jobs are non-terminal: {train_reason}; {prediction_reason}; post={post_state}",
         }
     jobs = _record_job_ids(record)
     return {
@@ -712,6 +753,10 @@ def main() -> None:
     action.add_argument("--status", action="store_true", help="report gates and current campaign status")
     parser.add_argument("--output-root", type=Path, default=Path("results/studies"))
     parser.add_argument("--campaign-root", type=Path, default=Path("results/campaigns/jer-main"))
+    parser.add_argument(
+        "--studies",
+        help="comma-separated maintained study names to consider for --ready",
+    )
     args = parser.parse_args()
     if not args.ready and not args.status:
         parser.error("choose --ready or --status")
@@ -721,6 +766,7 @@ def main() -> None:
     commit, dirty = _git_state()
     gates = load_scientific_gates()
     paths = _study_paths()
+    selected_names = _parse_study_filter(args.studies, set(paths))
     entries_by_name: dict[str, dict] = {}
     resolved_by_name: dict[str, StudySpec] = {}
     for name, path in paths.items():
@@ -772,7 +818,12 @@ def main() -> None:
             )
             continue
         resolved_by_name[name] = resolved
-        entries_by_name[name] = _entry(resolved, output_root, commit, run_plans=args.ready)
+        entries_by_name[name] = _entry(
+            resolved,
+            output_root,
+            commit,
+            run_plans=args.ready and (selected_names is None or name in selected_names),
+        )
 
     for name, study in resolved_by_name.items():
         waiting = _checkpoint_wait_reason(study, entries_by_name)
@@ -793,6 +844,7 @@ def main() -> None:
         name for name in paths
         if entries_by_name[name].get("status") in {"READY", "WAITING_CHECKPOINT"}
         and name in resolved_by_name
+        and (selected_names is None or name in selected_names)
     ]
     submitted = dict(entries_by_name)
     pending = set(ready_names)
