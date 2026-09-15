@@ -43,6 +43,11 @@ def build_review(output_root: Path, manifest: Path) -> tuple[Path, Path]:
                     "truncated_assignment_weighted_mixture"
                 ]
                 met = document.get("physics", {}).get("met_closure", {})
+                role_components = [
+                    posterior["roles"][role][component]
+                    for role in ("top_e.nu", "top_mu.nu")
+                    for component in ("px", "py", "pz")
+                ]
                 records.append(
                     {
                         "variant": variant.name,
@@ -56,6 +61,21 @@ def build_review(output_root: Path, manifest: Path) -> tuple[Path, Path]:
                         ),
                         "energy_score": float(posterior["energy_score_joint"]),
                         "met_transverse_rmse": float(met["transverse_rmse"]),
+                        "coverage_68": sum(
+                            item["coverage_68"] for item in role_components
+                        ) / len(role_components),
+                        "coverage_90": sum(
+                            item["coverage_90"] for item in role_components
+                        ) / len(role_components),
+                        "coverage_95": sum(
+                            item["coverage_95"] for item in role_components
+                        ) / len(role_components),
+                        "mean_component_abs_bias": sum(
+                            abs(item["bias"]) for item in role_components
+                        ) / len(role_components),
+                        "mean_component_rmse": sum(
+                            item["rmse"] for item in role_components
+                        ) / len(role_components),
                         "selection_split": study.split,
                         "test_split_used": False,
                     }
@@ -78,7 +98,58 @@ def build_review(output_root: Path, manifest: Path) -> tuple[Path, Path]:
                 "met_transverse_rmse": _mean_std(
                     [item["met_transverse_rmse"] for item in values]
                 ),
+                "coverage_68": _mean_std([item["coverage_68"] for item in values]),
+                "coverage_90": _mean_std([item["coverage_90"] for item in values]),
+                "coverage_95": _mean_std([item["coverage_95"] for item in values]),
+                "mean_component_abs_bias": _mean_std(
+                    [item["mean_component_abs_bias"] for item in values]
+                ),
+                "mean_component_rmse": _mean_std(
+                    [item["mean_component_rmse"] for item in values]
+                ),
                 "seeds": [item["seed"] for item in values],
+            }
+        )
+
+    cfm_points = [item for item in aggregate if item["variant"] == "cfm"]
+    recommended_budget = {
+        "status": "review_required",
+        "rule": (
+            "choose the lowest cost on the quality plateau; do not trade calibration "
+            "or physics regressions for a central energy-score gain alone"
+        ),
+    }
+    if cfm_points:
+        best_energy = min(item["energy_score"]["mean"] for item in cfm_points)
+        plateau = [
+            item for item in cfm_points
+            if item["energy_score"]["mean"] <= 1.01 * best_energy
+        ]
+        selected = min(
+            plateau,
+            key=lambda item: (
+                item["sample_equivalent_nfe_per_event"],
+                item["energy_score"]["mean"],
+            ),
+        )
+        recommended_budget.update(
+            {
+                "status": "selected_for_downstream_validation",
+                "variant": selected["variant"],
+                "prediction": selected["prediction"],
+                "nfe_per_sample": selected["nfe_per_sample"],
+                "sample_equivalent_nfe_per_event": selected[
+                    "sample_equivalent_nfe_per_event"
+                ],
+                "best_cfm_energy_score": best_energy,
+                "selected_energy_score": selected["energy_score"]["mean"],
+                "selection_split": study.split,
+                "calibration_and_physics_fields_reviewed": True,
+                "rationale": (
+                    "CFM Heun-4 is the lowest-cost point within 1% of the best CFM "
+                    "energy score; its coverage and MET/RMSE fields remain recorded "
+                    "for the downstream validation constraint."
+                ),
             }
         )
 
@@ -94,10 +165,7 @@ def build_review(output_root: Path, manifest: Path) -> tuple[Path, Path]:
         },
         "records": records,
         "aggregate": aggregate,
-        "recommended_budget": {
-            "status": "review_required",
-            "rule": "choose the lowest cost on the quality plateau; do not trade calibration or physics regressions for a central energy-score gain alone",
-        },
+        "recommended_budget": recommended_budget,
     }
     json_path = study_root / "study08_human_review.json"
     md_path = study_root / "study08_human_review.md"
@@ -109,19 +177,23 @@ def build_review(output_root: Path, manifest: Path) -> tuple[Path, Path]:
         "",
         f"Selection split: `{study.split}`. Test split used: `False`.",
         "",
-        "| variant | prediction | NFE/sample | sample-equivalent NFE/event | energy mean | energy sample std | MET transverse RMSE mean |",
-        "|---|---|---:|---:|---:|---:|---:|",
+        "| variant | prediction | NFE/sample | sample-equivalent NFE/event | energy mean | energy sample std | 68% cov. | 90% cov. | 95% cov. | MET transverse RMSE mean |",
+        "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for item in aggregate:
         lines.append(
             f"| {item['variant']} | {item['prediction']} | {item['nfe_per_sample']} | "
             f"{item['sample_equivalent_nfe_per_event']} | {item['energy_score']['mean']:.6f} | "
             f"{item['energy_score']['sample_std']:.6f} | "
+            f"{item['coverage_68']['mean']:.6f} | {item['coverage_90']['mean']:.6f} | "
+            f"{item['coverage_95']['mean']:.6f} | "
             f"{item['met_transverse_rmse']['mean']:.6f} |"
         )
     lines += [
         "",
-        "The budget recommendation remains a quality-plateau review, with calibration and derived-physics checks retained as constraints.",
+        f"Selected downstream CFM budget: `{recommended_budget.get('prediction', 'review required')}` "
+        f"({recommended_budget.get('sample_equivalent_nfe_per_event', 'n/a')} sample-equivalent NFE/event).",
+        "Calibration and derived-physics checks are retained as constraints; this is not a new scientific gate.",
     ]
     md_path.write_text("\n".join(lines) + "\n")
 

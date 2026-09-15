@@ -25,7 +25,7 @@ variants:
     # the scientifically matched conventional baseline checkpoint.
     checkpoint_from_gate: invisible_coordinates
     predictions:
-      default: {label: Conventional generator, patch: {inference: {invisible: {samples_per_assignment: 32, flow: {steps: 17, solver: euler}}}}, recurrent_steps: null}
+      default: {label: Conventional generator, patch: {inference: {invisible: {samples_per_assignment: 32, flow: {steps: 4, solver: heun}}}}, recurrent_steps: null}
 
   conditional_lgatr:
     label: Conditional L-GATr invisible generator
@@ -49,4 +49,4 @@ variants:
     checkpoint_from:
     checkpoint_from_gate:
     predictions:
-      default: {label: Conditional L-GATr generator, patch: {inference: {invisible: {samples_per_assignment: 32, flow: {steps: 17, solver: euler}}}}, recurrent_steps: null}
+      default: {label: Conditional L-GATr generator, patch: {inference: {invisible: {samples_per_assignment: 32, flow: {steps: 4, solver: heun}}}}, recurrent_steps: null}

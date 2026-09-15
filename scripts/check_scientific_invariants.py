@@ -993,6 +993,42 @@ def check_campaign_gate_contract() -> None:
         ):
             raise AssertionError(f"Study-05 assignment gate has wrong seed-{seed} provenance")
 
+    generator = gates["invisible_generator"]
+    expected_generator_patch = {
+        "model": {
+            "mode": "factorized",
+            "invisible": {
+                "conditioning": {"assignment": "none"},
+                "generator": {"type": "cfm"},
+            },
+        }
+    }
+    if (
+        generator["status"] != "locked"
+        or generator["selected_variant"] != "cfm"
+        or generator["validated_sha"]
+        != "93d57cc8c54c2f8f3e4ee49c2ee4c5024c4cee16"
+        or generator["selected_patch"] != expected_generator_patch
+    ):
+        raise AssertionError("Study-02 invisible_generator gate is not locked to CFM")
+    if set(generator["artifacts"]["ttbar2L"]) != {
+        "seed_42", "seed_43", "seed_44"
+    }:
+        raise AssertionError("Study-02 CFM gate is missing a model seed artifact")
+    for seed in (42, 43, 44):
+        artifact = generator["artifacts"]["ttbar2L"][f"seed_{seed}"]
+        if (
+            artifact["source_study"] != "generator_formulations"
+            or artifact["variant"] != "cfm"
+            or int(artifact["model_seed"]) != seed
+            or artifact["git_sha"]
+            != "752c52df8887dee9f8f04ab16ed0fe1175b8012f"
+            or not artifact["checkpoint"].endswith(
+                f"/generator_formulations/ttbar2L/cfm/seed_{seed}/train/checkpoints/best-loss.ckpt"
+            )
+        ):
+            raise AssertionError(f"Study-02 CFM gate has wrong seed-{seed} provenance")
+
     with tempfile.TemporaryDirectory(prefix="jer-pending-gate-") as directory:
         pending_path = Path(directory) / "gates.yaml"
         pending = copy.deepcopy(gates)
@@ -1096,6 +1132,12 @@ def check_campaign_gate_contract() -> None:
         "visible_assignment", "assignment_formulation", "invisible_generator"
     ):
         raise AssertionError("Study 13 does not explicitly inherit discriminative assignment")
+    if study13.variant_map["cartesian"].checkpoint_from_gate != "invisible_generator":
+        raise AssertionError("Study 13 Cartesian arm does not reuse the selected CFM checkpoint")
+    if {variant.name for variant in study13.training_order()} != {
+        "met_residual", "met_exact"
+    }:
+        raise AssertionError("Study 13 still retrains the selected Cartesian baseline")
     study03 = load_study(study_paths["assignment_conditioning"])
     if "assignment_coupling" not in study03.requires or len(study03.variants) != 3:
         raise AssertionError("Study 03 was not reduced to the gated reverse-pass comparison")

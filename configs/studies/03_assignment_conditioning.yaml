@@ -24,7 +24,7 @@ variants:
     initialise_components: [visible, assignment]
     checkpoint_from:
     predictions:
-      default: {label: none, patch: {inference: {invisible: {samples_per_assignment: 32, flow: {steps: 17, solver: euler}}}}, recurrent_steps: null}
+      default: {label: none, patch: {inference: {invisible: {samples_per_assignment: 32, flow: {steps: 4, solver: heun}}}}, recurrent_steps: null}
 
   refined:
     label: refined assignment conditioning
@@ -39,7 +39,7 @@ variants:
     initialise_components: [visible, assignment]
     checkpoint_from:
     predictions:
-      default: {label: refined assignment, patch: {inference: {invisible: {samples_per_assignment: 32, flow: {steps: 17, solver: euler}}}}, recurrent_steps: null}
+      default: {label: refined assignment, patch: {inference: {invisible: {samples_per_assignment: 32, flow: {steps: 4, solver: heun}}}}, recurrent_steps: null}
 
   truth_oracle:
     label: truth-assignment oracle
@@ -54,4 +54,4 @@ variants:
     initialise_components: [visible, assignment]
     checkpoint_from:
     predictions:
-      oracle: {label: truth oracle, patch: {inference: {invisible: {samples_per_assignment: 32, flow: {steps: 17, solver: euler}}}}, recurrent_steps: null}
+      oracle: {label: truth oracle, patch: {inference: {invisible: {samples_per_assignment: 32, flow: {steps: 4, solver: heun}}}}, recurrent_steps: null}

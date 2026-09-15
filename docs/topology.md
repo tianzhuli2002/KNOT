@@ -83,7 +83,10 @@ invisible state, then held fixed for validation studies. Alpha scans and scorer 
 are offline validation operations and do not regenerate the posterior.
 
 The paper-critical order is generator objective/inference budget, invisible coordinates,
-invisible generator backbone, then the invisible-to-assignment coupling study. A reverse
+invisible generator backbone, then the invisible-to-assignment coupling study. The
+validation-only CFM inference scan selected the eight-NFE-equivalent Heun-4 point as the
+current low-cost plateau setting; this is an inference budget choice, not a new objective
+gate. A reverse
 assignment-conditioned invisible pass is a later, slim study and is run only if the
 forward coupling has measurable oracle headroom. The older topology-token feedback,
 native-joint-flow, and recurrent co-refinement studies remain deferred follow-up work.

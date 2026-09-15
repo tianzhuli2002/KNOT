@@ -172,13 +172,54 @@ invisible_feedback:
   artifacts: {}
 
 invisible_generator:
-  status: pending
+  status: locked
   source_study: generator_formulations
-  selected_variant:
-  validated_sha:
+  selected_variant: cfm
+  validated_sha: 93d57cc8c54c2f8f3e4ee49c2ee4c5024c4cee16
   required_by: [assignment_conditioning, c2_feedback, joint_vs_factorized, joint_recurrence, posterior_size, compatibility_reranking, invisible_coordinates, lgatr_invisible_generator]
-  selected_patch: {}
-  artifacts: {}
+  selected_patch:
+    model:
+      mode: factorized
+      invisible:
+        conditioning:
+          assignment: none
+        generator:
+          type: cfm
+  artifacts:
+    ttbar2L:
+      seed_42:
+        source_study: generator_formulations
+        variant: cfm
+        model_seed: 42
+        data_subset_seed: 42
+        git_sha: 752c52df8887dee9f8f04ab16ed0fe1175b8012f
+        architecture_identity: cafeda4889f3ae64f93d668a4d3630a401092f98db5737d548e3d8a0080884d5
+        checkpoint: /net/scratch/w00238tl/JointEventReconstruction/results/studies/generator_formulations/ttbar2L/cfm/seed_42/train/checkpoints/best-loss.ckpt
+        checkpoint_sha256: 755a05396c68d742237754a2b71607fe8476e5746c7a0464c6c6bbb9a3dac3b4
+        identity_file: /net/scratch/w00238tl/JointEventReconstruction/results/studies/generator_formulations/ttbar2L/cfm/seed_42/train/artifact_identity.json
+        identity_sha256: 2bda5076ddd85a4ea2935d37b6c85de4bcdcfddf890f330e748a7377a611eb80
+      seed_43:
+        source_study: generator_formulations
+        variant: cfm
+        model_seed: 43
+        data_subset_seed: 42
+        git_sha: 752c52df8887dee9f8f04ab16ed0fe1175b8012f
+        architecture_identity: cafeda4889f3ae64f93d668a4d3630a401092f98db5737d548e3d8a0080884d5
+        checkpoint: /net/scratch/w00238tl/JointEventReconstruction/results/studies/generator_formulations/ttbar2L/cfm/seed_43/train/checkpoints/best-loss.ckpt
+        checkpoint_sha256: 624c91e70fe3e848aa2c95e4f9bab5e74a32df0b902795122c4290619bbad445
+        identity_file: /net/scratch/w00238tl/JointEventReconstruction/results/studies/generator_formulations/ttbar2L/cfm/seed_43/train/artifact_identity.json
+        identity_sha256: 16138e5a44561211cdf6243cc65b5836debb7f890091e7afd90dd82f5c10bc4a
+      seed_44:
+        source_study: generator_formulations
+        variant: cfm
+        model_seed: 44
+        data_subset_seed: 42
+        git_sha: 752c52df8887dee9f8f04ab16ed0fe1175b8012f
+        architecture_identity: cafeda4889f3ae64f93d668a4d3630a401092f98db5737d548e3d8a0080884d5
+        checkpoint: /net/scratch/w00238tl/JointEventReconstruction/results/studies/generator_formulations/ttbar2L/cfm/seed_44/train/checkpoints/best-loss.ckpt
+        checkpoint_sha256: 180ee562d0cd4085dd799e38c82c7d9d0d2d586d9bd667e198348062d3250349
+        identity_file: /net/scratch/w00238tl/JointEventReconstruction/results/studies/generator_formulations/ttbar2L/cfm/seed_44/train/artifact_identity.json
+        identity_sha256: fe0c6ac347e4d89d9bfb93165ffd181a83cac621081ee5aedf67e79b405d9fcd
 
 invisible_backbone:
   status: pending

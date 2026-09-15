@@ -14,12 +14,13 @@ variants:
   cartesian:
     label: Cartesian invisible coordinates
     reporting: primary
-    patch: {model: {mode: factorized, invisible: {coordinates: {type: cartesian}}}, training: {trainable: [invisible]}}
+    patch: {model: {mode: factorized, invisible: {coordinates: {type: cartesian}}}}
     initialise_from:
-    initialise_from_gate: visible_assignment
-    initialise_components: [visible, assignment]
+    initialise_from_gate:
+    initialise_components: []
     checkpoint_from:
-    predictions: {default: {label: Cartesian, patch: {inference: {invisible: {samples_per_assignment: 32, flow: {steps: 17, solver: euler}}}}, recurrent_steps: null}}
+    checkpoint_from_gate: invisible_generator
+    predictions: {default: {label: Cartesian, patch: {inference: {invisible: {samples_per_assignment: 32, flow: {steps: 4, solver: heun}}}}, recurrent_steps: null}}
 
   met_residual:
     label: MET-residual invisible coordinates
@@ -29,7 +30,7 @@ variants:
     initialise_from_gate: visible_assignment
     initialise_components: [visible, assignment]
     checkpoint_from:
-    predictions: {default: {label: MET residual, patch: {inference: {invisible: {samples_per_assignment: 32, flow: {steps: 17, solver: euler}}}}, recurrent_steps: null}}
+    predictions: {default: {label: MET residual, patch: {inference: {invisible: {samples_per_assignment: 32, flow: {steps: 4, solver: heun}}}}, recurrent_steps: null}}
 
   met_exact:
     label: MET-exact projection diagnostic
@@ -39,4 +40,4 @@ variants:
     initialise_from_gate: visible_assignment
     initialise_components: [visible, assignment]
     checkpoint_from:
-    predictions: {default: {label: MET exact diagnostic, patch: {inference: {invisible: {samples_per_assignment: 32, flow: {steps: 17, solver: euler}}}}, recurrent_steps: null}}
+    predictions: {default: {label: MET exact diagnostic, patch: {inference: {invisible: {samples_per_assignment: 32, flow: {steps: 4, solver: heun}}}}, recurrent_steps: null}}

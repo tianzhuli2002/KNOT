@@ -24,4 +24,4 @@ variants:
     checkpoint_from:
     checkpoint_from_gate: invisible_backbone
     predictions:
-      posterior: {label: One stored posterior for offline hypothesis evaluation, patch: {inference: {assignment: {top_k: 10}, invisible: {samples_per_assignment: 16, flow: {steps: 17, solver: euler}}}}, recurrent_steps: null}
+      posterior: {label: One stored posterior for offline hypothesis evaluation, patch: {inference: {assignment: {top_k: 10}, invisible: {samples_per_assignment: 16, flow: {steps: 4, solver: heun}}}}, recurrent_steps: null}
