@@ -15,7 +15,6 @@ import h5py
 import torch
 
 from joint_event_reconstruction.cli.run import (
-    _to_device,
     build_data,
     load_trained,
 )
@@ -23,6 +22,7 @@ from joint_event_reconstruction.configuration import load_experiment, load_visib
 from joint_event_reconstruction.hypothesis import write_hypothesis_group
 from joint_event_reconstruction.prediction import (
     _node_indices,
+    _to_device,
     decode_batch,
     predict_hdf5,
 )
