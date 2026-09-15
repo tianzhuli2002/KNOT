@@ -129,6 +129,21 @@ def _truth_bindings(topology_path: Path) -> dict[str, dict]:
             "higgs_b1": ("JET", 5), "higgs_b2": ("JET", 6),
             "charged_lepton": ("LEPTON", 1), "leptonic_neutrino": ("NEUTRINO", 0),
         },
+        # These adapters are used only by the file-free topology contracts in
+        # smoke_synthetic.py.  They make the synthetic topology names obey the
+        # same semantic source/index contract as the maintained real samples.
+        "synthetic_contract": {
+            "pair_jet_1": ("JET", 1), "pair_jet_2": ("JET", 2),
+            "bachelor_jet": ("JET", 3), "other_jet": ("JET", 4),
+            "charged_lepton": ("LEPTON", 1), "invisible_1": ("NEUTRINO", 0),
+        },
+        "synthetic_multinu": {
+            "jet_1": ("JET", 1), "jet_2": ("JET", 2), "jet_3": ("JET", 3),
+            "jet_4": ("JET", 4), "jet_5": ("JET", 5), "jet_6": ("JET", 6),
+            "charged_lepton": ("LEPTON", 1),
+            "invisible_1": ("NEUTRINO", 0), "invisible_2": ("NEUTRINO", 1),
+            "invisible_3": ("NEUTRINO", 2),
+        },
     }
     name = topology_path.stem
     if name not in adapters:

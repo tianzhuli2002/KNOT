@@ -271,6 +271,257 @@ def check_mass_shell_contract() -> None:
         raise AssertionError("Generated coordinate output is not on its generated shell")
 
 
+def check_topology_physics_contract() -> None:
+    """Protect the compact topology physics grammar and hypothesis evaluator."""
+    import h5py
+
+    from joint_event_reconstruction.hypothesis import write_hypothesis_group
+    from joint_event_reconstruction.prediction_schema import validate_hypothesis_group
+    from joint_event_reconstruction.topology import (
+        HypothesisEvaluator,
+        LearnedHypothesisScorer,
+        PhysicsFeatureEngine,
+        PhysicsFeatureScaler,
+        PosteriorReducer,
+        TopologyKinematics,
+        compile_physics,
+        load_topology,
+        reuse_unconditioned_posterior,
+    )
+    from joint_event_reconstruction.topology.compiler import compile_topology
+    from joint_event_reconstruction.physics import compose_assignment_state
+
+    current = load_topology("configs/topology/ttbar2L.yaml")
+    topology_only = compile_topology(
+        {"topology": OmegaConf.to_container(
+            OmegaConf.load("configs/topology/ttbar2L.yaml").topology,
+            resolve=True,
+        )}
+    )
+    if current.signature != topology_only.signature:
+        raise AssertionError("Adding optional physics changed the historical topology signature")
+    if current.physics is None or current.physics_signature is None:
+        raise AssertionError("ttbar2L physics block did not compile")
+    if current.physics_signature != load_topology("configs/topology/ttbar2L.yaml").physics_signature:
+        raise AssertionError("Physics signature is not deterministic")
+    if load_topology("configs/topology/ttbar1L.yaml").physics is not None:
+        raise AssertionError("Topology-only files unexpectedly acquired physics semantics")
+
+    raw_physics = OmegaConf.to_container(
+        OmegaConf.load("configs/topology/ttbar2L.yaml").physics,
+        resolve=True,
+    )
+    compiled = compile_physics(
+        raw_physics,
+        node_names=current.nodes.keys(),
+        leaf_names=current.leaf_roles.keys(),
+        topology_composite_names=current.composite_roles.keys(),
+    )
+    if compiled.signature != current.physics_signature:
+        raise AssertionError("Physics signature changed during direct compilation")
+
+    invalid_cases = []
+    unknown = copy.deepcopy(raw_physics)
+    unknown["observables"]["bad"] = {
+        "type": "invariant_mass", "object": "not_an_object", "reference": 1.0
+    }
+    invalid_cases.append((unknown, "unknown object"))
+    cycle = {"composites": {"a": {"sum": ["b"]}, "b": {"sum": ["a"]}}}
+    invalid_cases.append((cycle, "cycle"))
+    bad_kind = copy.deepcopy(raw_physics)
+    bad_kind["observables"]["bad"] = {
+        "type": "not_supported", "object": "top_e", "reference": 1.0
+    }
+    invalid_cases.append((bad_kind, "observable type"))
+    bad_arity = copy.deepcopy(raw_physics)
+    bad_arity["observables"]["bad"] = {
+        "type": "mass_difference", "objects": ["top_e"], "reference": 0.0
+    }
+    invalid_cases.append((bad_arity, "observable arity"))
+    bad_met = copy.deepcopy(raw_physics)
+    bad_met["observables"]["bad"] = {
+        "type": "transverse_sum_residual", "objects": ["top_e.nu"], "measurement": "HT"
+    }
+    invalid_cases.append((bad_met, "MET measurement"))
+    for raw, label in invalid_cases:
+        try:
+            compile_physics(
+                raw,
+                node_names=current.nodes.keys(),
+                leaf_names=current.leaf_roles.keys(),
+                topology_composite_names=current.composite_roles.keys(),
+            )
+        except ValueError:
+            continue
+        raise AssertionError(f"Physics compiler accepted invalid {label}")
+
+    pools = {}
+    for node_name in current.dag_order:
+        pool = {
+            "candidate_mask": torch.ones(1, 2, dtype=torch.bool),
+            "leaf_indices": {},
+            "child_indices": {},
+        }
+        for role in current.nodes[node_name].leaf_roles:
+            if not role.invisible:
+                pool["leaf_indices"][role.key] = torch.tensor(
+                    [[0] * role.multiplicity, [1] * role.multiplicity],
+                    dtype=torch.long,
+                )
+        pools[node_name] = pool
+    vectors = torch.tensor(
+        [[[100.0, 30.0, 0.0, 90.0], [100.0, -30.0, 0.0, -90.0],
+          [80.0, 10.0, 2.0, 20.0], [70.0, -10.0, -2.0, -20.0]]]
+    )
+    assignments = torch.tensor(
+        [[[0, 0], [1, 1]]], dtype=torch.long
+    ).repeat(1, 1, 1)
+    posterior = torch.tensor(
+        [
+            [
+                [[30.0, 2.0, 3.0], [20.0, -2.0, -3.0]],
+                [[31.0, 2.0, 3.0], [19.0, -2.0, -3.0]],
+                [[29.0, 2.0, 3.0], [21.0, -2.0, -3.0]],
+            ]
+        ]
+    )
+    kinematics = TopologyKinematics(current)
+    objects = kinematics.compose(
+        pools,
+        vectors,
+        assignments,
+        invisible_momenta=posterior,
+    )
+    expected_shapes = {name: (1, 2, 3, 4) for name in objects}
+    if {name: tuple(value.shape) for name, value in objects.items()} != expected_shapes:
+        raise AssertionError("Topology kinematics did not preserve [B,K,M,4] shapes")
+    for hypothesis in range(2):
+        for sample in range(posterior.shape[1]):
+            reference = compose_assignment_state(
+                current,
+                pools,
+                vectors[0],
+                assignments[0, hypothesis],
+                {
+                    "top_e.nu": posterior[0, sample, 0],
+                    "top_mu.nu": posterior[0, sample, 1],
+                },
+            )
+            for name in current.roots:
+                if not torch.allclose(objects[name][0, hypothesis, sample], reference[name]):
+                    raise AssertionError(f"Vectorized kinematics disagrees for {name}")
+
+    feature_result = PhysicsFeatureEngine(current.physics).evaluate(
+        objects, observed_met=torch.zeros(1, 2)
+    )
+    if feature_result.tensor.shape != (1, 2, 3, 7):
+        raise AssertionError("ttbar2L physics feature shape is not [B,K,M,F]")
+    if feature_result.feature_names != (
+        "W_e_mass", "W_mu_mass", "met_closure.px", "met_closure.py",
+        "top_e_mass", "top_mass_balance", "top_mu_mass",
+    ):
+        raise AssertionError("Physics feature order is not deterministic")
+    scaler = PhysicsFeatureScaler.fit(
+        feature_result.tensor,
+        feature_result.feature_names,
+        topology_signature=current.signature,
+        physics_signature=current.physics_signature,
+        source_data_identity="synthetic-contract",
+    )
+    restored_scaler = PhysicsFeatureScaler.from_dict(scaler.as_dict())
+    scaled = restored_scaler.transform(
+        feature_result.tensor,
+        feature_names=feature_result.feature_names,
+        topology_signature=current.signature,
+        physics_signature=current.physics_signature,
+    )
+    try:
+        restored_scaler.transform(scaled, topology_signature="wrong")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("Physics scaler accepted a topology-signature mismatch")
+
+    reducer = PosteriorReducer()
+    reduction = reducer.reduce(scaled)
+    permuted = reducer.reduce(scaled[:, :, [2, 0, 1]])
+    for first, second in zip(
+        (reduction.mean, reduction.std, reduction.rms, reduction.analytic_log_evidence),
+        (permuted.mean, permuted.std, permuted.rms, permuted.analytic_log_evidence),
+    ):
+        if not torch.allclose(first, second, atol=1.0e-4, rtol=1.0e-5):
+            raise AssertionError("Posterior reduction depends on sample ordering")
+    good = reducer.reduce(torch.zeros(1, 2, 2, 1)).analytic_log_evidence
+    bad = reducer.reduce(torch.full((1, 2, 2, 1), 10.0)).analytic_log_evidence
+    if not (good > bad).all():
+        raise AssertionError("Analytic physics scorer ranks a good hypothesis below a poor one")
+
+    scorer = LearnedHypothesisScorer(reduction.as_tensor().shape[-1], hidden=8)
+    learned = scorer(reduction.as_tensor())
+    loss = learned.square().mean()
+    loss.backward()
+    gradients = [parameter.grad for parameter in scorer.parameters()]
+    if not torch.isfinite(learned).all() or not all(
+        gradient is not None and torch.isfinite(gradient).all() for gradient in gradients
+    ):
+        raise AssertionError("Learned hypothesis scorer forward/backward is not finite")
+    with tempfile.TemporaryDirectory(prefix="jer-hypothesis-contract-") as directory:
+        checkpoint = Path(directory) / "scorer.pt"
+        torch.save(scorer.state_dict(), checkpoint)
+        restored = LearnedHypothesisScorer(reduction.as_tensor().shape[-1], hidden=8)
+        restored.load_state_dict(torch.load(checkpoint, map_location="cpu", weights_only=True))
+        if not torch.allclose(scorer(reduction.as_tensor()), restored(reduction.as_tensor())):
+            raise AssertionError("Reloaded learned scorer is not deterministic")
+
+        evaluator = HypothesisEvaluator(
+            current,
+            scaler=restored_scaler,
+            mode="learned",
+            scorer=restored,
+        )
+        evaluated = evaluator.evaluate(
+            torch.zeros(1, 2),
+            pools,
+            vectors,
+            assignments,
+            invisible_momenta=posterior,
+            observed_met=torch.zeros(1, 2),
+        )
+        if not torch.isfinite(evaluated.final_probability).all() or not torch.allclose(
+            evaluated.final_probability.sum(dim=1), torch.ones(1)
+        ):
+            raise AssertionError("Hypothesis evaluator probabilities are invalid")
+        padded = assignments.clone()
+        padded[0, 1] = -1
+        padded_evaluation = evaluator.evaluate(
+            torch.tensor([[0.0, -torch.inf]]),
+            pools,
+            vectors,
+            padded,
+            invisible_momenta=posterior,
+            observed_met=torch.zeros(1, 2),
+            valid_hypotheses=torch.tensor([[True, False]]),
+        )
+        if not torch.allclose(
+            padded_evaluation.final_probability, torch.tensor([[1.0, 0.0]])
+        ):
+            raise AssertionError("Padded assignment hypotheses were not masked safely")
+        with h5py.File(Path(directory) / "hypotheses.h5", "w") as handle:
+            write_hypothesis_group(
+                handle,
+                states=assignments,
+                truth=torch.tensor([[True, False]]),
+                evaluation=evaluated,
+                scaler_identity=restored_scaler.identity_sha256,
+                scorer_type="learned",
+            )
+            validate_hypothesis_group(handle, count=1, top_k=2)
+
+    reused, branches = reuse_unconditioned_posterior(posterior, 5)
+    if branches != 1 or reused.shape != (1, 5, 3, 2, 3):
+        raise AssertionError("Unconditioned posterior was not broadcast across hypotheses")
+
+
 def check_conditional_lgatr_contract() -> None:
     """CFM keeps its objective while swapping in the conditional L-GATr backbone."""
     from joint_event_reconstruction.data.invisible import InvisibleScaler
@@ -596,6 +847,63 @@ def check_slurm_snapshot_contract() -> None:
             raise AssertionError("Changed base experiment was not rejected before work")
 
 
+def check_postprocess_recovery_contract() -> None:
+    """Prediction-level postprocessing skips complete products deterministically."""
+    import scripts.run_study as runner
+    import scripts.submit_study_slurm as scheduler
+    from joint_event_reconstruction.studies import load_study
+
+    study = load_study("configs/studies/08_generator_inference.yaml")
+    variant = study.variant_map["edm"]
+    with tempfile.TemporaryDirectory(prefix="jer-postprocess-contract-") as directory:
+        root = Path(directory)
+        source = root / "source.h5"
+        source.write_bytes(b"validated by the runner contract")
+        for prediction in variant.predictions:
+            target = (
+                root / study.name / "ttbar2L" / variant.name / "seed_42"
+                / "predictions" / f"{prediction.name}.h5"
+            )
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.symlink_to(source)
+
+        complete_evaluation = (
+            root / study.name / "ttbar2L" / variant.name / "seed_42"
+            / "evaluation" / "nfe5.json"
+        )
+        complete_evaluation.parent.mkdir(parents=True, exist_ok=True)
+        complete_evaluation.write_text(
+            json.dumps({"prediction_file": "nfe5.h5", "events": 4}) + "\n"
+        )
+        complete_plot = (
+            root / study.name / "ttbar2L" / variant.name / "seed_42"
+            / "plots" / "nfe5" / "summary.png"
+        )
+        complete_plot.parent.mkdir(parents=True, exist_ok=True)
+        complete_plot.write_bytes(b"plot")
+
+        original_validator = runner._validate_prediction_artifact
+        runner._validate_prediction_artifact = lambda path: None
+        try:
+            first = scheduler._postprocess_task_lists(
+                study, ("ttbar2L",), (variant,), (42,), root
+            )
+            second = scheduler._postprocess_task_lists(
+                study, ("ttbar2L",), (variant,), (42,), root
+            )
+        finally:
+            runner._validate_prediction_artifact = original_validator
+        evaluation_tasks, plot_tasks, skipped_evaluation, skipped_plot = first
+        if first != second:
+            raise AssertionError("Postprocessing recovery task selection is not idempotent")
+        if len(evaluation_tasks) != len(variant.predictions) - 1:
+            raise AssertionError("Recovery did not select exactly the missing evaluations")
+        if plot_tasks or len(skipped_plot) != 1:
+            raise AssertionError("Recovery did not distinguish complete plot products")
+        if len(skipped_evaluation) != 1:
+            raise AssertionError("Recovery did not skip the complete evaluation product")
+
+
 def check_campaign_gate_contract() -> None:
     """Pending gates block while the human-selected visible gate resolves."""
     from joint_event_reconstruction.studies import (
@@ -611,6 +919,8 @@ def check_campaign_gate_contract() -> None:
         "visible_assignment",
         "invisible_generator",
         "invisible_coordinates",
+        "invisible_backbone",
+        "assignment_coupling",
         "joint_model",
         "assignment_formulation",
         "assignment_conditioning",
@@ -772,10 +1082,26 @@ def check_campaign_gate_contract() -> None:
         raise AssertionError(
             "Study 15 must train only Conditional L-GATr and reuse the conventional gate checkpoint"
         )
-    if study15.variant_map["conventional"].checkpoint_from_gate != "invisible_generator":
-        raise AssertionError("Study 15 conventional arm does not consume the generator gate checkpoint")
+    if study15.variant_map["conventional"].checkpoint_from_gate != "invisible_coordinates":
+        raise AssertionError("Study 15 conventional arm does not consume the selected coordinate checkpoint")
     if study15.variant_map["conditional_lgatr"].checkpoint_from_gate is not None:
         raise AssertionError("Study 15 Conditional L-GATr arm unexpectedly consumes a gate checkpoint")
+    if study15.requires != (
+        "visible_assignment", "invisible_generator", "invisible_coordinates", "assignment_formulation"
+    ):
+        raise AssertionError("Study 15 prerequisites changed unexpectedly")
+
+    study13 = load_study(study_paths["invisible_coordinates"])
+    if study13.requires != (
+        "visible_assignment", "assignment_formulation", "invisible_generator"
+    ):
+        raise AssertionError("Study 13 does not explicitly inherit discriminative assignment")
+    study03 = load_study(study_paths["assignment_conditioning"])
+    if "assignment_coupling" not in study03.requires or len(study03.variants) != 3:
+        raise AssertionError("Study 03 was not reduced to the gated reverse-pass comparison")
+    study10 = load_study(study_paths["compatibility_reranking"])
+    if study10.training or study10.variant_map["compatibility"].initialise_from_gate:
+        raise AssertionError("Study 10 still schedules obsolete compatibility retraining")
 
     for study_name in (
         "generator_formulations",
@@ -1408,6 +1734,7 @@ def main() -> None:
     check_same_flavour_role_contract()
     check_coordinate_contract()
     check_mass_shell_contract()
+    check_topology_physics_contract()
     check_conditional_lgatr_contract()
     check_prediction_writer_shape_contract()
     check_flow_coupling_context_contract()
@@ -1415,6 +1742,7 @@ def main() -> None:
     check_exchange_and_permutation_contract()
     check_freeze_contract()
     check_slurm_snapshot_contract()
+    check_postprocess_recovery_contract()
     check_campaign_gate_contract()
     check_slurm_option_routing_contract()
     check_campaign_identity_contract()
@@ -1423,7 +1751,7 @@ def main() -> None:
         "nested-subset, coordinate, truth-oracle, exchange, permutation, "
         "freeze, public-input, same-flavour-role, campaign-gate, Slurm-option, "
         "campaign-identity, prediction-writer, mass-shell, Conditional-L-GATr "
-        "and Slurm-snapshot contracts"
+        "Slurm-snapshot and resumable-postprocess contracts"
     )
 
 

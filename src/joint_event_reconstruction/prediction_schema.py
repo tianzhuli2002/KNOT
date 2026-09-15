@@ -148,6 +148,99 @@ def _validate_met_exact_projection(source: h5py.File, label: str, count: int) ->
             raise ValueError(f"{label} projected truth does not satisfy observed MET")
 
 
+def validate_hypothesis_group(
+    source: h5py.File | h5py.Group,
+    *,
+    count: int,
+    top_k: int,
+    label: str = "Prediction HYPOTHESES",
+) -> None:
+    """Validate the optional physics-aware hypothesis extension.
+
+    Factorized prediction files written before hypothesis evaluation do not contain
+    this group and remain valid under the original schema contract.
+    """
+    if "HYPOTHESES" not in source:
+        return
+    hypotheses = source["HYPOTHESES"]
+    required = ("state", "visible_log_score", "visible_probability", "truth")
+    missing = [name for name in required if name not in hypotheses]
+    if missing:
+        raise ValueError(f"{label} is missing datasets {missing}")
+    state = hypotheses["state"][:]
+    log_score = hypotheses["visible_log_score"][:]
+    probability = hypotheses["visible_probability"][:]
+    truth = hypotheses["truth"][:]
+    if (
+        state.ndim != 3
+        or state.shape[:2] != (count, top_k)
+        or log_score.shape != (count, top_k)
+        or probability.shape != (count, top_k)
+        or truth.shape != (count, top_k)
+        or truth.dtype != np.bool_
+    ):
+        raise ValueError(f"{label} has invalid core dataset shapes")
+    _require_integer(state, f"{label}/state")
+    _require_finite(log_score, f"{label}/visible_log_score")
+    _require_finite(probability, f"{label}/visible_probability")
+    if (probability < 0).any() or (probability.sum(axis=1) <= 0).any():
+        raise ValueError(f"{label}/visible_probability is invalid")
+    if not np.allclose(probability.sum(axis=1), 1.0, rtol=1.0e-5, atol=1.0e-6):
+        raise ValueError(f"{label}/visible_probability is not normalised")
+
+    physics = hypotheses.get("PHYSICS")
+    if physics is not None:
+        required_physics = ("feature_mean", "feature_std", "feature_rms", "analytic_score")
+        missing = [name for name in required_physics if name not in physics]
+        if missing:
+            raise ValueError(f"{label}/PHYSICS is missing datasets {missing}")
+        means = physics["feature_mean"][:]
+        std = physics["feature_std"][:]
+        rms = physics["feature_rms"][:]
+        analytic = physics["analytic_score"][:]
+        if (
+            means.ndim != 3
+            or means.shape[:2] != (count, top_k)
+            or std.shape != means.shape
+            or rms.shape != means.shape
+            or analytic.shape != (count, top_k)
+        ):
+            raise ValueError(f"{label}/PHYSICS has invalid dataset shapes")
+        for name, values in (
+            ("feature_mean", means),
+            ("feature_std", std),
+            ("feature_rms", rms),
+            ("analytic_score", analytic),
+        ):
+            _require_finite(values, f"{label}/PHYSICS/{name}")
+        raw_names = physics.attrs.get("feature_names")
+        if raw_names is not None:
+            if isinstance(raw_names, bytes):
+                raw_names = raw_names.decode("utf-8")
+            try:
+                feature_names = json.loads(str(raw_names))
+            except (TypeError, ValueError, json.JSONDecodeError) as error:
+                raise ValueError(f"{label}/PHYSICS has invalid feature_names") from error
+            if (
+                not isinstance(feature_names, list)
+                or len(feature_names) != means.shape[-1]
+                or not all(isinstance(name, str) and name for name in feature_names)
+            ):
+                raise ValueError(f"{label}/PHYSICS has invalid feature_names")
+    for name in ("learned_delta", "final_log_score", "final_probability", "final_rank"):
+        if name not in hypotheses:
+            continue
+        values = hypotheses[name][:]
+        if values.shape != (count, top_k):
+            raise ValueError(f"{label}/{name} has invalid shape")
+        if name == "final_rank":
+            _require_integer(values, f"{label}/{name}")
+            if not np.all(np.sort(values, axis=1) == np.arange(top_k)[None, :]):
+                raise ValueError(f"{label}/final_rank is not a permutation")
+        else:
+            _require_finite(values, f"{label}/{name}")
+
+
 def validate_prediction(path: str | Path) -> None:
     with h5py.File(path, "r") as source:
         _optional_framework_metadata(source, "Prediction output")
@@ -346,6 +439,7 @@ def validate_prediction(path: str | Path) -> None:
                 raise ValueError("Prediction compatibility_weight is not finite")
         elif any(name in joint for name in ("final_score", "rank_indices")):
             raise ValueError("Prediction output has incomplete JOINT compatibility data")
+        validate_hypothesis_group(source, count=count, top_k=top_k)
 
 
 def validate_discrete_prediction(path: str | Path) -> None:

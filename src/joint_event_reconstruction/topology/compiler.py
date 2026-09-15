@@ -18,6 +18,7 @@ from joint_event_reconstruction.topology.spec import (
     TopologySpec,
     frozen_mapping,
 )
+from joint_event_reconstruction.topology.physics import compile_physics
 
 
 def _leaf(
@@ -76,9 +77,10 @@ def compile_topology(
     raw: Mapping[str, object],
     truth_bindings: Mapping[str, object] | None = None,
 ) -> TopologySpec:
-    if set(raw) != {"topology"}:
+    if set(raw) - {"topology", "physics"} or "topology" not in raw:
         raise ValueError(
-            "Topology file must contain only the 'topology' mapping, "
+            "Topology file must contain a 'topology' mapping and may contain only "
+            "the optional 'physics' mapping, "
             f"found keys={sorted(raw)}"
         )
     definitions = raw["topology"]
@@ -250,6 +252,14 @@ def compile_topology(
     signature = hashlib.sha256(
         json.dumps(canonical, sort_keys=True).encode()
     ).hexdigest()
+    physics = None
+    if "physics" in raw:
+        physics = compile_physics(
+            raw["physics"],
+            node_names=node_names,
+            leaf_names=tuple(leaves),
+            topology_composite_names=tuple(composites),
+        )
     return TopologySpec(
         nodes=frozen_mapping(parsed_nodes),
         leaf_roles=frozen_mapping(leaves),
@@ -269,6 +279,7 @@ def compile_topology(
         candidate_pools=frozen_mapping(pools),
         recurrent_tokens=tuple(order),
         signature=signature,
+        physics=physics,
     )
 
 

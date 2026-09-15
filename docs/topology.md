@@ -4,7 +4,8 @@ Topology YAML is the authoritative description of decay structure. Model code sh
 contain process-name branches: a new process should normally require a topology file, a
 visible-data configuration, and truth in the declared semantic order.
 
-A topology contains one `topology` mapping. Each decay node contains named roles:
+A topology contains one required `topology` mapping and may contain one optional
+`physics` mapping. Each decay node contains named roles:
 
 ```yaml
 topology:
@@ -42,6 +43,50 @@ references and cycles. It derives:
 - visible-object ownership for global compatibility;
 - recurrent topology tokens;
 - stable topology signatures stored in checkpoints and prediction files.
+
+The optional physics block is deliberately small. It declares named four-vector sums and
+compatibility observables, without introducing an expression language:
+
+```yaml
+physics:
+  composites:
+    W_e: {sum: [top_e.lepton, top_e.nu]}
+    W_mu: {sum: [top_mu.lepton, top_mu.nu]}
+    ttbar: {sum: [top_e, top_mu]}
+  observables:
+    W_e_mass: {type: invariant_mass, object: W_e, reference: 80.377}
+    top_e_mass: {type: invariant_mass, object: top_e, reference: 172.5}
+    top_mass_balance:
+      {type: mass_difference, objects: [top_e, top_mu], reference: 0.0}
+    met_closure:
+      {type: transverse_sum_residual, objects: [top_e.nu, top_mu.nu], measurement: MET}
+```
+
+The supported observable types are `invariant_mass`, `mass_difference`, and
+`transverse_sum_residual`. Four-vector addition and configured invisible mass shells are
+physical kinematics; W/top proximity and MET closure are detector-level compatibility
+residuals and are never imposed as exact constraints. The references above are the
+explicit nominal ttbar2L convention used here; they are not part of the historical MC
+topology identity.
+
+The compiler keeps the historical `TopologySpec.signature` restricted to topology and
+candidate semantics. An optional `PhysicsSpec.signature` records the physics block
+separately, so old checkpoints and topology-only files retain their identity.
+
+For the first reconstruction paper, one stored unconditioned invisible posterior is
+broadcast over the visible top-K hypotheses and evaluated with the compiled topology
+kinematics. The resulting residual summaries can drive an interpretable analytic
+compatibility score or a small learned residual correction; this score is an
+unnormalised compatibility/evidence-like quantity, not an event likelihood. Physics
+feature scales are fitted on the training split using the correct assignment and truth
+invisible state, then held fixed for validation studies. Alpha scans and scorer ablations
+are offline validation operations and do not regenerate the posterior.
+
+The paper-critical order is generator objective/inference budget, invisible coordinates,
+invisible generator backbone, then the invisible-to-assignment coupling study. A reverse
+assignment-conditioned invisible pass is a later, slim study and is run only if the
+forward coupling has measurable oracle headroom. The older topology-token feedback,
+native-joint-flow, and recurrent co-refinement studies remain deferred follow-up work.
 
 Hierarchical candidates reuse compiled child candidates. A parent top containing a W uses
 the W candidate representation rather than rebuilding an independent flat leaf tuple.

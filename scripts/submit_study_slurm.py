@@ -112,6 +112,83 @@ def _write_task_file(path: Path, tasks: list[tuple[str, str, int]]) -> None:
     )
 
 
+def _write_postprocess_task_file(
+    path: Path, tasks: list[tuple[str, str, int, str]]
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "".join(
+            f"{topology}\t{variant}\t{seed}\t{prediction}\n"
+            for topology, variant, seed, prediction in tasks
+        )
+    )
+
+
+def _postprocess_task_lists(
+    study: StudySpec,
+    topologies: tuple[str, ...],
+    variants: tuple[VariantSpec, ...],
+    seeds: tuple[int, ...],
+    output_root: Path,
+) -> tuple[
+    list[tuple[str, str, int, str]],
+    list[tuple[str, str, int, str]],
+    list[tuple[str, str, int, str]],
+    list[tuple[str, str, int, str]],
+]:
+    """Split resumable work into missing evaluation and plot tasks.
+
+    Evaluation-complete predictions with missing plots are deliberately kept out of
+    the evaluation array.  This prevents a retry from touching valid evaluation
+    JSONs while still allowing the plot product to be repaired independently.
+    """
+    from scripts.run_study import (
+        _evaluation_complete,
+        _evaluation_path,
+        _plot_complete,
+        _prediction_path,
+        _validate_prediction_artifact,
+    )
+
+    evaluation_tasks: list[tuple[str, str, int, str]] = []
+    plot_tasks: list[tuple[str, str, int, str]] = []
+    skipped_evaluation: list[tuple[str, str, int, str]] = []
+    skipped_plot: list[tuple[str, str, int, str]] = []
+    for topology in topologies:
+        for variant in variants:
+            if variant.reporting == "setup":
+                continue
+            for seed in seeds:
+                for prediction in variant.predictions:
+                    task = (topology, variant.name, seed, prediction.name)
+                    source = _prediction_path(
+                        output_root, study, topology, variant.name, seed, prediction.name
+                    )
+                    if not source.is_file():
+                        raise FileNotFoundError(
+                            f"Postprocessing requires prediction artifact {source}"
+                        )
+                    _validate_prediction_artifact(source)
+                    evaluation = _evaluation_path(
+                        output_root, study, topology, variant.name, seed, prediction.name
+                    )
+                    plot = (
+                        output_root / study.name / topology / variant.name
+                        / f"seed_{seed}" / "plots" / prediction.name
+                    )
+                    evaluation_ok = _evaluation_complete(evaluation)
+                    plot_ok = _plot_complete(plot)
+                    if evaluation_ok:
+                        skipped_evaluation.append(task)
+                    else:
+                        evaluation_tasks.append(task)
+                    if plot_ok:
+                        skipped_plot.append(task)
+                    elif evaluation_ok:
+                        plot_tasks.append(task)
+    return evaluation_tasks, plot_tasks, skipped_evaluation, skipped_plot
+
+
 def _prediction_task_complete(
     study: StudySpec,
     topology: str,
@@ -255,6 +332,98 @@ def _worker_script(
         "    exit 3\n"
         "fi\n"
         f"exec {rendered}\n"
+    )
+    path.chmod(0o755)
+
+
+def _postprocess_worker_script(
+    path: Path,
+    *,
+    task_file: Path,
+    study_path: Path,
+    stages: tuple[str, ...],
+    output_root: Path,
+    expected_commit: str,
+    expected_manifest_sha256: str,
+    expected_gate_digest: str | None,
+    expected_experiments: dict[str, dict[str, str]],
+    overrides: tuple[str, ...],
+) -> None:
+    """Write one prediction-level CPU worker with strict source checks."""
+    commands = []
+    for stage in stages:
+        command = [
+            sys.executable,
+            str(ROOT / "scripts/run_study.py"),
+            str(study_path),
+            stage,
+            "--output-root", str(output_root),
+            "--topologies", '"$topology"',
+            "--variants", '"$variant"',
+            "--seeds", '"$seed"',
+            "--device", "cpu",
+        ]
+        if stage in {"evaluate", "plot"}:
+            command += ["--predictions", '"$prediction"']
+        if expected_gate_digest is not None:
+            command += ["--expected-gates-digest", expected_gate_digest]
+        for override in overrides:
+            command += ["--set", override]
+        commands.append(
+            " ".join(
+                token if token.startswith('"$') else shlex.quote(token)
+                for token in command
+            )
+        )
+    experiment_checks = "".join(
+        "if [[ \"$topology\" == "
+        + shlex.quote(topology)
+        + " ]]; then expected_experiment_path="
+        + shlex.quote(identity["path"])
+        + "; expected_experiment_sha256="
+        + shlex.quote(identity["sha256"])
+        + "; fi\n"
+        for topology, identity in sorted(expected_experiments.items())
+    )
+    path.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        f"repo_root={shlex.quote(str(ROOT))}\n"
+        f"expected_git_commit={shlex.quote(expected_commit)}\n"
+        'actual_git_commit=$(git -C "$repo_root" rev-parse HEAD)\n'
+        'if [[ "$actual_git_commit" != "$expected_git_commit" ]]; then\n'
+        '    echo "Checkout changed after Slurm submission: expected $expected_git_commit, found $actual_git_commit" >&2\n'
+        "    exit 3\n"
+        "fi\n"
+        'if [[ -n "$(git -C "$repo_root" status --porcelain)" ]]; then\n'
+        '    echo "Checkout became dirty after Slurm submission" >&2\n'
+        "    exit 3\n"
+        "fi\n"
+        f"manifest_snapshot={shlex.quote(str(study_path))}\n"
+        f"expected_manifest_sha256={shlex.quote(expected_manifest_sha256)}\n"
+        'actual_manifest_sha256=$(sha256sum "$manifest_snapshot" | cut -d" " -f1)\n'
+        'if [[ "$actual_manifest_sha256" != "$expected_manifest_sha256" ]]; then\n'
+        '    echo "Study manifest snapshot changed after submission" >&2\n'
+        "    exit 3\n"
+        "fi\n"
+        f"task_file={shlex.quote(str(task_file))}\n"
+        'line=$(sed -n "$((SLURM_ARRAY_TASK_ID + 1))p" "$task_file")\n'
+        'if [[ -z "$line" ]]; then echo "Missing study task for index $SLURM_ARRAY_TASK_ID" >&2; exit 2; fi\n'
+        "IFS=$'\\t' read -r topology variant seed prediction <<< \"$line\"\n"
+        'expected_experiment_path=""\n'
+        'expected_experiment_sha256=""\n'
+        + experiment_checks
+        + 'if [[ -z "$expected_experiment_path" ]]; then\n'
+        '    echo "Unknown topology in submitted task" >&2\n'
+        "    exit 2\n"
+        "fi\n"
+        'actual_experiment_sha256=$(sha256sum "$expected_experiment_path" | cut -d" " -f1)\n'
+        'if [[ "$actual_experiment_sha256" != "$expected_experiment_sha256" ]]; then\n'
+        '    echo "Base experiment changed after submission" >&2\n'
+        "    exit 3\n"
+        "fi\n"
+        + " && ".join(commands)
+        + "\n"
     )
     path.chmod(0o755)
 
@@ -408,6 +577,11 @@ def main() -> None:
         help="Skip all training layers and submit only missing prediction tasks.",
     )
     parser.add_argument(
+        "--postprocess-only",
+        action="store_true",
+        help="Submit only missing prediction-level evaluation/plot tasks and aggregation.",
+    )
+    parser.add_argument(
         "--dependency-afterok",
         help="External job ID that must succeed before the first training layer starts.",
     )
@@ -422,12 +596,15 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
+    if args.prediction_only and args.postprocess_only:
+        raise ValueError("--prediction-only and --postprocess-only cannot be combined")
+
     study = resolve_study(args.study)
     topologies = _selected(args.topologies, study.topologies, "topologies")
     variant_names = tuple(variant.name for variant in study.variants)
     requested_names = _selected(args.variants, variant_names, "variants")
     requested = tuple(study.variant_map[name] for name in requested_names)
-    if args.prediction_only:
+    if args.prediction_only or args.postprocess_only:
         training = ()
     elif not study.training:
         training = ()
@@ -548,9 +725,177 @@ def main() -> None:
             },
         },
         "train_levels": [],
+        "submission_mode": (
+            "postprocess_only" if args.postprocess_only
+            else "prediction_only" if args.prediction_only
+            else "normal"
+        ),
     }
     submission_path = slurm_root / "submission.json"
     _save_submission(submission_path, submitted)
+
+    if args.postprocess_only:
+        if args.no_postprocess:
+            raise ValueError("--postprocess-only cannot be combined with --no-postprocess")
+        prediction_variants = tuple(
+            variant for variant in requested if variant.reporting != "setup"
+        )
+        evaluation_tasks, plot_tasks, skipped_evaluation, skipped_plot = (
+            _postprocess_task_lists(
+                study, topologies, prediction_variants, seeds, output_root
+            )
+        )
+        submitted["evaluation_tasks"] = len(evaluation_tasks)
+        submitted["plot_tasks"] = len(plot_tasks)
+        submitted["postprocess_tasks"] = len(evaluation_tasks) + len(plot_tasks)
+        submitted["skipped_complete_evaluation_tasks"] = [
+            list(task) for task in skipped_evaluation
+        ]
+        submitted["skipped_complete_plot_tasks"] = [list(task) for task in skipped_plot]
+        fake_id = 0
+        evaluation_job = None
+        plot_job = None
+        if evaluation_tasks:
+            evaluation_file = slurm_root / "evaluate.tsv"
+            evaluation_worker = slurm_root / "evaluate.sh"
+            _write_postprocess_task_file(evaluation_file, evaluation_tasks)
+            _postprocess_worker_script(
+                evaluation_worker,
+                task_file=evaluation_file,
+                study_path=manifest_snapshot,
+                stages=("evaluate", "plot"),
+                output_root=output_root,
+                expected_commit=git_commit,
+                expected_manifest_sha256=manifest_sha256,
+                expected_gate_digest=study.gates_digest,
+                expected_experiments=base_experiments,
+                overrides=overrides,
+            )
+            evaluation_job = _submit(
+                _sbatch_array(
+                    worker=evaluation_worker,
+                    task_count=len(evaluation_tasks),
+                    job_name=f"jer-{study.name[:18]}-eval",
+                    log_dir=log_dir,
+                    partition=args.cpu_partition,
+                    gres=None,
+                    cpus=args.cpu_cpus,
+                    memory=args.cpu_mem,
+                    time_limit=args.cpu_time,
+                    dependency=args.dependency_afterok,
+                    extra=cpu_extra,
+                ),
+                dry_run=args.dry_run,
+                fake_id=fake_id,
+            )
+            fake_id += 1
+            submitted["evaluation_task_file"] = str(evaluation_file)
+            submitted["evaluation_worker"] = str(evaluation_worker)
+        if plot_tasks:
+            plot_file = slurm_root / "plot.tsv"
+            plot_worker = slurm_root / "plot.sh"
+            _write_postprocess_task_file(plot_file, plot_tasks)
+            _postprocess_worker_script(
+                plot_worker,
+                task_file=plot_file,
+                study_path=manifest_snapshot,
+                stages=("plot",),
+                output_root=output_root,
+                expected_commit=git_commit,
+                expected_manifest_sha256=manifest_sha256,
+                expected_gate_digest=study.gates_digest,
+                expected_experiments=base_experiments,
+                overrides=overrides,
+            )
+            plot_dependency = args.dependency_afterok
+            if evaluation_job is not None:
+                plot_dependency = evaluation_job
+            plot_job = _submit(
+                _sbatch_array(
+                    worker=plot_worker,
+                    task_count=len(plot_tasks),
+                    job_name=f"jer-{study.name[:18]}-plot",
+                    log_dir=log_dir,
+                    partition=args.cpu_partition,
+                    gres=None,
+                    cpus=args.cpu_cpus,
+                    memory=args.cpu_mem,
+                    time_limit=args.cpu_time,
+                    dependency=plot_dependency,
+                    extra=cpu_extra,
+                ),
+                dry_run=args.dry_run,
+                fake_id=fake_id,
+            )
+            fake_id += 1
+            submitted["plot_task_file"] = str(plot_file)
+            submitted["plot_worker"] = str(plot_worker)
+        submitted["evaluation_job"] = evaluation_job
+        submitted["plot_job"] = plot_job
+
+        aggregate_commands = [
+            _post_command(
+                manifest_snapshot,
+                stage,
+                output_root=output_root,
+                topologies=topologies,
+                variants=prediction_variants,
+                seeds=seeds,
+                overrides=overrides,
+                expected_gate_digest=study.gates_digest,
+            )
+            for stage in ("compare", "summary", "analyze")
+        ]
+        aggregate_path = output_root / study.name / "summary_aggregate.json"
+        aggregate_job = None
+        if not (
+            not evaluation_tasks
+            and not plot_tasks
+            and aggregate_path.is_file()
+            and aggregate_path.stat().st_size > 0
+        ):
+            aggregate_worker = slurm_root / "aggregate.sh"
+            _post_script(
+                aggregate_worker,
+                aggregate_commands,
+                git_commit,
+                manifest_snapshot,
+                manifest_sha256,
+                base_experiments,
+            )
+            dependencies = [job for job in (evaluation_job, plot_job) if job is not None]
+            if not dependencies and args.dependency_afterok:
+                dependencies.append(args.dependency_afterok)
+            dependency_text = ":".join(dependencies) if dependencies else None
+            aggregate_command = [
+                "sbatch", "--parsable",
+                f"--job-name=jer-{study.name[:18]}-agg",
+                f"--partition={args.cpu_partition}",
+                f"--cpus-per-task={args.cpu_cpus}",
+                f"--mem={args.cpu_mem}",
+                f"--time={args.cpu_time}",
+                f"--output={log_dir}/%x-%j.out",
+                f"--error={log_dir}/%x-%j.err",
+            ]
+            if dependency_text:
+                aggregate_command.append(f"--dependency=afterok:{dependency_text}")
+            aggregate_command.extend((*cpu_extra, str(aggregate_worker)))
+            aggregate_job = _submit(
+                aggregate_command,
+                dry_run=args.dry_run,
+                fake_id=fake_id,
+            )
+            submitted["aggregate_worker"] = str(aggregate_worker)
+        submitted["aggregate_job"] = aggregate_job
+        submitted["aggregate_depends_on"] = [
+            job for job in (evaluation_job, plot_job) if job is not None
+        ]
+        _save_submission(submission_path, submitted)
+        slurm_base.mkdir(parents=True, exist_ok=True)
+        (slurm_base / "latest.txt").write_text(str(slurm_root) + "\n")
+        print(json.dumps(submitted, indent=2, sort_keys=True))
+        return
+
     dependency = args.dependency_afterok
     fake_id = 0
     for level_index, variants in enumerate(_levels(study, training)):
@@ -688,7 +1033,46 @@ def main() -> None:
         _save_submission(submission_path, submitted)
 
         if not args.no_postprocess:
-            post_worker = slurm_root / "postprocess.sh"
+            all_postprocess_tasks = [
+                (topology, variant.name, seed, prediction.name)
+                for topology in topologies
+                for variant in prediction_variants
+                for seed in seeds
+                for prediction in variant.predictions
+            ]
+            postprocess_file = slurm_root / "evaluate.tsv"
+            postprocess_worker = slurm_root / "evaluate.sh"
+            _write_postprocess_task_file(postprocess_file, all_postprocess_tasks)
+            _postprocess_worker_script(
+                postprocess_worker,
+                task_file=postprocess_file,
+                study_path=manifest_snapshot,
+                stages=("evaluate", "plot"),
+                output_root=output_root,
+                expected_commit=git_commit,
+                expected_manifest_sha256=manifest_sha256,
+                expected_gate_digest=study.gates_digest,
+                expected_experiments=base_experiments,
+                overrides=overrides,
+            )
+            evaluation_job = _submit(
+                _sbatch_array(
+                    worker=postprocess_worker,
+                    task_count=len(all_postprocess_tasks),
+                    job_name=f"jer-{study.name[:18]}-eval",
+                    log_dir=log_dir,
+                    partition=args.cpu_partition,
+                    gres=None,
+                    cpus=args.cpu_cpus,
+                    memory=args.cpu_mem,
+                    time_limit=args.cpu_time,
+                    dependency=prediction_job,
+                    extra=cpu_extra,
+                ),
+                dry_run=args.dry_run,
+                fake_id=fake_id,
+            )
+            fake_id += 1
             post_commands = [
                 _post_command(
                     manifest_snapshot,
@@ -700,36 +1084,45 @@ def main() -> None:
                     overrides=overrides,
                     expected_gate_digest=study.gates_digest,
                 )
-                for stage in ("evaluate", "plot", "compare", "summary", "analyze")
+                for stage in ("compare", "summary", "analyze")
             ]
+            aggregate_worker = slurm_root / "aggregate.sh"
             _post_script(
-                post_worker,
+                aggregate_worker,
                 post_commands,
                 git_commit,
                 manifest_snapshot,
                 manifest_sha256,
                 base_experiments,
             )
-            post_job = _submit(
+            aggregate_job = _submit(
                 [
                     "sbatch", "--parsable",
-                    f"--job-name=jer-{study.name[:18]}-post",
+                    f"--job-name=jer-{study.name[:18]}-agg",
                     f"--partition={args.cpu_partition}",
                     f"--cpus-per-task={args.cpu_cpus}",
                     f"--mem={args.cpu_mem}",
                     f"--time={args.cpu_time}",
-                    f"--dependency=afterok:{prediction_job}",
+                    f"--dependency=afterok:{evaluation_job}",
                     f"--output={log_dir}/%x-%j.out",
                     f"--error={log_dir}/%x-%j.err",
                     *cpu_extra,
-                    str(post_worker),
+                    str(aggregate_worker),
                 ],
                 dry_run=args.dry_run,
                 fake_id=fake_id,
             )
-            submitted["postprocess_job"] = post_job
-            submitted["postprocess_depends_on"] = prediction_job
-            submitted["postprocess_worker"] = str(post_worker)
+            submitted["evaluation_job"] = evaluation_job
+            submitted["evaluation_tasks"] = len(all_postprocess_tasks)
+            submitted["evaluation_task_file"] = str(postprocess_file)
+            submitted["evaluation_worker"] = str(postprocess_worker)
+            submitted["aggregate_job"] = aggregate_job
+            submitted["aggregate_depends_on"] = evaluation_job
+            submitted["aggregate_worker"] = str(aggregate_worker)
+            # Preserve the historical key for consumers of old submission records.
+            submitted["postprocess_job"] = aggregate_job
+            submitted["postprocess_depends_on"] = evaluation_job
+            submitted["postprocess_worker"] = str(aggregate_worker)
             _save_submission(submission_path, submitted)
 
     _save_submission(submission_path, submitted)

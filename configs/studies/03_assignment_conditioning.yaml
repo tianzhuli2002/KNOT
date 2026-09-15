@@ -1,18 +1,18 @@
 study:
   name: assignment_conditioning
   title: 03 — Does Jet-Assignment Uncertainty Matter for Invisible Reconstruction?
-  description: Measure whether preserving assignment uncertainty improves invisible reconstruction with none, soft, top-K and truth-oracle conditioning; hard top-1 is diagnostic only.
+  description: "After compatibility reranking, test one reverse information pass: whether the refined assignment improves the invisible posterior; truth assignment remains an oracle."
   experiment_pattern: configs/experiments/{topology}.yaml
   topologies: [ttbar2L]
   seeds: [42, 43, 44]
   split: validation
-  requires: [visible_assignment, assignment_formulation, invisible_generator, invisible_coordinates]
-  inherit: [visible_assignment, assignment_formulation, invisible_generator, invisible_coordinates]
+  requires: [visible_assignment, assignment_formulation, invisible_generator, invisible_coordinates, invisible_backbone, assignment_coupling]
+  inherit: [visible_assignment, assignment_formulation, invisible_generator, invisible_coordinates, invisible_backbone]
   training: true
 
 variants:
   none:
-    label: no assignment conditioning
+    label: unconditioned invisible posterior
     reporting: primary
     patch:
       model:
@@ -26,23 +26,8 @@ variants:
     predictions:
       default: {label: none, patch: {inference: {invisible: {samples_per_assignment: 32, flow: {steps: 17, solver: euler}}}}, recurrent_steps: null}
 
-  soft:
-    label: soft assignment conditioning
-    reporting: primary
-    patch:
-      model:
-        invisible: {conditioning: {assignment: soft}}
-        mode: factorized
-      training: {trainable: [invisible]}
-    initialise_from:
-    initialise_from_gate: visible_assignment
-    initialise_components: [visible, assignment]
-    checkpoint_from:
-    predictions:
-      default: {label: soft, patch: {inference: {invisible: {samples_per_assignment: 32, flow: {steps: 17, solver: euler}}}}, recurrent_steps: null}
-
-  hypothesis:
-    label: top-K assignment hypotheses
+  refined:
+    label: refined assignment conditioning
     reporting: primary
     patch:
       model:
@@ -54,23 +39,7 @@ variants:
     initialise_components: [visible, assignment]
     checkpoint_from:
     predictions:
-      k1_m32: {label: hypothesis K=1 M=32, patch: {inference: {assignment: {top_k: 1}, invisible: {samples_per_assignment: 32, flow: {steps: 17, solver: euler}}}}, recurrent_steps: null}
-      k5_m32: {label: hypothesis K=5 M=32, patch: {inference: {assignment: {top_k: 5}, invisible: {samples_per_assignment: 32, flow: {steps: 17, solver: euler}}}}, recurrent_steps: null}
-
-  hard:
-    label: hard top-1 assignment diagnostic
-    reporting: diagnostic
-    patch:
-      model:
-        invisible: {conditioning: {assignment: hard}}
-        mode: factorized
-      training: {trainable: [invisible]}
-    initialise_from:
-    initialise_from_gate: visible_assignment
-    initialise_components: [visible, assignment]
-    checkpoint_from:
-    predictions:
-      default: {label: hard, patch: {inference: {invisible: {samples_per_assignment: 32, flow: {steps: 17, solver: euler}}}}, recurrent_steps: null}
+      default: {label: refined assignment, patch: {inference: {invisible: {samples_per_assignment: 32, flow: {steps: 17, solver: euler}}}}, recurrent_steps: null}
 
   truth_oracle:
     label: truth-assignment oracle

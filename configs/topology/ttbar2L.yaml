@@ -7,3 +7,40 @@ topology:
     b: {source: JET, truth: top_mu_b}
     lepton: {source: MUON, truth: top_mu_lepton}
     nu: {source: NEUTRINO, truth: top_mu_neutrino}
+
+physics:
+  # These are compatibility references, not exact mass-shell constraints.
+  # They follow the nominal ttbar2L MC convention used for the paper path.
+  composites:
+    W_e:
+      sum: [top_e.lepton, top_e.nu]
+    W_mu:
+      sum: [top_mu.lepton, top_mu.nu]
+    ttbar:
+      sum: [top_e, top_mu]
+
+  observables:
+    W_e_mass:
+      type: invariant_mass
+      object: W_e
+      reference: 80.377
+    W_mu_mass:
+      type: invariant_mass
+      object: W_mu
+      reference: 80.377
+    top_e_mass:
+      type: invariant_mass
+      object: top_e
+      reference: 172.5
+    top_mu_mass:
+      type: invariant_mass
+      object: top_mu
+      reference: 172.5
+    top_mass_balance:
+      type: mass_difference
+      objects: [top_e, top_mu]
+      reference: 0.0
+    met_closure:
+      type: transverse_sum_residual
+      objects: [top_e.nu, top_mu.nu]
+      measurement: MET

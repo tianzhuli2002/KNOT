@@ -393,6 +393,7 @@ def predict_hdf5(
                 "assignment_formulation": "discriminative",
                 **hdf5_support_attributes(NON_NULL_SUPPORT),
                 "topology_signature": module.spec.signature,
+                "physics_signature": module.spec.physics_signature or "none",
                 "architecture_signature_version": int(
                     module.hparams.architecture_signature_version
                 ),

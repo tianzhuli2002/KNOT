@@ -6,8 +6,8 @@ study:
   topologies: [ttbar2L]
   seeds: [42, 43, 44]
   split: validation
-  requires: [visible_assignment, invisible_generator]
-  inherit: [visible_assignment, invisible_generator]
+  requires: [visible_assignment, assignment_formulation, invisible_generator]
+  inherit: [visible_assignment, assignment_formulation, invisible_generator]
   training: true
 
 variants:

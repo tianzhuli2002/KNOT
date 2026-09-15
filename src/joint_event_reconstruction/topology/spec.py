@@ -68,6 +68,43 @@ class CandidatePoolSpec:
 
 
 @dataclass(frozen=True)
+class PhysicsCompositeSpec:
+    """A named four-vector sum in the optional topology physics grammar."""
+
+    name: str
+    terms: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class PhysicsObservableSpec:
+    """One small, interpretable compatibility observable."""
+
+    name: str
+    kind: str
+    objects: tuple[str, ...]
+    reference: float | None
+    measurement: str | None
+
+
+@dataclass(frozen=True)
+class PhysicsSpec:
+    """Compiled optional physics semantics, separate from topology identity."""
+
+    composites: tuple[PhysicsCompositeSpec, ...]
+    observables: tuple[PhysicsObservableSpec, ...]
+    order: tuple[str, ...]
+    signature: str
+
+    @property
+    def composite_map(self) -> Mapping[str, PhysicsCompositeSpec]:
+        return MappingProxyType({item.name: item for item in self.composites})
+
+    @property
+    def observable_map(self) -> Mapping[str, PhysicsObservableSpec]:
+        return MappingProxyType({item.name: item for item in self.observables})
+
+
+@dataclass(frozen=True)
 class TopologySpec:
     nodes: Mapping[str, DecayNode]
     leaf_roles: Mapping[str, LeafRole]
@@ -82,6 +119,7 @@ class TopologySpec:
     candidate_pools: Mapping[str, CandidatePoolSpec]
     recurrent_tokens: tuple[str, ...]
     signature: str
+    physics: PhysicsSpec | None = None
 
     @property
     def invisible_roles(self) -> tuple[LeafRole, ...]:
@@ -90,6 +128,11 @@ class TopologySpec:
     @property
     def visible_leaf_roles(self) -> tuple[LeafRole, ...]:
         return tuple(role for role in self.leaf_roles.values() if not role.invisible)
+
+    @property
+    def physics_signature(self) -> str | None:
+        """The optional physics signature; ``signature`` remains historical."""
+        return None if self.physics is None else self.physics.signature
 
 
 def frozen_mapping(values: dict) -> Mapping:

@@ -529,6 +529,48 @@ def _selected(value: str, allowed: tuple, label: str) -> tuple:
     return selected
 
 
+def _predictions_for_variant(variant: VariantSpec, selection: str) -> tuple[PredictionSpec, ...]:
+    """Resolve a strict prediction-name filter for one variant."""
+    names = tuple(prediction.name for prediction in variant.predictions)
+    if selection == "all":
+        return variant.predictions
+    selected = tuple(part.strip() for part in selection.split(",") if part.strip())
+    unknown = sorted(set(selected) - set(names))
+    if unknown:
+        raise ValueError(
+            f"Unknown prediction name for variant {variant.name!r}: {unknown}; "
+            f"allowed={list(names)}"
+        )
+    return tuple(
+        prediction for prediction in variant.predictions if prediction.name in selected
+    )
+
+
+def _evaluation_complete(path: Path) -> bool:
+    """Recognise a non-empty maintained evaluation JSON without rewriting it."""
+    if not path.is_file() or path.stat().st_size <= 0:
+        return False
+    try:
+        value = json.loads(path.read_text())
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return False
+    return (
+        isinstance(value, dict)
+        and isinstance(value.get("prediction_file"), str)
+        and bool(value.get("prediction_file"))
+        and isinstance(value.get("events"), int)
+        and value["events"] > 0
+    )
+
+
+def _plot_complete(path: Path) -> bool:
+    """Require actual non-empty plot files, not merely an existing directory."""
+    return path.is_dir() and any(
+        item.is_file() and item.stat().st_size > 0
+        for item in path.iterdir()
+    )
+
+
 def _git_commit() -> str | None:
     result = subprocess.run(
         ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True,
@@ -845,10 +887,14 @@ def _predict_one(study, topology, variant, prediction, seed, *, root, global_ove
 def _evaluate_one(study, topology, variant, prediction, seed, *, root, force, dry_run):
     source = _prediction_path(root, study, topology, variant.name, seed, prediction.name)
     target = _evaluation_path(root, study, topology, variant.name, seed, prediction.name)
+    if target.is_file() and not force:
+        if _evaluation_complete(target):
+            print(f"SKIP evaluate (valid output exists): {target}")
+            return
+        print(f"REPAIR evaluate (invalid output): {target}")
     if dry_run:
         print(f"evaluate {source} -> {target}")
         return
-    del force
     _validate_prediction_artifact(source)
     metrics = evaluate_any_predictions(source)
     metrics["common_non_null_truth_assignment"] = common_non_null_truth_assignment(source)
@@ -872,11 +918,20 @@ def _evaluate_one(study, topology, variant, prediction, seed, *, root, force, dr
     target.write_text(json.dumps(metrics, indent=2, sort_keys=True) + "\n")
 
 
-def _plot_one(study, topology, variant, prediction, seed, *, root, formats, dry_run):
+def _plot_one(
+    study, topology, variant, prediction, seed, *, root, formats, force, dry_run
+):
     source = _prediction_path(root, study, topology, variant.name, seed, prediction.name)
     target = _run_dir(root, study, topology, variant.name, seed) / "plots" / prediction.name
+    if target.exists() and not force:
+        if _plot_complete(target):
+            print(f"SKIP plot (valid output exists): {target}")
+            return
+        print(f"REPAIR plot (invalid output): {target}")
     print(f"plot {source} -> {target}")
     if not dry_run:
+        if force and target.exists():
+            shutil.rmtree(target)
         plot_prediction(source, target, formats=formats)
 
 
@@ -1076,6 +1131,34 @@ def _training_event_count(
 def _study_specific_analysis(
     study, topologies, variants, seeds, *, root, global_overrides, dry_run
 ):
+    if study.name in {"generator_formulations", "generator_inference"}:
+        selected_names = {variant.name for variant in variants}
+        required_names = (
+            {"edm", "cfm", "ot_cfm", "conditional_ot_cfm"}
+            if study.name == "generator_formulations"
+            else {"edm", "cfm"}
+        )
+        if not required_names <= selected_names:
+            print(
+                f"Skip {study.name} human review for partial variant selection; "
+                f"missing={sorted(required_names - selected_names)}"
+            )
+            return
+        script = (
+            "review_generator_formulations.py"
+            if study.name == "generator_formulations"
+            else "review_generator_inference.py"
+        )
+        command = [
+            sys.executable,
+            str(ROOT / "scripts" / script),
+            "--output-root",
+            str(root),
+        ]
+        print(shlex.join(command))
+        if not dry_run:
+            subprocess.run(command, cwd=ROOT, check=True)
+        return
     if study.name == "encoder_backbone":
         required = {
             "transformer_baseline",
@@ -1376,6 +1459,11 @@ def main() -> None:
     parser.add_argument("--formats", nargs="+", choices=("png", "pdf"), default=("png", "pdf"))
     parser.add_argument("--include-diagnostics", action="store_true")
     parser.add_argument(
+        "--predictions",
+        default="all",
+        help="Comma-separated prediction names for predict/evaluate/plot stages.",
+    )
+    parser.add_argument(
         "--exact-variants",
         action="store_true",
         help="Do not expand training dependencies; intended for dependency-ordered batch workers.",
@@ -1434,7 +1522,8 @@ def main() -> None:
                     )
             for variant in requested:
                 for seed in seeds:
-                    for prediction in variant.predictions:
+                    predictions = _predictions_for_variant(variant, args.predictions)
+                    for prediction in predictions:
                         _public_run_config(
                             study, topology, variant, seed, root,
                             global_overrides, prediction,
@@ -1466,7 +1555,8 @@ def main() -> None:
                     if variant.reporting == "setup":
                         continue
                     for seed in seeds:
-                        for prediction in variant.predictions:
+                        predictions = _predictions_for_variant(variant, args.predictions)
+                        for prediction in predictions:
                             if stage == "predict":
                                 _predict_one(
                                     study, topology, variant, prediction, seed,
@@ -1482,7 +1572,8 @@ def main() -> None:
                             else:
                                 _plot_one(
                                     study, topology, variant, prediction, seed,
-                                    root=root, formats=formats, dry_run=args.dry_run,
+                                    root=root, formats=formats, force=args.force,
+                                    dry_run=args.dry_run,
                                 )
         elif stage == "compare":
             for topology in topologies:

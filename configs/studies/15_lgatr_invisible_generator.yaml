@@ -21,7 +21,9 @@ variants:
     initialise_from_gate:
     initialise_components: []
     checkpoint_from:
-    checkpoint_from_gate: invisible_generator
+    # The objective gate selects the formulation; the coordinate study supplies
+    # the scientifically matched conventional baseline checkpoint.
+    checkpoint_from_gate: invisible_coordinates
     predictions:
       default: {label: Conventional generator, patch: {inference: {invisible: {samples_per_assignment: 32, flow: {steps: 17, solver: euler}}}}, recurrent_steps: null}
 

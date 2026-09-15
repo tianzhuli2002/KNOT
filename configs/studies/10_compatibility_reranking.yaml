@@ -1,27 +1,27 @@
 study:
   name: compatibility_reranking
-  title: 10 — Can Physics Compatibility Select the Correct Event Hypothesis?
-  description: Reuse selected factorised components, generate one posterior, and scan explicit compatibility weights offline.
+  title: 10 — Can Invisible Physics Resolve the Jet Assignment?
+  description: Reuse selected factorised components, generate one posterior, and evaluate visible, analytic, learned, and truth-neutrino hypothesis reranking offline.
   experiment_pattern: configs/experiments/{topology}.yaml
   topologies: [ttbar2L]
   seeds: [42, 43, 44]
   split: validation
-  requires: [visible_assignment, assignment_formulation, assignment_conditioning, invisible_generator, invisible_coordinates]
-  inherit: [visible_assignment, assignment_formulation, assignment_conditioning, invisible_generator, invisible_coordinates]
-  training: true
+  requires: [visible_assignment, assignment_formulation, invisible_generator, invisible_coordinates, invisible_backbone]
+  inherit: [visible_assignment, assignment_formulation, invisible_generator, invisible_coordinates, invisible_backbone]
+  # The expensive posterior is produced by the selected invisible model.  This
+  # study is an offline hypothesis-evaluation/scorer study, not a second flow
+  # training campaign.
+  training: false
 
 variants:
   compatibility:
     label: learned visible/invisible compatibility reranking
     reporting: primary
-    patch:
-      model:
-        mode: factorized
-        compatibility: {}
-      training: {trainable: [compatibility]}
+    patch: {model: {mode: factorized}}
     initialise_from:
-    initialise_from_gate: assignment_conditioning
-    initialise_components: [visible, assignment, invisible]
+    initialise_from_gate:
+    initialise_components: []
     checkpoint_from:
+    checkpoint_from_gate: invisible_backbone
     predictions:
-      posterior: {label: One stored posterior for offline weight scan, patch: {inference: {assignment: {top_k: 10}, invisible: {samples_per_assignment: 16, flow: {steps: 17, solver: euler}}, compatibility: {weight: 0.0}}}, recurrent_steps: null}
+      posterior: {label: One stored posterior for offline hypothesis evaluation, patch: {inference: {assignment: {top_k: 10}, invisible: {samples_per_assignment: 16, flow: {steps: 17, solver: euler}}}}, recurrent_steps: null}

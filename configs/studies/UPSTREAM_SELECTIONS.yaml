@@ -112,7 +112,7 @@ assignment_formulation:
   # repair commit below.  The selected checkpoints retain their historical
   # training SHA in each artifact record.
   validated_sha: e0ee7b3114ce413b0bb9ea7f96e786e13c4da4f1
-  required_by: [assignment_conditioning, c2_feedback, joint_vs_factorized, joint_recurrence, posterior_size, compatibility_reranking, lgatr_invisible_generator]
+  required_by: [assignment_conditioning, c2_feedback, compatibility_reranking, invisible_coordinates, joint_recurrence, joint_vs_factorized, lgatr_invisible_generator, posterior_size]
   selected_patch:
     model:
       assignment:
@@ -158,7 +158,7 @@ assignment_conditioning:
   source_study: assignment_conditioning
   selected_variant:
   validated_sha:
-  required_by: [c2_feedback, joint_vs_factorized, joint_recurrence, compatibility_reranking]
+  required_by: [c2_feedback, joint_vs_factorized, joint_recurrence]
   selected_patch: {}
   artifacts: {}
 
@@ -177,6 +177,24 @@ invisible_generator:
   selected_variant:
   validated_sha:
   required_by: [assignment_conditioning, c2_feedback, joint_vs_factorized, joint_recurrence, posterior_size, compatibility_reranking, invisible_coordinates, lgatr_invisible_generator]
+  selected_patch: {}
+  artifacts: {}
+
+invisible_backbone:
+  status: pending
+  source_study: lgatr_invisible_generator
+  selected_variant:
+  validated_sha:
+  required_by: [assignment_conditioning, compatibility_reranking]
+  selected_patch: {}
+  artifacts: {}
+
+assignment_coupling:
+  status: pending
+  source_study: compatibility_reranking
+  selected_variant:
+  validated_sha:
+  required_by: [assignment_conditioning]
   selected_patch: {}
   artifacts: {}
 

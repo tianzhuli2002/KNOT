@@ -41,6 +41,7 @@ from joint_event_reconstruction.prediction_discrete import predict_discrete_flow
 from joint_event_reconstruction.prediction_joint import predict_joint_flow_hdf5
 from joint_event_reconstruction.topology.assignments import AssignmentSpace
 from joint_event_reconstruction.topology.compiler import load_topology
+from joint_event_reconstruction.public_config import _truth_bindings
 from joint_event_reconstruction.training.joint import JointEventModule
 from scripts.smoke_all import MODES, run_mode as run_factorized_mode
 from scripts.smoke_flows import FLOW_MODES, configure as configure_flow
@@ -329,10 +330,14 @@ def run_synthetic_smoke(experiment_path: Path, *, device="cpu", events=4, factor
 
 
 def run_topology_contract(topology_name: str, *, device="cpu", events=4):
+    torch.set_num_threads(1)
     requirements = CONTRACTS[topology_name]
     base = copy.deepcopy(load_experiment(ROOT / "configs/experiments/ttbar1L.yaml"))
     base.experiment.name = topology_name
     base.topology_config = str(ROOT / "configs/topology" / f"{topology_name}.yaml")
+    base.data.truth_bindings = OmegaConf.create(
+        _truth_bindings(Path(base.topology_config))
+    )
     seed_smoke(int(base.experiment.seed) + 40_001)
     visible, batch, scaler = build_synthetic_batch(base, events=events, device=device)
     spec = load_topology(
