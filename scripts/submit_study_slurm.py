@@ -298,6 +298,7 @@ def _worker_script(
         "#!/usr/bin/env bash\n"
         "set -euo pipefail\n"
         f"repo_root={shlex.quote(str(ROOT))}\n"
+        f"export PYTHONPATH={shlex.quote(str(ROOT / 'src'))}${{PYTHONPATH:+:$PYTHONPATH}}\n"
         f"expected_git_commit={shlex.quote(expected_commit)}\n"
         'actual_git_commit=$(git -C "$repo_root" rev-parse HEAD)\n'
         'if [[ "$actual_git_commit" != "$expected_git_commit" ]]; then\n'
@@ -389,6 +390,7 @@ def _postprocess_worker_script(
         "#!/usr/bin/env bash\n"
         "set -euo pipefail\n"
         f"repo_root={shlex.quote(str(ROOT))}\n"
+        f"export PYTHONPATH={shlex.quote(str(ROOT / 'src'))}${{PYTHONPATH:+:$PYTHONPATH}}\n"
         f"expected_git_commit={shlex.quote(expected_commit)}\n"
         'actual_git_commit=$(git -C "$repo_root" rev-parse HEAD)\n'
         'if [[ "$actual_git_commit" != "$expected_git_commit" ]]; then\n'
@@ -452,6 +454,7 @@ def _post_script(
         "#!/usr/bin/env bash\n"
         "set -euo pipefail\n"
         f"repo_root={shlex.quote(str(ROOT))}\n"
+        f"export PYTHONPATH={shlex.quote(str(ROOT / 'src'))}${{PYTHONPATH:+:$PYTHONPATH}}\n"
         f"expected_git_commit={shlex.quote(expected_commit)}\n"
         'actual_git_commit=$(git -C "$repo_root" rev-parse HEAD)\n'
         'if [[ "$actual_git_commit" != "$expected_git_commit" ]]; then\n'

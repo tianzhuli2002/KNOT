@@ -843,6 +843,8 @@ def check_slurm_snapshot_contract() -> None:
             )
         finally:
             scheduler.ROOT = original_root
+        if f"export PYTHONPATH={repository / 'src'}" not in worker.read_text():
+            raise AssertionError("Slurm worker does not pin the submitted source package path")
 
         environment = dict(os.environ, SLURM_ARRAY_TASK_ID="0")
         accepted = subprocess.run(
