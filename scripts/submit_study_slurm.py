@@ -672,6 +672,51 @@ def main() -> None:
         }
         for topology in topologies
     }
+    checkpoint_sources: dict[str, object] = {}
+    for variant in requested:
+        if variant.checkpoint_from is not None:
+            checkpoint_sources[variant.name] = {
+                "kind": "study_variant",
+                "study": variant.checkpoint_from[0],
+                "variant": variant.checkpoint_from[1],
+            }
+            continue
+        if variant.checkpoint_from_gate is None:
+            continue
+        gate_name = variant.checkpoint_from_gate
+        gate = (study.resolved_gates or {}).get(gate_name)
+        if not isinstance(gate, dict):
+            raise ValueError(
+                f"Checkpoint source gate {gate_name!r} is not resolved for "
+                f"variant {variant.name!r}"
+            )
+        artifacts: dict[str, object] = {}
+        for topology in topologies:
+            selected = (gate.get("artifacts") or {}).get(topology, {})
+            for seed in seeds:
+                key = f"{topology}:seed_{seed}"
+                artifact = selected.get(f"seed_{seed}")
+                if not isinstance(artifact, dict):
+                    raise ValueError(
+                        f"Checkpoint source gate {gate_name!r} has no artifact for {key}"
+                    )
+                artifacts[key] = {
+                    "source_study": artifact.get("source_study"),
+                    "variant": artifact.get("variant"),
+                    "model_seed": artifact.get("model_seed"),
+                    "data_subset_seed": artifact.get("data_subset_seed"),
+                    "training_git_sha": artifact.get("git_sha"),
+                    "architecture_identity": artifact.get("architecture_identity"),
+                    "checkpoint": artifact.get("checkpoint"),
+                    "checkpoint_sha256": artifact.get("checkpoint_sha256"),
+                    "identity_file": artifact.get("identity_file"),
+                    "identity_sha256": artifact.get("identity_sha256"),
+                }
+        checkpoint_sources[variant.name] = {
+            "kind": "locked_gate",
+            "gate": gate_name,
+            "artifacts": artifacts,
+        }
 
     submitted: dict[str, object] = {
         "campaign_id": campaign_id,
@@ -704,14 +749,7 @@ def main() -> None:
             for name, gate in (study.resolved_gates or {}).items()
         },
         "resolved_gate_digest": study.gates_digest,
-        "checkpoint_sources": {
-            variant.name: {
-                "study": variant.checkpoint_from[0],
-                "variant": variant.checkpoint_from[1],
-            }
-            for variant in requested
-            if variant.checkpoint_from is not None
-        },
+        "checkpoint_sources": checkpoint_sources,
         "resources": {
             "gpu": {
                 "partition": args.gpu_partition,
