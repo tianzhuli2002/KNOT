@@ -836,9 +836,11 @@ def main() -> None:
         legacy.main()
         return
     try:
-        _main_new(argv)
+        exit_code = _main_new(argv)
     except (FileNotFoundError, KeyError, TypeError, ValueError, RuntimeError) as error:
         raise SystemExit(f"jer: {error}") from None
+    if exit_code:
+        raise SystemExit(exit_code)
 
 
 if __name__ == "__main__":
