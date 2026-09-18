@@ -35,7 +35,6 @@ _LEGACY_COMMANDS = {
     "predict",
     "evaluate",
     "plot",
-    "smoke",
     "validate-data",
     "show-config",
     "config",
