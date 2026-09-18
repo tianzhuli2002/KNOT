@@ -1530,9 +1530,14 @@ def main() -> None:
         "--expected-gates-digest",
         help="Fail if the locked gate selections changed after Slurm submission.",
     )
+    parser.add_argument(
+        "--gates-path",
+        type=Path,
+        help="Scientific gate file to resolve; defaults to the tracked base gates.",
+    )
     args = parser.parse_args()
 
-    study = resolve_study(args.study)
+    study = resolve_study(args.study, args.gates_path or None)
     if args.expected_gates_digest is not None and study.gates_digest != args.expected_gates_digest:
         raise RuntimeError(
             "Scientific gate selections changed after submission: "

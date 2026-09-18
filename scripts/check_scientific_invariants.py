@@ -1375,6 +1375,81 @@ def check_campaign_identity_contract() -> None:
         raise AssertionError("Campaign identity is not deterministic")
 
 
+def check_paper1_controller_contract() -> None:
+    """Campaign transitions, gate overlays and test sealing are explicit."""
+    from joint_event_reconstruction.campaign_controller import transition_for_observation
+    from joint_event_reconstruction.studies import load_scientific_gates
+
+    state = {"state": "WAITING_SMOKE", "stage": None}
+    state = transition_for_observation(state, {"smoke": "PASS"})
+    state = transition_for_observation(
+        state,
+        {"study13": "COMPLETE", "decision_status": "AUTO_SELECTED", "decision": "cartesian"},
+    )
+    if state != {"state": "STUDY15_RUNNING", "stage": "invisible_backbone"}:
+        raise AssertionError("Paper-1 controller did not promote Study 13 deterministically")
+    review = transition_for_observation(
+        {"state": "STUDY13_RUNNING", "stage": "invisible_coordinates"},
+        {"study13": "COMPLETE", "decision_status": "REVIEW_REQUIRED"},
+    )
+    if review["state"] != "STUDY13_REVIEW":
+        raise AssertionError("Ambiguous Study-13 result did not stop at REVIEW_REQUIRED")
+    failed = transition_for_observation(
+        {"state": "STUDY13_RUNNING", "stage": "invisible_coordinates"},
+        {"study13": "FAILED"},
+    )
+    if failed["state"] != "BLOCKED":
+        raise AssertionError("Training failure was not fail-closed")
+
+    with tempfile.TemporaryDirectory(prefix="jer-campaign-gate-contract-") as directory:
+        gates = copy.deepcopy(load_scientific_gates())
+        gate = gates["invisible_coordinates"]
+        base_artifact = gates["invisible_generator"]["artifacts"]["ttbar2L"]["seed_42"]
+        gate.update(
+            {
+                "status": "locked",
+                "selected_variant": "cartesian",
+                "validated_sha": "30da9fce364ed479a2d980c5acc23d3e817c180a",
+                "selected_patch": {"model": {"invisible": {"coordinates": {"type": "cartesian"}}}},
+                "artifacts": {"ttbar2L": {"seed_42": copy.deepcopy(base_artifact)}},
+            }
+        )
+        path = Path(directory) / "gates.json"
+        path.write_text(json.dumps(gates))
+        try:
+            load_scientific_gates(path)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("Reused checkpoint passed without selection provenance")
+        entry = gate["artifacts"]["ttbar2L"]["seed_42"]
+        entry["selection_provenance"] = {
+            "source_study": "invisible_coordinates",
+            "variant": "cartesian",
+            "decision_artifact": "results/campaigns/paper1/decisions/invisible_coordinates.json",
+            "decision_sha256": "0" * 64,
+        }
+        entry["training_provenance"] = {
+            "source_study": entry["source_study"],
+            "variant": entry["variant"],
+            "git_sha": entry["git_sha"],
+            "architecture_identity": entry["architecture_identity"],
+            "identity_sha256": entry["identity_sha256"],
+        }
+        path.write_text(json.dumps(gates))
+        load_scientific_gates(path)
+
+    policy = OmegaConf.to_container(
+        OmegaConf.load(ROOT / "configs/campaigns/paper1.yaml"), resolve=True
+    )
+    if policy["campaign"]["stop_before_test"] is not True:
+        raise AssertionError("Paper-1 campaign does not stop before the real test split")
+    for path in sorted((ROOT / "configs/studies").glob("[0-9][0-9]_*.yaml")):
+        study = OmegaConf.to_container(OmegaConf.load(path), resolve=True)["study"]
+        if study.get("campaign", {}).get("state") in {"deferred", "superseded"} and study.get("campaign", {}).get("enabled"):
+            raise AssertionError(f"Deferred/superseded study is still auto-enabled: {path}")
+
+
 def _component_signatures(overrides: list[str] | None = None) -> dict[str, str]:
     config = load_experiment("configs/experiments/ttbar2L.yaml", overrides or [])
     from joint_event_reconstruction.training.joint import architecture_component_signatures
@@ -2036,11 +2111,12 @@ def main() -> None:
     check_campaign_scheduler_contract()
     check_slurm_option_routing_contract()
     check_campaign_identity_contract()
+    check_paper1_controller_contract()
     print(
         "PASS: architecture, training-identity, partial-checkpoint, split-seed, "
         "nested-subset, coordinate, truth-oracle, exchange, permutation, "
         "freeze, public-input, same-flavour-role, campaign-gate, Slurm-option, "
-        "campaign-identity, campaign-scheduler, prediction-writer, mass-shell, Conditional-L-GATr "
+        "campaign-identity, campaign-scheduler, Paper-1-controller, prediction-writer, mass-shell, Conditional-L-GATr "
         "Slurm-snapshot and resumable-postprocess contracts"
     )
 

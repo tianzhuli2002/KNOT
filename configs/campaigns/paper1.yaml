@@ -1,0 +1,79 @@
+campaign:
+  name: paper1
+  auto_promote: true
+  stop_before_test: true
+  repair_limit: 1
+  bootstrap_samples: 4000
+  bootstrap_seed: 17092026
+
+stages:
+  - invisible_coordinates
+  - lgatr_invisible_generator
+  - compatibility_reranking
+  - assignment_conditioning_if_needed
+  - final_production
+
+studies:
+  invisible_coordinates: invisible_coordinates
+  lgatr_invisible_generator: lgatr_invisible_generator
+  compatibility_reranking: compatibility_reranking
+  assignment_conditioning_if_needed: assignment_conditioning
+
+decisions:
+  invisible_coordinates:
+    variants: [cartesian, met_residual]
+    diagnostic_variants: [met_exact]
+    primary_metric:
+      path: invisible.top1_assignment_conditioned.energy_score_joint
+      direction: lower
+    equivalence_relative: 0.005
+    require_all_seed_direction: true
+    coverage_guardrail:
+      paths: [invisible.conditional_calibration]
+      value_key: coverage_68
+      maximum_absolute_regression: 0.05
+    preferred_simple: cartesian
+    auto_select_only_if_unambiguous: true
+
+  invisible_backbone:
+    variants: [conventional, conditional_lgatr]
+    primary_metric:
+      path: invisible.top1_assignment_conditioned.energy_score_joint
+      direction: lower
+    equivalence_relative: 0.005
+    require_all_seed_direction: true
+    coverage_guardrail:
+      paths: [invisible.conditional_calibration]
+      value_key: coverage_68
+      maximum_absolute_regression: 0.05
+    preferred_simple: conventional
+    maximum_runtime_ratio: 2.0
+    auto_select_only_if_unambiguous: true
+
+  assignment_coupling:
+    methods: [visible, visible_only, analytic, learned, truth_nu_oracle]
+    k_prefixes: [1, 2, 3, 5, 10]
+    m_prefixes: [4, 8, 16, 32, 64]
+    convergence_tolerance: 0.005
+    preferred_simple: analytic
+    allow_none: true
+    minimum_absolute_gain: 0.005
+    maximum_correct_to_wrong_fraction: 0.02
+    minimum_Rcoupling: 0.10
+    require_all_seed_direction: true
+    auto_select_only_if_unambiguous: true
+
+  assignment_conditioning:
+    variants: [none, refined]
+    preferred_simple: none
+    equivalence_relative: 0.005
+    require_all_seed_direction: true
+    auto_select_only_if_unambiguous: true
+
+production:
+  enabled: false
+  manifest: configs/studies/16_final_production.yaml
+  reason: >-
+    Production-scale training is intentionally not auto-submitted until the
+    frozen architecture, campaign-local gates and 500k-event manifest have
+    been reviewed and validated together.

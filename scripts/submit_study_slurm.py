@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import shlex
 import shutil
@@ -91,13 +92,20 @@ def _sha256_file(path: Path) -> str:
 
 
 def _git_state() -> tuple[str, bool]:
-    commit = subprocess.run(
+    requested = os.environ.get("JER_SOURCE_SHA", "").strip()
+    commit = requested or subprocess.run(
         ["git", "rev-parse", "HEAD"],
         cwd=PROJECT_ROOT,
         text=True,
         capture_output=True,
         check=True,
     ).stdout.strip()
+    if requested:
+        subprocess.run(
+            ["git", "cat-file", "-e", f"{commit}^{{commit}}"],
+            cwd=PROJECT_ROOT,
+            check=True,
+        )
     dirty = bool(
         subprocess.run(
             ["git", "status", "--porcelain"],
@@ -290,6 +298,7 @@ def _worker_script(
     expected_manifest_sha256: str,
     expected_experiments: dict[str, dict[str, str]],
     expected_gate_digest: str | None = None,
+    gates_path: Path | None = None,
 ) -> None:
     command = [
         sys.executable,
@@ -304,6 +313,8 @@ def _worker_script(
     ]
     if expected_gate_digest is not None:
         command += ["--expected-gates-digest", expected_gate_digest]
+    if gates_path is not None:
+        command += ["--gates-path", str(gates_path)]
     if stage == "train":
         command.append("--exact-variants")
     for override in global_overrides:
@@ -367,6 +378,7 @@ def _postprocess_worker_script(
     expected_gate_digest: str | None,
     expected_experiments: dict[str, dict[str, str]],
     overrides: tuple[str, ...],
+    gates_path: Path | None = None,
 ) -> None:
     """Write one prediction-level CPU worker with strict source checks."""
     commands = []
@@ -386,6 +398,8 @@ def _postprocess_worker_script(
             command += ["--predictions", '"$prediction"']
         if expected_gate_digest is not None:
             command += ["--expected-gates-digest", expected_gate_digest]
+        if gates_path is not None:
+            command += ["--gates-path", str(gates_path)]
         for override in overrides:
             command += ["--set", override]
         commands.append(
@@ -524,6 +538,7 @@ def _post_command(
     seeds: tuple[int, ...],
     overrides: tuple[str, ...],
     expected_gate_digest: str | None,
+    gates_path: Path | None = None,
 ) -> list[str]:
     command = [
         sys.executable,
@@ -540,6 +555,8 @@ def _post_command(
         command += ["--set", override]
     if expected_gate_digest is not None:
         command += ["--expected-gates-digest", expected_gate_digest]
+    if gates_path is not None:
+        command += ["--gates-path", str(gates_path)]
     return command
 
 
@@ -547,6 +564,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Submit a JER study to Slurm")
     parser.add_argument("study", type=Path)
     parser.add_argument("--output-root", type=Path, default=Path("results/studies"))
+    parser.add_argument(
+        "--gates-path",
+        type=Path,
+        help="Scientific gate file to resolve; defaults to tracked gates.",
+    )
     parser.add_argument("--topologies", default="all")
     parser.add_argument("--variants", default="all")
     parser.add_argument("--seeds", default="all")
@@ -604,7 +626,11 @@ def main() -> None:
     study_path_arg = args.study.expanduser()
     if not study_path_arg.is_absolute():
         study_path_arg = PROJECT_ROOT / study_path_arg
-    study = resolve_study(study_path_arg.resolve())
+    gates_path = args.gates_path.expanduser() if args.gates_path else None
+    if gates_path is not None and not gates_path.is_absolute():
+        gates_path = PROJECT_ROOT / gates_path
+    gates_path = gates_path.resolve() if gates_path is not None else None
+    study = resolve_study(study_path_arg.resolve(), gates_path)
     topologies = _selected(args.topologies, study.topologies, "topologies")
     variant_names = tuple(variant.name for variant in study.variants)
     requested_names = _selected(args.variants, variant_names, "variants")
@@ -668,7 +694,7 @@ def main() -> None:
     gpu_extra = tuple(args.extra_gpu_sbatch)
     cpu_extra = tuple(args.extra_cpu_sbatch)
     git_commit, git_dirty = _git_state()
-    if git_dirty and not args.dry_run:
+    if git_dirty and not args.dry_run and not os.environ.get("JER_SOURCE_SHA"):
         raise RuntimeError("Study submission requires a clean committed checkout")
     source_root = ensure_source_snapshot(git_commit, project_root=PROJECT_ROOT)
     base_experiments = {
@@ -732,7 +758,9 @@ def main() -> None:
         "source_sha": git_commit,
         "source_root": str(source_root),
         "project_root": str(PROJECT_ROOT),
-        "git_dirty": git_dirty,
+        "git_dirty": git_dirty if not os.environ.get("JER_SOURCE_SHA") else False,
+        "canonical_checkout_dirty": git_dirty,
+        "source_from_snapshot": bool(os.environ.get("JER_SOURCE_SHA")),
         "study": study.name,
         "study_manifest": str(study_path),
         "study_manifest_sha256": manifest_sha256,
@@ -758,6 +786,8 @@ def main() -> None:
             for name, gate in (study.resolved_gates or {}).items()
         },
         "resolved_gate_digest": study.gates_digest,
+        "gates_path": str(gates_path) if gates_path is not None else None,
+        "gates_sha256": _sha256_file(gates_path) if gates_path is not None else None,
         "checkpoint_sources": checkpoint_sources,
         "resources": {
             "gpu": {
@@ -822,6 +852,7 @@ def main() -> None:
                 expected_gate_digest=study.gates_digest,
                 expected_experiments=base_experiments,
                 overrides=overrides,
+                gates_path=gates_path,
             )
             evaluation_job = _submit(
                 _sbatch_array(
@@ -860,6 +891,7 @@ def main() -> None:
                 expected_gate_digest=study.gates_digest,
                 expected_experiments=base_experiments,
                 overrides=overrides,
+                gates_path=gates_path,
             )
             plot_dependency = args.dependency_afterok
             if evaluation_job is not None:
@@ -898,6 +930,7 @@ def main() -> None:
                 seeds=seeds,
                 overrides=overrides,
                 expected_gate_digest=study.gates_digest,
+                gates_path=gates_path,
             )
             for stage in ("compare", "summary", "analyze")
         ]
@@ -979,6 +1012,7 @@ def main() -> None:
             expected_manifest_sha256=manifest_sha256,
             expected_gate_digest=study.gates_digest,
             expected_experiments=base_experiments,
+            gates_path=gates_path,
         )
         job_id = _submit(
             _sbatch_array(
@@ -1067,6 +1101,7 @@ def main() -> None:
             expected_manifest_sha256=manifest_sha256,
             expected_gate_digest=study.gates_digest,
             expected_experiments=base_experiments,
+            gates_path=gates_path,
         )
         prediction_job = _submit(
             _sbatch_array(
@@ -1117,6 +1152,7 @@ def main() -> None:
                 expected_gate_digest=study.gates_digest,
                 expected_experiments=base_experiments,
                 overrides=overrides,
+                gates_path=gates_path,
             )
             evaluation_job = _submit(
                 _sbatch_array(
@@ -1147,6 +1183,7 @@ def main() -> None:
                     seeds=seeds,
                     overrides=overrides,
                     expected_gate_digest=study.gates_digest,
+                    gates_path=gates_path,
                 )
                 for stage in ("compare", "summary", "analyze")
             ]

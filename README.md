@@ -15,21 +15,31 @@ required.
 cd ~/scratch/JointEventReconstruction
 
 jer status
-jer doctor
+jer doctor --compute-node
 jer gates
 jer campaign status
 
-# After the local and compute-node checks pass:
-jer smoke gpu --watch
-
-jer study plan 13
-jer study submit 13 --watch
+# After the local and compute-node checks pass, arm the exact-SHA smoke and
+# Paper-1 continuation in one command.  The shell may then be closed:
+jer campaign launch paper1 --auto
+jer campaign status paper1
+jer campaign watch paper1
 ```
 
 `jer status` is the compact repository, artifact, gate, campaign and Slurm
 report. `jer doctor --compute-node` performs the same source-snapshot, data,
 cache and checkpoint checks from a CPU compute node before an L40S allocation.
-Study submission refuses a source SHA without a successful matching GPU smoke.
+`jer campaign launch paper1 --auto` arms a short Slurm controller behind the
+exact-SHA GPU smoke; the campaign continues after logout. Clear predeclared
+decisions promote automatically, while ambiguous decisions stop at
+`REVIEW_REQUIRED` for `jer campaign review/approve paper1`. Study submission
+refuses a source SHA without a successful matching GPU smoke.
+
+The automatic campaign runs Studies 13, 15, 10 and, only after a positive
+Study-10 coupling decision, the slim Study 03. It then stops before production
+review or the sealed real test split. The controller never submits a real test
+prediction. `jer campaign resume paper1` reconciles an interrupted controller;
+it does not approve a scientific gate implicitly.
 
 The project root contains the maintained source/configuration and the
 operational directories `data/`, `cache/`, `results/`, `logs/` and `runtime/`.

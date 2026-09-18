@@ -29,6 +29,7 @@ _GATE_KEYS = {
     "selected_patch",
     "artifacts",
 }
+_GATE_OPTIONAL_KEYS = {"selected_decision"}
 _STUDY_KEYS = {
     "name",
     "title",
@@ -69,6 +70,10 @@ _ARTIFACT_KEYS = {
     "checkpoint_sha256",
     "identity_file",
     "identity_sha256",
+}
+_ARTIFACT_OPTIONAL_KEYS = {
+    "selection_provenance",
+    "training_provenance",
 }
 
 
@@ -213,10 +218,10 @@ class StudySpec:
                 f"Locked gate {gate_name!r} has no checkpoint for topology={topology!r}, "
                 f"model_seed={int(seed)}"
             )
-        if set(entry) != _ARTIFACT_KEYS:
+        if not _ARTIFACT_KEYS <= set(entry) <= _ARTIFACT_KEYS | _ARTIFACT_OPTIONAL_KEYS:
             raise ValueError(
-                f"Gate artifact {gate_name}:{topology}:seed_{int(seed)} keys must be "
-                f"exactly {sorted(_ARTIFACT_KEYS)}"
+                f"Gate artifact {gate_name}:{topology}:seed_{int(seed)} keys must contain "
+                f"{sorted(_ARTIFACT_KEYS)} and only optional provenance keys"
             )
         return entry
 
@@ -300,7 +305,11 @@ def load_scientific_gates(path: str | Path = DEFAULT_GATES_PATH) -> dict[str, di
         _identifier(name, "scientific gate name")
         if not isinstance(gate, dict):
             raise ValueError(f"Scientific gate {name!r} must be a mapping")
-        _exact_keys(gate, _GATE_KEYS, f"scientific gate {name}")
+        if not _GATE_KEYS <= set(gate) <= _GATE_KEYS | _GATE_OPTIONAL_KEYS:
+            raise ValueError(
+                f"scientific gate {name} keys must contain {sorted(_GATE_KEYS)} and only "
+                f"optional keys {sorted(_GATE_OPTIONAL_KEYS)}"
+            )
         status = str(gate["status"])
         if status not in _GATE_STATUSES:
             raise ValueError(f"Scientific gate {name!r} has invalid status {status!r}")
@@ -356,7 +365,14 @@ def load_scientific_gates(path: str | Path = DEFAULT_GATES_PATH) -> dict[str, di
                 raise ValueError(
                     f"Locked scientific gate {name!r} must record a 40-character validated_sha"
                 )
-            if not selected_patch:
+            selected_decision = gate.get("selected_decision")
+            if selected_decision is not None and (
+                not isinstance(selected_decision, str) or not selected_decision.strip()
+            ):
+                raise ValueError(
+                    f"Locked scientific gate {name!r} has an invalid selected_decision"
+                )
+            if not selected_patch and selected_decision is None:
                 raise ValueError(f"Locked scientific gate {name!r} has no selected_patch")
         else:
             if gate.get("selected_variant") not in (None, ""):
@@ -371,6 +387,10 @@ def load_scientific_gates(path: str | Path = DEFAULT_GATES_PATH) -> dict[str, di
                 raise ValueError(
                     f"Non-locked scientific gate {name!r} must not contain selected data"
                 )
+            if gate.get("selected_decision") not in (None, ""):
+                raise ValueError(
+                    f"Non-locked scientific gate {name!r} must not select a decision"
+                )
 
         for topology, topology_artifacts in artifacts.items():
             if not isinstance(topology_artifacts, dict):
@@ -383,15 +403,19 @@ def load_scientific_gates(path: str | Path = DEFAULT_GATES_PATH) -> dict[str, di
                         f"Gate artifact registry {name!r}:{topology!r} has invalid seed key "
                         f"{seed_name!r}"
                     )
-                if not isinstance(entry, dict) or set(entry) != _ARTIFACT_KEYS:
+                if (
+                    not isinstance(entry, dict)
+                    or not _ARTIFACT_KEYS <= set(entry)
+                    or not set(entry) <= _ARTIFACT_KEYS | _ARTIFACT_OPTIONAL_KEYS
+                ):
                     raise ValueError(
                         f"Gate artifact {name}:{topology}:{seed_name} keys must be "
-                        f"exactly {sorted(_ARTIFACT_KEYS)}"
+                        f"contain {sorted(_ARTIFACT_KEYS)} and only optional provenance keys"
                     )
-                if entry["source_study"] != source_study:
+                if entry["source_study"] not in study_paths:
                     raise ValueError(
-                        f"Gate artifact {name}:{topology}:{seed_name} source_study disagrees "
-                        f"with its gate"
+                        f"Gate artifact {name}:{topology}:{seed_name} has unknown "
+                        f"training source study {entry['source_study']!r}"
                     )
                 if not _COMMIT_SHA.fullmatch(str(entry["git_sha"])):
                     raise ValueError(
@@ -416,10 +440,29 @@ def load_scientific_gates(path: str | Path = DEFAULT_GATES_PATH) -> dict[str, di
                         f"Gate artifact {name}:{topology}:{seed_name} model_seed disagrees "
                         "with its registry key"
                     )
-                if entry["variant"] != gate.get("selected_variant"):
-                    raise ValueError(
-                        f"Gate artifact {name}:{topology}:{seed_name} variant disagrees with gate"
-                    )
+                selection = entry.get("selection_provenance")
+                if selection is None:
+                    if entry["source_study"] != source_study or entry["variant"] != gate.get(
+                        "selected_variant"
+                    ):
+                        raise ValueError(
+                            f"Gate artifact {name}:{topology}:{seed_name} training provenance "
+                            "must agree with its locked gate unless explicit selection_provenance "
+                            "is recorded"
+                        )
+                else:
+                    if not isinstance(selection, dict):
+                        raise ValueError(
+                            f"Gate artifact {name}:{topology}:{seed_name} selection_provenance "
+                            "must be a mapping"
+                        )
+                    if selection.get("source_study") != source_study or selection.get(
+                        "variant"
+                    ) != gate.get("selected_variant"):
+                        raise ValueError(
+                            f"Gate artifact {name}:{topology}:{seed_name} selection provenance "
+                            "does not identify the selected gate variant"
+                        )
     return raw
 
 
@@ -652,11 +695,11 @@ def load_study(path: str | Path) -> StudySpec:
 
 def resolve_study(
     path: str | Path,
-    gates_path: str | Path = DEFAULT_GATES_PATH,
+    gates_path: str | Path | None = None,
 ) -> StudySpec:
     """Resolve all required locked gate patches into a study manifest."""
     study = _raw_study(path)
-    gates_path = Path(gates_path).expanduser().resolve()
+    gates_path = Path(gates_path or DEFAULT_GATES_PATH).expanduser().resolve()
     gates = load_scientific_gates(gates_path)
     unknown = sorted(set(study.requires) - set(gates))
     if unknown:
