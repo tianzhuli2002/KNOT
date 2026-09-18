@@ -448,7 +448,7 @@ def _worker_environment(source_root: Path, source_sha: str) -> dict[str, str]:
     return environment
 
 
-def _wait_job(job_id: str, *, cycles: int = 12, interval: float = 5.0) -> tuple[str, str]:
+def _wait_job(job_id: str, *, cycles: int = 72, interval: float = 5.0) -> tuple[str, str]:
     last = ("UNKNOWN", "")
     for _ in range(cycles):
         last = _job_state(job_id)
@@ -462,6 +462,10 @@ def _wait_job(job_id: str, *, cycles: int = 12, interval: float = 5.0) -> tuple[
 def _run_compute_node_preflight(*, watch: bool = True) -> tuple[str, str, Path]:
     paths = _paths()
     sha = _git("rev-parse", "HEAD")
+    previous = _latest_successful_preflight(sha)
+    if previous is not None:
+        print(f"CPU preflight already PASS for source SHA {sha}: logs={previous}")
+        return "existing", "COMPLETED", previous
     source = ensure_source_snapshot(sha, project_root=paths.project_root)
     attempt = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     directory = paths.logs_root / "preflight" / sha / attempt
@@ -538,6 +542,9 @@ def _smoke_gpu(watch: bool) -> int:
     if not _successful_preflight(sha):
         _, state, _ = _run_compute_node_preflight(watch=True)
         if state != "COMPLETED":
+            if state in {"PENDING", "RUNNING"}:
+                print(f"CPU compute-node preflight is still {state}; no GPU smoke submitted.")
+                return 0
             raise RuntimeError(f"CPU compute-node preflight did not complete successfully: {state}")
     registry_path = paths.results_root / "validation/gpu-smoke/registry.json"
     records: list[dict] = []
@@ -609,13 +616,22 @@ def _smoke_gpu(watch: bool) -> int:
 
 
 def _successful_preflight(source_sha: str) -> bool:
+    return _latest_successful_preflight(source_sha) is not None
+
+
+def _latest_successful_preflight(source_sha: str) -> Path | None:
     root = _paths().logs_root / "preflight" / source_sha
-    for result in sorted(root.glob("*/result.json"), reverse=True):
+    candidates = sorted(
+        [*root.glob("*/result.json"), *root.glob("*/jer-preflight-*.out")],
+        reverse=True,
+    )
+    for result in candidates:
         try:
-            return json.loads(result.read_text()).get("status") == "PASS"
+            if json.loads(result.read_text()).get("status") == "PASS":
+                return result.parent
         except (OSError, json.JSONDecodeError):
             continue
-    return False
+    return None
 
 
 def _study_plan(study_arg: str) -> int:
