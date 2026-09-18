@@ -22,7 +22,7 @@ dependencies = [
 ]
 
 [project.scripts]
-jer = "joint_event_reconstruction.cli.run:main"
+jer = "joint_event_reconstruction.cli.jer:main"
 
 [project.optional-dependencies]
 lgatr = ["lgatr>=2,<3"]

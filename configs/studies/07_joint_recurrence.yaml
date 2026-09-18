@@ -9,6 +9,7 @@ study:
   requires: [visible_assignment, assignment_formulation, invisible_generator, invisible_coordinates, assignment_conditioning, invisible_feedback, joint_model]
   inherit: [visible_assignment, assignment_formulation, invisible_generator, invisible_coordinates, assignment_conditioning, joint_model]
   training: true
+  campaign: {enabled: false, state: deferred, reason: Deferred follow-up study; no joint recurrence scan is released in Paper-1.}
 
 variants:
   stateless:

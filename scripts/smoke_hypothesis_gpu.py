@@ -7,7 +7,6 @@ import argparse
 import gc
 import json
 import shutil
-import subprocess
 import time
 from pathlib import Path
 
@@ -30,6 +29,10 @@ from joint_event_reconstruction.prediction_schema import (
     validate_hypothesis_group,
     validate_prediction,
 )
+from joint_event_reconstruction.runtime_paths import (
+    runtime_paths,
+    verify_source_snapshot,
+)
 from joint_event_reconstruction.topology.physics import (
     HypothesisEvaluator,
     LearnedHypothesisScorer,
@@ -37,17 +40,19 @@ from joint_event_reconstruction.topology.physics import (
 )
 
 
-ROOT = Path(__file__).resolve().parents[1]
-VISIBLE_EXPERIMENT = ROOT / (
+RUNTIME_PATHS = runtime_paths()
+SOURCE_ROOT = RUNTIME_PATHS.source_root
+PROJECT_ROOT = RUNTIME_PATHS.project_root
+VISIBLE_EXPERIMENT = PROJECT_ROOT / (
     "results/studies/encoder_backbone/ttbar2L/lgatr/seed_42/experiment.yaml"
 )
-VISIBLE_CHECKPOINT = ROOT / (
+VISIBLE_CHECKPOINT = PROJECT_ROOT / (
     "results/studies/encoder_backbone/ttbar2L/lgatr/seed_42/train/checkpoints/best-loss.ckpt"
 )
-CFM_EXPERIMENT = ROOT / (
+CFM_EXPERIMENT = PROJECT_ROOT / (
     "results/studies/generator_formulations/ttbar2L/cfm/seed_42/experiment.yaml"
 )
-CFM_CHECKPOINT = ROOT / (
+CFM_CHECKPOINT = PROJECT_ROOT / (
     "results/studies/generator_formulations/ttbar2L/cfm/seed_42/train/checkpoints/best-loss.ckpt"
 )
 
@@ -60,7 +65,7 @@ def _overrides() -> list[str]:
         "training.batch_size=16",
         "training.workers=0",
         "inference.seed=424242",
-        "inference.assignment.top_k=5",
+        "inference.assignment.top_k=10",
         "inference.invisible.samples_per_assignment=8",
         "inference.invisible.flow.steps=4",
         "inference.invisible.flow.solver=heun",
@@ -107,20 +112,16 @@ def run(output_dir: Path, device: str, expected_source_sha: str | None = None) -
     torch.set_float32_matmul_precision("high")
     torch.set_num_threads(1)
     output_dir.mkdir(parents=True, exist_ok=True)
-    source_sha = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=ROOT, check=True, text=True,
-        capture_output=True,
-    ).stdout.strip()
+    source_sha = RUNTIME_PATHS.source_sha
+    verify_source_snapshot(
+        source_sha,
+        project_root=PROJECT_ROOT,
+        source_root=SOURCE_ROOT,
+    )
     if expected_source_sha is not None and source_sha != expected_source_sha:
         raise RuntimeError(
             f"SOURCE SHA MISMATCH: expected {expected_source_sha}, found {source_sha}"
         )
-    dirty = subprocess.run(
-        ["git", "status", "--porcelain"], cwd=ROOT, check=True,
-        text=True, capture_output=True,
-    ).stdout.strip()
-    if dirty:
-        raise RuntimeError(f"GPU smoke requires a clean checkout; found {dirty!r}")
     print(f"SOURCE_SHA={source_sha}", flush=True)
     print(f"GPU={torch.cuda.get_device_name(0)}", flush=True)
 
@@ -154,7 +155,7 @@ def run(output_dir: Path, device: str, expected_source_sha: str | None = None) -
         data.invisible_scaler,
         prediction_path,
         split="validation",
-        top_k=5,
+        top_k=10,
         posterior_samples=8,
         device=device,
         prediction_seed=424242,
@@ -166,7 +167,6 @@ def run(output_dir: Path, device: str, expected_source_sha: str | None = None) -
 
     with h5py.File(prediction_path, "r") as source:
         event_ids = source["EVENT_ID"][:]
-        roots = source["VISIBLE/root_candidate_indices"][:]
         visible_scores = source["VISIBLE/assignment_log_scores"][:]
         valid = source["VISIBLE/valid_hypotheses"][:]
         truth = source["TRUTH/topk_assignment"][:]
@@ -177,9 +177,9 @@ def run(output_dir: Path, device: str, expected_source_sha: str | None = None) -
         raise RuntimeError(f"Expected one unconditioned flow call, observed {sampling_calls}")
     if unique_branches != 1:
         raise RuntimeError(f"Expected one posterior branch, observed {unique_branches}")
-    if physical_samples.shape[1:4] != (5, 8):
+    if physical_samples.shape[1:4] != (10, 8):
         raise RuntimeError(f"Unexpected physical posterior shape {physical_samples.shape}")
-    print("PASS: one unconditioned posterior branch reused for K=5", flush=True)
+    print("PASS: one unconditioned posterior branch reused for K=10", flush=True)
 
     batch = next(iter(data.val_dataloader()))
     batch = to_device(batch, device)
@@ -187,19 +187,19 @@ def run(output_dir: Path, device: str, expected_source_sha: str | None = None) -
         raise RuntimeError("Prediction EVENT_ID order disagrees with validation batch")
     with torch.inference_mode():
         visible_output = module(batch)
-        decoded = decode_batch(module.spec, batch, visible_output, 5)
+        decoded = decode_batch(module.spec, batch, visible_output, 10)
     node_indices = torch.stack(
         [
             torch.stack(
                 [
-                    node_indices_for_hypothesis(module.spec, batch, event, hypothesis)
-                    for hypothesis in event
+                    node_indices_for_hypothesis(module.spec, batch, event_index, hypothesis)
+                    for hypothesis in decoded_event.assignments
                 ],
             )
-            for event, hypotheses in enumerate(decoded)
+            for event_index, decoded_event in enumerate(decoded)
         ]
     )
-    if node_indices.shape[:2] != (len(event_ids), 5):
+    if node_indices.shape[:2] != (len(event_ids), 10):
         raise RuntimeError(f"Unexpected full hypothesis state shape {node_indices.shape}")
 
     feature_names = _physics_feature_names(module.spec)
@@ -232,6 +232,22 @@ def run(output_dir: Path, device: str, expected_source_sha: str | None = None) -
     _finite_tensor("analytic physics score", analytic.analytic_score[valid_tensor])
     _assert_probability("analytic final probability", analytic.final_probability)
     print("PASS: topology kinematics, physics features, reducer and analytic score", flush=True)
+
+    zero_alpha_evaluator = HypothesisEvaluator(
+        module.spec, scaler=scaler, mode="physics", alpha=0.0
+    )
+    zero_alpha = zero_alpha_evaluator.evaluate(
+        score,
+        batch["structured"]["pools"],
+        batch["physics_vectors"],
+        node_indices,
+        invisible_four_vectors=physical,
+        observed_met=batch["met_xy"],
+        valid_hypotheses=valid_tensor,
+    )
+    _finite_tensor("alpha=0 physics score", zero_alpha.final_log_score[valid_tensor])
+    _assert_probability("alpha=0 final probability", zero_alpha.final_probability)
+    print("PASS: alpha=0 analytic control has finite scores", flush=True)
 
     scorer = LearnedHypothesisScorer(3 * len(feature_names) + 1).to(device)
     learned_evaluator = HypothesisEvaluator(
@@ -277,27 +293,34 @@ def run(output_dir: Path, device: str, expected_source_sha: str | None = None) -
             scorer_type="learned_residual_smoke",
             alpha=1.0,
         )
-        validate_hypothesis_group(destination, count=len(event_ids), top_k=5)
+        validate_hypothesis_group(destination, count=len(event_ids), top_k=10)
     validate_prediction(hypotheses_path)
     with h5py.File(hypotheses_path, "r") as source:
-        validate_hypothesis_group(source, count=len(event_ids), top_k=5)
+        validate_hypothesis_group(source, count=len(event_ids), top_k=10)
         physics_signature = source["HYPOTHESES"].attrs["physics_signature"]
     if str(physics_signature) != str(module.spec.physics_signature):
         raise RuntimeError("Reloaded HYPOTHESES physics signature does not match topology")
     print("PASS: HYPOTHESES HDF5 write, schema validation and reload", flush=True)
 
-    print(json.dumps({
+    result = {
         "elapsed_seconds": elapsed,
         "gpu_peak_memory_mib": torch.cuda.max_memory_allocated() / (1024 * 1024),
-        "K": 5,
+        "K": 10,
         "M": 8,
-        "flow_steps": recorded_nfe,
+        "flow_steps": 4,
+        "actual_nfe": recorded_nfe,
+        "solver": "heun",
         "posterior_branches": unique_branches,
         "prediction": str(prediction_path),
         "prediction_with_hypotheses": str(hypotheses_path),
         "physics_signature": str(module.spec.physics_signature),
         "status": "PASS",
-    }, indent=2, sort_keys=True), flush=True)
+    }
+    result_path = output_dir / "smoke_result.json"
+    temporary = result_path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
+    temporary.replace(result_path)
+    print(json.dumps(result, indent=2, sort_keys=True), flush=True)
 
 
 def main() -> None:

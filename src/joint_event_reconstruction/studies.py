@@ -10,8 +10,10 @@ import re
 
 from omegaconf import OmegaConf
 
+from joint_event_reconstruction.runtime_paths import runtime_paths
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+
+REPO_ROOT = runtime_paths().source_root
 DEFAULT_GATES_PATH = REPO_ROOT / "configs/studies/UPSTREAM_SELECTIONS.yaml"
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 _COMMIT_SHA = re.compile(r"^[0-9a-f]{40}$")
@@ -38,7 +40,10 @@ _STUDY_KEYS = {
     "requires",
     "inherit",
     "training",
+    "campaign",
 }
+_STUDY_REQUIRED_KEYS = _STUDY_KEYS - {"campaign"}
+_CAMPAIGN_KEYS = {"enabled", "state", "reason"}
 _VARIANT_KEYS = {
     "label",
     "reporting",
@@ -111,6 +116,9 @@ class StudySpec:
     inherit: tuple[str, ...]
     training: bool
     variants: tuple[VariantSpec, ...]
+    campaign_enabled: bool = True
+    campaign_state: str = "active"
+    campaign_reason: str = ""
     resolved_gates: dict[str, dict] | None = None
     gates_path: Path | None = None
     gates_digest: str | None = None
@@ -426,7 +434,15 @@ def _raw_study(path: str | Path) -> StudySpec:
     study = raw["study"]
     if not isinstance(study, dict):
         raise ValueError("study must be a mapping")
-    _exact_keys(study, _STUDY_KEYS, "study")
+    observed_study_keys = set(study)
+    if not _STUDY_REQUIRED_KEYS <= observed_study_keys <= _STUDY_KEYS:
+        raise ValueError(
+            "study keys must contain exactly the required keys "
+            f"{sorted(_STUDY_REQUIRED_KEYS)} and only optional keys "
+            f"{sorted(_STUDY_KEYS - _STUDY_REQUIRED_KEYS)}; "
+            f"missing={sorted(_STUDY_REQUIRED_KEYS - observed_study_keys)}, "
+            f"unknown={sorted(observed_study_keys - _STUDY_KEYS)}"
+        )
     name = _identifier(study["name"], "study.name")
     title = str(study["title"]).strip()
     if not title:
@@ -452,6 +468,22 @@ def _raw_study(path: str | Path) -> StudySpec:
         raise ValueError("study.inherit must be a subset of study.requires")
     if not isinstance(study["training"], bool):
         raise ValueError("study.training must be boolean")
+    campaign = study.get("campaign", {})
+    if not isinstance(campaign, dict) or (campaign and set(campaign) != _CAMPAIGN_KEYS):
+        raise ValueError(
+            "study.campaign must contain exactly enabled, state and reason when present"
+        )
+    campaign_enabled = True if not campaign else campaign["enabled"]
+    if not isinstance(campaign_enabled, bool):
+        raise ValueError("study.campaign.enabled must be boolean")
+    campaign_state = "active" if not campaign else str(campaign["state"])
+    if campaign_state not in {"active", "deferred", "superseded"}:
+        raise ValueError("study.campaign.state must be active, deferred or superseded")
+    campaign_reason = "" if not campaign else str(campaign["reason"]).strip()
+    if campaign_state != "active" and (campaign_enabled or not campaign_reason):
+        raise ValueError(
+            "deferred/superseded studies must be disabled and carry a reason"
+        )
 
     raw_variants = raw["variants"]
     if not isinstance(raw_variants, dict) or not raw_variants:
@@ -605,6 +637,9 @@ def _raw_study(path: str | Path) -> StudySpec:
         inherit=inherit,
         training=bool(study["training"]),
         variants=tuple(variants),
+        campaign_enabled=campaign_enabled,
+        campaign_state=campaign_state,
+        campaign_reason=campaign_reason,
     )
     result.dependency_order()
     return result

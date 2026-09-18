@@ -8,6 +8,8 @@ from pathlib import Path
 import numpy as np
 import torch
 
+from joint_event_reconstruction.runtime_paths import runtime_paths
+
 
 class ColoredHeaderFormatter(logging.Formatter):
     RESET = "\033[0m"
@@ -118,7 +120,7 @@ def set_execution_device(cfg_device: str) -> str:
 def resolve_runtime_path(path_str: str) -> str:
     if path_str is None:
         return None
-    return str(Path(path_str).expanduser().resolve())
+    return str(runtime_paths().project(path_str))
 
 
 def ensure_parent_dir(path_str: str) -> None:

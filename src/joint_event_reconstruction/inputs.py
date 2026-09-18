@@ -8,10 +8,11 @@ from omegaconf import OmegaConf
 
 from joint_event_reconstruction.configuration import load_experiment
 from joint_event_reconstruction.public_config import resolve_public_experiment
+from joint_event_reconstruction.runtime_paths import runtime_paths
 from joint_event_reconstruction.studies import resolve_study
 
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+REPO_ROOT = runtime_paths().source_root
 
 
 def encoder_input_contract(experiment) -> dict:

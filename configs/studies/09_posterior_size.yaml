@@ -9,6 +9,7 @@ study:
   requires: [visible_assignment, assignment_formulation, invisible_generator, invisible_coordinates, joint_model]
   inherit: [visible_assignment, assignment_formulation, invisible_generator, invisible_coordinates]
   training: false
+  campaign: {enabled: false, state: superseded, reason: Posterior-size convergence is folded into Study 10 on the final selected model.}
 
 variants:
   factorized:

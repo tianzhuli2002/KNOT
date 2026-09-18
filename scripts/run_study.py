@@ -20,9 +20,9 @@ import h5py
 import numpy as np
 from omegaconf import OmegaConf
 
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+SCRIPT_ROOT = Path(__file__).resolve().parents[1]
+if str(SCRIPT_ROOT) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_ROOT))
 
 from joint_event_reconstruction.configuration import validate_experiment
 from joint_event_reconstruction.data.subsets import (
@@ -52,6 +52,12 @@ from joint_event_reconstruction.study_metrics import (
     assert_same_events,
     common_non_null_truth_assignment,
 )
+from joint_event_reconstruction.runtime_paths import runtime_paths, verify_source_snapshot
+
+
+RUNTIME_PATHS = runtime_paths()
+ROOT = RUNTIME_PATHS.source_root
+PROJECT_ROOT = RUNTIME_PATHS.project_root
 
 
 SUMMARY_FIELDS = (
@@ -126,7 +132,7 @@ def _file_identity(path: str | Path) -> dict:
 
 def _repo_path(value: object) -> Path:
     path = Path(str(value)).expanduser()
-    return (path if path.is_absolute() else ROOT / path).resolve()
+    return (path if path.is_absolute() else PROJECT_ROOT / path).resolve()
 
 
 def _maintained_study_path(name: str) -> Path:
@@ -300,9 +306,16 @@ def _data_subset_identity(resolved) -> dict:
 
 
 def _require_clean_git() -> str:
+    if ROOT != PROJECT_ROOT:
+        verify_source_snapshot(
+            RUNTIME_PATHS.source_sha,
+            project_root=PROJECT_ROOT,
+            source_root=ROOT,
+        )
+        return RUNTIME_PATHS.source_sha
     status = subprocess.run(
         ["git", "status", "--porcelain"],
-        cwd=ROOT,
+        cwd=PROJECT_ROOT,
         text=True,
         capture_output=True,
         check=True,
@@ -572,8 +585,10 @@ def _plot_complete(path: Path) -> bool:
 
 
 def _git_commit() -> str | None:
+    if ROOT != PROJECT_ROOT:
+        return RUNTIME_PATHS.source_sha
     result = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True,
+        ["git", "rev-parse", "HEAD"], cwd=PROJECT_ROOT, text=True,
         capture_output=True, check=False,
     )
     value = result.stdout.strip()
@@ -618,7 +633,7 @@ def _write_yaml(path: Path, config) -> None:
 def _execute(command: list[str], *, dry_run: bool) -> None:
     print(shlex.join(command), flush=True)
     if not dry_run:
-        subprocess.run(command, cwd=ROOT, check=True)
+        subprocess.run(command, cwd=PROJECT_ROOT, check=True)
 
 
 def _train_one(study, topology, variant, seed, *, root, global_overrides, device, force, dry_run):
@@ -1063,6 +1078,33 @@ def _compare(study, topology, variants, seed, *, root, formats, include_diagnost
         return
     if not dry_run:
         assert_same_events(paths)
+        if study.name == "generator_inference":
+            # Study 08 already has one compact evaluation JSON per prediction.
+            # Calling plot_comparison here would re-read every large posterior
+            # HDF5 product and recompute all metrics during aggregate status.
+            # Keep the structural event-order contract, then leave quality
+            # numbers to review_generator_inference.py.
+            comparison_dir = root / study.name / topology / "comparisons" / f"seed_{seed}"
+            comparison_dir.mkdir(parents=True, exist_ok=True)
+            (comparison_dir / "comparison_metrics.json").write_text(
+                json.dumps(
+                    {
+                        "study": study.name,
+                        "topology": topology,
+                        "seed": seed,
+                        "inputs": [
+                            {"label": label, "prediction_file": str(path)}
+                            for label, path in zip(labels, paths)
+                        ],
+                        "metrics_source": "per-prediction evaluation JSON",
+                        "posterior_hdf5_reloaded": False,
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+                + "\n"
+            )
+            return
         plot_comparison(
             paths,
             root / study.name / topology / "comparisons" / f"seed_{seed}",
@@ -1129,7 +1171,7 @@ def _training_event_count(
 
 
 def _study_specific_analysis(
-    study, topologies, variants, seeds, *, root, global_overrides, dry_run
+    study, topologies, variants, seeds, *, root, global_overrides, device, dry_run
 ):
     if study.name in {"generator_formulations", "generator_inference"}:
         selected_names = {variant.name for variant in variants}
@@ -1157,7 +1199,7 @@ def _study_specific_analysis(
         ]
         print(shlex.join(command))
         if not dry_run:
-            subprocess.run(command, cwd=ROOT, check=True)
+            subprocess.run(command, cwd=PROJECT_ROOT, check=True)
         return
     if study.name == "encoder_backbone":
         required = {
@@ -1202,7 +1244,7 @@ def _study_specific_analysis(
         ]
         print(shlex.join(command))
         if not dry_run:
-            subprocess.run(command, cwd=ROOT, check=True)
+            subprocess.run(command, cwd=PROJECT_ROOT, check=True)
         uncertainty_arguments = []
         for topology in topologies:
             for seed in seeds:
@@ -1225,7 +1267,7 @@ def _study_specific_analysis(
         ]
         print(shlex.join(uncertainty_command))
         if not dry_run:
-            subprocess.run(uncertainty_command, cwd=ROOT, check=True)
+            subprocess.run(uncertainty_command, cwd=PROJECT_ROOT, check=True)
         return
     if study.name == "assignment_conditioning":
         arguments = []
@@ -1249,7 +1291,7 @@ def _study_specific_analysis(
         ]
         print(shlex.join(command))
         if not dry_run:
-            subprocess.run(command, cwd=ROOT, check=True)
+            subprocess.run(command, cwd=PROJECT_ROOT, check=True)
         return
     if study.name == "c2_feedback":
         selected = {variant.name: variant for variant in variants}
@@ -1280,7 +1322,7 @@ def _study_specific_analysis(
                 ]
                 print(shlex.join(command))
                 if not dry_run:
-                    subprocess.run(command, cwd=ROOT, check=True)
+                    subprocess.run(command, cwd=PROJECT_ROOT, check=True)
         return
     if study.name == "data_scaling":
         arguments_m1 = []
@@ -1319,7 +1361,7 @@ def _study_specific_analysis(
         ]
         print(shlex.join(command))
         if not dry_run:
-            subprocess.run(command, cwd=ROOT, check=True)
+            subprocess.run(command, cwd=PROJECT_ROOT, check=True)
         return
     if study.name == "posterior_size":
         required = {"factorized", "joint"}
@@ -1351,7 +1393,7 @@ def _study_specific_analysis(
                 ]
                 print(shlex.join(command))
                 if not dry_run:
-                    subprocess.run(command, cwd=ROOT, check=True)
+                    subprocess.run(command, cwd=PROJECT_ROOT, check=True)
         return
     if study.name == "compatibility_reranking":
         required = {"compatibility"}
@@ -1368,17 +1410,32 @@ def _study_specific_analysis(
                 prediction = _prediction_path(
                     root, study, topology, "compatibility", seed, "posterior"
                 )
-                arguments.extend(["--prediction", str(prediction)])
+                experiment = _run_dir(
+                    root, study, topology, "compatibility", seed
+                ) / "predictions/posterior.yaml"
+                checkpoint = _prediction_checkpoint(
+                    study, study.variant_map["compatibility"], topology, seed, root
+                )
+                arguments.extend(
+                    [
+                        "--prediction", str(prediction),
+                        "--experiment", str(experiment),
+                        "--checkpoint", str(checkpoint),
+                    ]
+                )
         output = root / study.name / "study10_human_review"
         command = [
             sys.executable,
-            str(ROOT / "scripts/analyze_study10.py"),
+            str(ROOT / "scripts/run_study10_controls.py"),
             "--output", str(output),
+            "--study-manifest-sha256", _sha256_file(study.path),
+            "--gate-digest", study.gates_digest or "",
+            "--device", device,
             *arguments,
         ]
         print(shlex.join(command))
         if not dry_run:
-            subprocess.run(command, cwd=ROOT, check=True)
+            subprocess.run(command, cwd=PROJECT_ROOT, check=True)
         return
     if study.name != "visible_recurrence":
         print(f"No dedicated analysis is maintained for {study.name}.")
@@ -1413,7 +1470,7 @@ def _study_specific_analysis(
             ]
             print(shlex.join(command))
             if not dry_run:
-                subprocess.run(command, cwd=ROOT, check=True)
+                subprocess.run(command, cwd=PROJECT_ROOT, check=True)
 
 
 def _plan(study, topologies, requested, training, seeds, root):
@@ -1507,7 +1564,10 @@ def main() -> None:
     unknown_seeds = sorted(set(seeds) - set(study.seeds))
     if unknown_seeds:
         raise ValueError(f"Seeds {unknown_seeds} are not declared by the study")
-    root = args.output_root.expanduser().resolve()
+    root = args.output_root.expanduser()
+    if not root.is_absolute():
+        root = PROJECT_ROOT / root
+    root = root.resolve()
     global_overrides = tuple(args.global_overrides)
     formats = tuple(args.formats)
     _plan(study, topologies, requested, training, seeds, root)
@@ -1592,6 +1652,7 @@ def main() -> None:
                 seeds,
                 root=root,
                 global_overrides=global_overrides,
+                device=args.device,
                 dry_run=args.dry_run,
             )
 

@@ -779,9 +779,83 @@ def check_flow_coupling_context_contract() -> None:
                 )
 
 
+def check_single_root_runtime_contract() -> None:
+    """Snapshots are idempotent and source/data paths remain distinct."""
+    from joint_event_reconstruction.runtime_paths import (
+        RuntimePaths,
+        ensure_source_snapshot,
+        verify_source_snapshot,
+    )
+
+    with tempfile.TemporaryDirectory(prefix="jer-runtime-contract-") as directory:
+        root = Path(directory)
+        repository = root / "repo"
+        for relative in (
+            "src/joint_event_reconstruction",
+            "scripts",
+            "configs/site",
+            "configs/experiments",
+        ):
+            (repository / relative).mkdir(parents=True, exist_ok=True)
+        (repository / "src/joint_event_reconstruction/__init__.py").write_text("")
+        (repository / "src/joint_event_reconstruction/runtime_paths.py").write_text(
+            (ROOT / "src/joint_event_reconstruction/runtime_paths.py").read_text()
+        )
+        (repository / "scripts/run_study.py").write_text("raise SystemExit(0)\n")
+        (repository / "configs/site/csf3.yaml").write_text(
+            (ROOT / "configs/site/csf3.yaml").read_text()
+        )
+        (repository / "configs/experiments/ttbar2L.yaml").write_text(
+            "experiment: ttbar2L\n"
+        )
+        (repository / "pyproject.toml").write_text("[build-system]\nrequires=[]\n")
+        subprocess.run(["git", "init", "-q"], cwd=repository, check=True)
+        subprocess.run(
+            ["git", "config", "user.email", "jer-contract@example.invalid"],
+            cwd=repository,
+            check=True,
+        )
+        subprocess.run(
+            ["git", "config", "user.name", "JER contract"],
+            cwd=repository,
+            check=True,
+        )
+        subprocess.run(["git", "add", "."], cwd=repository, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "initial"], cwd=repository, check=True)
+        commit = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repository,
+            text=True,
+            capture_output=True,
+            check=True,
+        ).stdout.strip()
+        snapshot = ensure_source_snapshot(commit, project_root=repository)
+        if ensure_source_snapshot(commit, project_root=repository) != snapshot:
+            raise AssertionError("Source snapshot creation is not idempotent")
+        verify_source_snapshot(commit, project_root=repository, source_root=snapshot)
+        metadata = json.loads((snapshot / "SOURCE_SNAPSHOT.json").read_text())
+        if metadata.get("commit_sha") != commit or (snapshot / ".git").exists():
+            raise AssertionError("Source snapshot metadata or immutability contract failed")
+        paths = RuntimePaths(
+            project_root=repository,
+            source_root=snapshot,
+            data_root=repository / "data",
+            cache_root=repository / "cache",
+            results_root=repository / "results",
+            logs_root=repository / "logs",
+            runtime_root=repository / "runtime",
+            source_sha=commit,
+        )
+        if paths.project("data/input.h5") != repository / "data/input.h5":
+            raise AssertionError("Project data path did not resolve from project_root")
+        if paths.source("configs/experiments/ttbar2L.yaml") != snapshot / "configs/experiments/ttbar2L.yaml":
+            raise AssertionError("Source config path did not resolve from source_root")
+
+
 def check_slurm_snapshot_contract() -> None:
-    """Generated workers accept an unchanged snapshot and reject later edits."""
+    """Workers use an immutable source snapshot while project checkout changes."""
     import scripts.submit_study_slurm as scheduler
+    from joint_event_reconstruction.runtime_paths import ensure_source_snapshot
 
     with tempfile.TemporaryDirectory(prefix="jer-slurm-contract-") as directory:
         root = Path(directory)
@@ -804,6 +878,17 @@ def check_slurm_snapshot_contract() -> None:
         experiment = repository / "configs" / "experiments" / "ttbar2L.yaml"
         experiment.parent.mkdir(parents=True)
         experiment.write_text("experiment: ttbar2L\n")
+        package = repository / "src" / "joint_event_reconstruction"
+        package.mkdir(parents=True)
+        (package / "__init__.py").write_text("")
+        (package / "runtime_paths.py").write_text(
+            (ROOT / "src/joint_event_reconstruction/runtime_paths.py").read_text()
+        )
+        (repository / "configs" / "site").mkdir(parents=True)
+        (repository / "configs/site/csf3.yaml").write_text(
+            (ROOT / "configs/site/csf3.yaml").read_text()
+        )
+        (repository / "pyproject.toml").write_text("[build-system]\nrequires=[]\n")
         subprocess.run(["git", "add", "."], cwd=repository, check=True)
         subprocess.run(["git", "commit", "-q", "-m", "initial"], cwd=repository, check=True)
         initial_commit = subprocess.run(
@@ -813,13 +898,15 @@ def check_slurm_snapshot_contract() -> None:
             capture_output=True,
             check=True,
         ).stdout.strip()
+        source_root = ensure_source_snapshot(initial_commit, project_root=repository)
 
         manifest = root / "study_manifest.yaml"
         manifest.write_text("study: contract\n")
         task_file = root / "tasks.tsv"
         task_file.write_text("ttbar2L\tvariant\t42\n")
         expected_manifest = scheduler._sha256_file(manifest)
-        expected_experiment = scheduler._sha256_file(experiment)
+        source_experiment = source_root / "configs/experiments/ttbar2L.yaml"
+        expected_experiment = scheduler._sha256_file(source_experiment)
         worker = root / "worker.sh"
         original_root = scheduler.ROOT
         scheduler.ROOT = repository
@@ -833,25 +920,37 @@ def check_slurm_snapshot_contract() -> None:
                 device="cpu",
                 global_overrides=(),
                 expected_commit=initial_commit,
+                source_root=source_root,
+                project_root=repository,
                 expected_manifest_sha256=expected_manifest,
                 expected_experiments={
                     "ttbar2L": {
-                        "path": str(experiment),
+                        "path": str(source_experiment),
                         "sha256": expected_experiment,
                     }
                 },
             )
         finally:
             scheduler.ROOT = original_root
-        if f"export PYTHONPATH={repository / 'src'}" not in worker.read_text():
-            raise AssertionError("Slurm worker does not pin the submitted source package path")
+        if f"export JER_SOURCE_ROOT={source_root}" not in worker.read_text():
+            raise AssertionError("Slurm worker does not pin the submitted source snapshot")
 
         environment = dict(os.environ, SLURM_ARRAY_TASK_ID="0")
         accepted = subprocess.run(
             [str(worker)], text=True, capture_output=True, env=environment, check=False
         )
         if accepted.returncode != 0:
-            raise AssertionError(f"Unchanged Slurm snapshot was rejected: {accepted.stderr}")
+            raise AssertionError(f"Unchanged source snapshot was rejected: {accepted.stderr}")
+
+        # A changed normal checkout must not affect a queued worker.
+        (repository / "configs/experiments/ttbar2L.yaml").write_text(
+            "experiment: changed-in-checkout\n"
+        )
+        accepted_checkout = subprocess.run(
+            [str(worker)], text=True, capture_output=True, env=environment, check=False
+        )
+        if accepted_checkout.returncode != 0:
+            raise AssertionError("Worker still depends on the mutable checkout")
 
         manifest.write_text("study: changed\n")
         changed_manifest = subprocess.run(
@@ -861,53 +960,12 @@ def check_slurm_snapshot_contract() -> None:
             raise AssertionError("Changed Slurm manifest was not rejected before work")
 
         manifest.write_text("study: contract\n")
-        experiment.write_text("experiment: changed\n")
-        subprocess.run(["git", "add", "."], cwd=repository, check=True)
-        subprocess.run(["git", "commit", "-q", "-m", "changed experiment"], cwd=repository, check=True)
-        changed_commit = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=repository,
-            text=True,
-            capture_output=True,
-            check=True,
-        ).stdout.strip()
-        changed_checkout = subprocess.run(
+        source_experiment.write_text("experiment: changed-in-snapshot\n")
+        changed_source = subprocess.run(
             [str(worker)], text=True, capture_output=True, env=environment, check=False
         )
-        if changed_checkout.returncode != 3 or "Checkout changed" not in changed_checkout.stderr:
-            raise AssertionError("Changed Git checkout was not rejected before work")
-
-        config_worker = root / "config-worker.sh"
-        scheduler.ROOT = repository
-        try:
-            scheduler._worker_script(
-                config_worker,
-                task_file=task_file,
-                study_path=manifest,
-                stage="train",
-                output_root=root / "results",
-                device="cpu",
-                global_overrides=(),
-                expected_commit=changed_commit,
-                expected_manifest_sha256=expected_manifest,
-                expected_experiments={
-                    "ttbar2L": {
-                        "path": str(experiment),
-                        "sha256": expected_experiment,
-                    }
-                },
-            )
-        finally:
-            scheduler.ROOT = original_root
-        changed_config = subprocess.run(
-            [str(config_worker)],
-            text=True,
-            capture_output=True,
-            env=environment,
-            check=False,
-        )
-        if changed_config.returncode != 3 or "Base experiment changed" not in changed_config.stderr:
-            raise AssertionError("Changed base experiment was not rejected before work")
+        if changed_source.returncode != 3 or "Base experiment changed" not in changed_source.stderr:
+            raise AssertionError("Changed source experiment was not rejected before work")
 
 
 def check_postprocess_recovery_contract() -> None:
@@ -1208,6 +1266,25 @@ def check_campaign_gate_contract() -> None:
     if study10.training or study10.variant_map["compatibility"].initialise_from_gate:
         raise AssertionError("Study 10 still schedules obsolete compatibility retraining")
 
+    expected_campaign_states = {
+        "04": ("deferred", False),
+        "06": ("deferred", False),
+        "07": ("deferred", False),
+        "09": ("superseded", False),
+    }
+    for number, (state, enabled) in expected_campaign_states.items():
+        path = next(path for path in study_paths.values() if path.name.startswith(f"{number}_"))
+        study = load_study(path)
+        if study.campaign_state != state or study.campaign_enabled is not enabled:
+            raise AssertionError(
+                f"Study {number} campaign state is {study.campaign_state}/{study.campaign_enabled}, "
+                f"expected {state}/{enabled}"
+            )
+    from scripts.submit_campaign import ACTIVE_PAPER1
+
+    if not ACTIVE_PAPER1 <= set(study_paths):
+        raise AssertionError("The maintained Paper-1 campaign allowlist is incomplete")
+
     for study_name in (
         "generator_formulations",
         "discrete_assignment",
@@ -1411,6 +1488,79 @@ def check_nested_subsets() -> None:
         if not previous < selected:
             raise AssertionError(f"Stable subsets are not strictly nested at {count}")
         previous = selected
+
+
+def check_study10_control_contract() -> None:
+    """Study-10 controls use train-only fitting and deterministic K/M prefixes."""
+    from joint_event_reconstruction.study10 import (
+        coupling_efficiency,
+        nested_prefix_reduction,
+        select_alpha,
+        top_k_coverage,
+        train_scorers,
+        transition_counts,
+        visible_only_scorer_input,
+    )
+
+    torch.manual_seed(19)
+    batch, top_k, samples, feature_count = 3, 10, 64, 4
+    posterior_features = torch.randn(batch, top_k, samples, feature_count)
+    valid = torch.ones(batch, top_k, dtype=torch.bool)
+    valid[1, 8:] = False
+    first = nested_prefix_reduction(posterior_features, valid)
+    second = nested_prefix_reduction(posterior_features, valid)
+    if not torch.equal(first, second) or first.shape != (5, 5, batch, top_k):
+        raise AssertionError("Study-10 nested K/M reduction is not deterministic or K=10 capable")
+    if not torch.isneginf(first[:, :, :, -1][0, 0, 0]) or not torch.isfinite(first[-1, -1, :, :8]).all():
+        raise AssertionError("Study-10 nested prefix padding semantics are incorrect")
+
+    visible_log_score = torch.randn(batch, top_k)
+    visible_probability = torch.softmax(visible_log_score, dim=1)
+    entropy = torch.rand(batch, top_k)
+    margin = torch.rand(batch, top_k)
+    visible_input = visible_only_scorer_input(
+        visible_log_score,
+        visible_probability,
+        entropy,
+        margin,
+        target_features=12,
+    )
+    changed_physics = visible_input.clone()
+    changed_physics[..., 4:] = torch.randn_like(changed_physics[..., 4:])
+    if not torch.equal(visible_input[..., :4], changed_physics[..., :4]):
+        raise AssertionError("Visible-only Study-10 control does not preserve its explicit input contract")
+    if not torch.equal(visible_input[..., 4:], torch.zeros_like(visible_input[..., 4:])):
+        raise AssertionError("Visible-only Study-10 control received physics features in padding")
+
+    truth = torch.zeros(batch, top_k, dtype=torch.bool)
+    truth[:, 0] = True
+    physics = torch.randn(batch, top_k, 12)
+    scorers = train_scorers(
+        visible_log_score,
+        visible_probability,
+        physics,
+        visible_input,
+        truth,
+        valid,
+        hidden=8,
+        epochs=2,
+    )
+    with torch.no_grad():
+        if not torch.isfinite(scorers.physics(physics)).all():
+            raise AssertionError("Study-10 learned physics scorer produced non-finite output")
+        if not torch.isfinite(scorers.visible_only(visible_input)).all():
+            raise AssertionError("Study-10 visible-only control produced non-finite output")
+    alpha, scan = select_alpha(visible_log_score, torch.randn(batch, top_k), truth, valid, (0.0, 1.0))
+    if alpha not in {0.0, 1.0} or set(scan) != {"0.0", "1.0"}:
+        raise AssertionError("Study-10 alpha selection did not use the declared training scan")
+    if top_k_coverage(truth, valid, 10).shape != (batch,):
+        raise AssertionError("Study-10 top-K coverage has the wrong shape")
+    transitions = transition_counts(truth, truth)
+    if transitions["baseline_correct_to_remains_correct"] != batch:
+        raise AssertionError("Study-10 transition accounting is incorrect")
+    coupling = coupling_efficiency(0.50, 0.53, 0.60)
+    if abs(float(coupling["Rcoupling"]) - 0.3) > 1.0e-6:
+        raise AssertionError("Study-10 Rcoupling calculation is incorrect")
 
 
 def check_campaign_scheduler_contract() -> None:
@@ -1866,6 +2016,7 @@ def main() -> None:
     check_component_signature_contract()
     check_partial_checkpoint_contract()
     check_nested_subsets()
+    check_study10_control_contract()
     check_loader_split_seed_contract()
     check_public_schema_and_inputs_contract()
     check_same_flavour_role_contract()
@@ -1878,6 +2029,7 @@ def main() -> None:
     check_truth_oracle_unreconstructable_contract()
     check_exchange_and_permutation_contract()
     check_freeze_contract()
+    check_single_root_runtime_contract()
     check_slurm_snapshot_contract()
     check_postprocess_recovery_contract()
     check_campaign_gate_contract()

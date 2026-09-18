@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 from omegaconf import OmegaConf
 
 from joint_event_reconstruction.configuration import load_experiment, load_visible_config
+from joint_event_reconstruction.runtime_paths import runtime_paths
 
 if TYPE_CHECKING:
     from joint_event_reconstruction.training.joint import JointEventModule
@@ -33,7 +34,7 @@ def _load_repo_script(relative_path: str, module_name: str):
     """Load an executable repository script without depending on a package named scripts."""
     import importlib.util
 
-    path = Path(__file__).resolve().parents[3] / "scripts" / relative_path
+    path = runtime_paths().source(relative_path if relative_path.startswith("scripts/") else f"scripts/{relative_path}")
     spec = importlib.util.spec_from_file_location(module_name, path)
     if spec is None or spec.loader is None:
         raise ImportError(f"Cannot load repository script: {path}")
@@ -196,8 +197,6 @@ def train(
     output_dir.mkdir(parents=True, exist_ok=True)
     from joint_event_reconstruction.inputs import encoder_input_contract
     from joint_event_reconstruction.training.joint import active_architecture
-    import subprocess
-
     if public_config_path is not None:
         public_source = Path(public_config_path).expanduser().resolve()
         (output_dir / "config.public.yaml").write_text(public_source.read_text())
@@ -208,9 +207,7 @@ def train(
     (output_dir / "inputs.json").write_text(
         json.dumps(encoder_input_contract(config), indent=2, sort_keys=True) + "\n"
     )
-    git_sha = subprocess.run(
-        ["git", "rev-parse", "HEAD"], text=True, capture_output=True, check=True
-    ).stdout.strip()
+    git_sha = runtime_paths().source_sha
     module.hparams["git_sha"] = git_sha
     cache_manifest_path = Path(config.data.tensor_cache).with_suffix(".json")
     cache_metadata = json.loads(cache_manifest_path.read_text())

@@ -14,3 +14,9 @@ data/*
 refined*/
 training_logs/*
 .vscode/*
+cache/*
+!cache/.gitkeep
+runtime/*
+!runtime/.gitkeep
+logs/*
+!logs/.gitkeep

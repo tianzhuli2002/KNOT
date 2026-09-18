@@ -5,6 +5,39 @@ momentum reconstruction. The maintained workflow has one canonical HDF5 input,
 one deterministic tensor cache, one DataModule path, and one input declaration
 shared by every model family.
 
+## Human workflow
+
+From a fresh CSF3 shell, use the canonical directory and the single `jer`
+command. No worktree, symlink, `PYTHONPATH`, or manual Slurm dependency setup is
+required.
+
+```bash
+cd ~/scratch/JointEventReconstruction
+
+jer status
+jer doctor
+jer gates
+jer campaign status
+
+# After the local and compute-node checks pass:
+jer smoke gpu --watch
+
+jer study plan 13
+jer study submit 13 --watch
+```
+
+`jer status` is the compact repository, artifact, gate, campaign and Slurm
+report. `jer doctor --compute-node` performs the same source-snapshot, data,
+cache and checkpoint checks from a CPU compute node before an L40S allocation.
+Study submission refuses a source SHA without a successful matching GPU smoke.
+
+The project root contains the maintained source/configuration and the
+operational directories `data/`, `cache/`, `results/`, `logs/` and `runtime/`.
+Queued jobs execute an immutable `runtime/source/<full-sha>/` archive while
+their data and outputs continue to resolve from the project root. Each archive
+contains `SOURCE_SNAPSHOT.json`; it is created by the CLI and is never a manual
+worktree.
+
 The public configuration has four scientific parts:
 
 - `data`: input HDF5 and cache destination;
@@ -34,7 +67,7 @@ topology: configs/topology/ttbar2L.yaml
 
 data:
   input: data/real/ttbar2L_canonical.h5
-  cache: /scratch/w00238tl/jer_cache
+  cache: cache
   subset_seed: 42
   events: {train: 100000, validation: 50000, test: 50000}
   max_assignment_states: 100000
@@ -134,7 +167,7 @@ jer cache show configs/experiments/ttbar2L.yaml
 jer cache build configs/experiments/ttbar2L.yaml
 jer cache build configs/experiments/ttbar2L.yaml --force
 jer checkpoint show checkpoint.ckpt
-jer study plan configs/studies/12_encoder_backbone.yaml
+jer study plan 13
 ```
 
 The historical Study-01 reanalysis is under
@@ -142,6 +175,20 @@ The historical Study-01 reanalysis is under
 retrain models and does not select a winner. Ordinary downstream studies inherit
 the human-selected one-pass M1 assignment; recurrence is retained only in the
 explicit Study-01 and Study-11 diagnostics. Check the current campaign with
-`python scripts/submit_campaign.py --status` and release only an intentional
-Paper-1 study, for example
-`python scripts/submit_campaign.py --ready --studies invisible_coordinates`.
+`jer campaign status`. The active Paper-1 path is Studies 13, 15, 10 and 03;
+Studies 04, 06 and 07 are deferred, and Study 09 is superseded.
+
+## Provenance and test sealing
+
+Every prediction, evaluation, checkpoint identity and campaign submission
+records the source SHA, manifest/gate identities, training SHA, data subset
+identity and prediction settings. Study-10 fits its learned controls on the
+training split, reports fixed validation comparisons and K/M prefix scans, and
+does not use the real test split. The real test split is sealed until the
+selected architecture, solver, coordinates, coupling and production-scale
+training are frozen; it is evaluated once at the end.
+
+If a job fails after producing valid prediction/evaluation products, inspect
+`jer study logs <id>` and `jer study status <id>`. The campaign status uses the
+validated products and can request a postprocessing-only recovery without
+rerunning valid predictions.

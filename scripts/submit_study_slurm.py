@@ -14,11 +14,20 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+SCRIPT_ROOT = Path(__file__).resolve().parents[1]
+if str(SCRIPT_ROOT) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_ROOT))
 
 from joint_event_reconstruction.studies import StudySpec, VariantSpec, resolve_study
+from joint_event_reconstruction.runtime_paths import (
+    ensure_source_snapshot,
+    runtime_paths,
+)
+
+
+RUNTIME_PATHS = runtime_paths()
+ROOT = RUNTIME_PATHS.source_root
+PROJECT_ROOT = RUNTIME_PATHS.project_root
 
 
 _CAMPAIGN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
@@ -64,7 +73,7 @@ def _submit(command: list[str], *, dry_run: bool, fake_id: int) -> str:
     if dry_run:
         return str(900000 + fake_id)
     result = subprocess.run(
-        command, cwd=ROOT, check=True, text=True, capture_output=True
+        command, cwd=PROJECT_ROOT, check=True, text=True, capture_output=True
     )
     job_id = result.stdout.strip().split(";", 1)[0]
     if not job_id.isdigit():
@@ -84,7 +93,7 @@ def _sha256_file(path: Path) -> str:
 def _git_state() -> tuple[str, bool]:
     commit = subprocess.run(
         ["git", "rev-parse", "HEAD"],
-        cwd=ROOT,
+        cwd=PROJECT_ROOT,
         text=True,
         capture_output=True,
         check=True,
@@ -92,7 +101,7 @@ def _git_state() -> tuple[str, bool]:
     dirty = bool(
         subprocess.run(
             ["git", "status", "--porcelain"],
-            cwd=ROOT,
+            cwd=PROJECT_ROOT,
             text=True,
             capture_output=True,
             check=True,
@@ -103,6 +112,22 @@ def _git_state() -> tuple[str, bool]:
 
 def _save_submission(path: Path, submitted: dict) -> None:
     path.write_text(json.dumps(submitted, indent=2, sort_keys=True) + "\n")
+
+
+def _runtime_header(source_root: Path, project_root: Path, source_sha: str) -> str:
+    """Return the common worker environment and source-snapshot guard."""
+    python = shlex.quote(sys.executable)
+    return (
+        f"source_root={shlex.quote(str(source_root))}\n"
+        f"project_root={shlex.quote(str(project_root))}\n"
+        f"export JER_PROJECT_ROOT={shlex.quote(str(project_root))}\n"
+        f"export JER_SOURCE_ROOT={shlex.quote(str(source_root))}\n"
+        f"export JER_SOURCE_SHA={shlex.quote(source_sha)}\n"
+        f"export PYTHONPATH={shlex.quote(str(source_root / 'src'))}:{shlex.quote(str(source_root))}${{PYTHONPATH:+:$PYTHONPATH}}\n"
+        "export PYTHONDONTWRITEBYTECODE=1\n"
+        'cd "$project_root"\n'
+        f"{python} -c 'from pathlib import Path; import os; from joint_event_reconstruction.runtime_paths import verify_source_snapshot; verify_source_snapshot(os.environ[\"JER_SOURCE_SHA\"], project_root=Path(os.environ[\"JER_PROJECT_ROOT\"]), source_root=Path(os.environ[\"JER_SOURCE_ROOT\"]))'\n"
+    )
 
 
 def _write_task_file(path: Path, tasks: list[tuple[str, str, int]]) -> None:
@@ -260,13 +285,15 @@ def _worker_script(
     device: str,
     global_overrides: tuple[str, ...],
     expected_commit: str,
+    source_root: Path,
+    project_root: Path,
     expected_manifest_sha256: str,
     expected_experiments: dict[str, dict[str, str]],
     expected_gate_digest: str | None = None,
 ) -> None:
     command = [
         sys.executable,
-        str(ROOT / "scripts/run_study.py"),
+        str(source_root / "scripts/run_study.py"),
         str(study_path),
         stage,
         "--output-root", str(output_root),
@@ -297,19 +324,8 @@ def _worker_script(
     path.write_text(
         "#!/usr/bin/env bash\n"
         "set -euo pipefail\n"
-        f"repo_root={shlex.quote(str(ROOT))}\n"
-        f"export PYTHONPATH={shlex.quote(str(ROOT / 'src'))}${{PYTHONPATH:+:$PYTHONPATH}}\n"
-        f"expected_git_commit={shlex.quote(expected_commit)}\n"
-        'actual_git_commit=$(git -C "$repo_root" rev-parse HEAD)\n'
-        'if [[ "$actual_git_commit" != "$expected_git_commit" ]]; then\n'
-        '    echo "Checkout changed after Slurm submission: expected $expected_git_commit, found $actual_git_commit" >&2\n'
-        "    exit 3\n"
-        "fi\n"
-        'if [[ -n "$(git -C "$repo_root" status --porcelain)" ]]; then\n'
-        '    echo "Checkout became dirty after Slurm submission" >&2\n'
-        "    exit 3\n"
-        "fi\n"
-        f"manifest_snapshot={shlex.quote(str(study_path))}\n"
+        + _runtime_header(source_root, project_root, expected_commit)
+        + f"manifest_snapshot={shlex.quote(str(study_path))}\n"
         f"expected_manifest_sha256={shlex.quote(expected_manifest_sha256)}\n"
         'actual_manifest_sha256=$(sha256sum "$manifest_snapshot" | cut -d" " -f1)\n'
         'if [[ "$actual_manifest_sha256" != "$expected_manifest_sha256" ]]; then\n'
@@ -345,6 +361,8 @@ def _postprocess_worker_script(
     stages: tuple[str, ...],
     output_root: Path,
     expected_commit: str,
+    source_root: Path,
+    project_root: Path,
     expected_manifest_sha256: str,
     expected_gate_digest: str | None,
     expected_experiments: dict[str, dict[str, str]],
@@ -355,7 +373,7 @@ def _postprocess_worker_script(
     for stage in stages:
         command = [
             sys.executable,
-            str(ROOT / "scripts/run_study.py"),
+            str(source_root / "scripts/run_study.py"),
             str(study_path),
             stage,
             "--output-root", str(output_root),
@@ -389,19 +407,8 @@ def _postprocess_worker_script(
     path.write_text(
         "#!/usr/bin/env bash\n"
         "set -euo pipefail\n"
-        f"repo_root={shlex.quote(str(ROOT))}\n"
-        f"export PYTHONPATH={shlex.quote(str(ROOT / 'src'))}${{PYTHONPATH:+:$PYTHONPATH}}\n"
-        f"expected_git_commit={shlex.quote(expected_commit)}\n"
-        'actual_git_commit=$(git -C "$repo_root" rev-parse HEAD)\n'
-        'if [[ "$actual_git_commit" != "$expected_git_commit" ]]; then\n'
-        '    echo "Checkout changed after Slurm submission: expected $expected_git_commit, found $actual_git_commit" >&2\n'
-        "    exit 3\n"
-        "fi\n"
-        'if [[ -n "$(git -C "$repo_root" status --porcelain)" ]]; then\n'
-        '    echo "Checkout became dirty after Slurm submission" >&2\n'
-        "    exit 3\n"
-        "fi\n"
-        f"manifest_snapshot={shlex.quote(str(study_path))}\n"
+        + _runtime_header(source_root, project_root, expected_commit)
+        + f"manifest_snapshot={shlex.quote(str(study_path))}\n"
         f"expected_manifest_sha256={shlex.quote(expected_manifest_sha256)}\n"
         'actual_manifest_sha256=$(sha256sum "$manifest_snapshot" | cut -d" " -f1)\n'
         'if [[ "$actual_manifest_sha256" != "$expected_manifest_sha256" ]]; then\n'
@@ -434,6 +441,8 @@ def _post_script(
     path: Path,
     commands: list[list[str]],
     expected_commit: str,
+    source_root: Path,
+    project_root: Path,
     manifest_snapshot: Path,
     expected_manifest_sha256: str,
     expected_experiments: dict[str, dict[str, str]],
@@ -453,19 +462,8 @@ def _post_script(
     path.write_text(
         "#!/usr/bin/env bash\n"
         "set -euo pipefail\n"
-        f"repo_root={shlex.quote(str(ROOT))}\n"
-        f"export PYTHONPATH={shlex.quote(str(ROOT / 'src'))}${{PYTHONPATH:+:$PYTHONPATH}}\n"
-        f"expected_git_commit={shlex.quote(expected_commit)}\n"
-        'actual_git_commit=$(git -C "$repo_root" rev-parse HEAD)\n'
-        'if [[ "$actual_git_commit" != "$expected_git_commit" ]]; then\n'
-        '    echo "Checkout changed after Slurm submission: expected $expected_git_commit, found $actual_git_commit" >&2\n'
-        "    exit 3\n"
-        "fi\n"
-        'if [[ -n "$(git -C "$repo_root" status --porcelain)" ]]; then\n'
-        '    echo "Checkout became dirty after Slurm submission" >&2\n'
-        "    exit 3\n"
-        "fi\n"
-        f"manifest_snapshot={shlex.quote(str(manifest_snapshot))}\n"
+        + _runtime_header(source_root, project_root, expected_commit)
+        + f"manifest_snapshot={shlex.quote(str(manifest_snapshot))}\n"
         f"expected_manifest_sha256={shlex.quote(expected_manifest_sha256)}\n"
         'actual_manifest_sha256=$(sha256sum "$manifest_snapshot" | cut -d" " -f1)\n'
         'if [[ "$actual_manifest_sha256" != "$expected_manifest_sha256" ]]; then\n'
@@ -519,6 +517,7 @@ def _post_command(
     study_path: Path,
     stage: str,
     *,
+    source_root: Path,
     output_root: Path,
     topologies: tuple[str, ...],
     variants: tuple[VariantSpec, ...],
@@ -528,7 +527,7 @@ def _post_command(
 ) -> list[str]:
     command = [
         sys.executable,
-        str(ROOT / "scripts/run_study.py"),
+        str(source_root / "scripts/run_study.py"),
         str(study_path),
         stage,
         "--output-root", str(output_root),
@@ -602,7 +601,10 @@ def main() -> None:
     if args.prediction_only and args.postprocess_only:
         raise ValueError("--prediction-only and --postprocess-only cannot be combined")
 
-    study = resolve_study(args.study)
+    study_path_arg = args.study.expanduser()
+    if not study_path_arg.is_absolute():
+        study_path_arg = PROJECT_ROOT / study_path_arg
+    study = resolve_study(study_path_arg.resolve())
     topologies = _selected(args.topologies, study.topologies, "topologies")
     variant_names = tuple(variant.name for variant in study.variants)
     requested_names = _selected(args.variants, variant_names, "variants")
@@ -634,7 +636,10 @@ def main() -> None:
                 _gate_checkpoint(study, variant.initialise_from_gate, topology, seed)
 
     study_path = study.path
-    output_root = args.output_root.expanduser().resolve()
+    output_root = args.output_root.expanduser()
+    if not output_root.is_absolute():
+        output_root = PROJECT_ROOT / output_root
+    output_root = output_root.resolve()
     manifest_sha256 = _sha256_file(study_path)
     submitted_at = datetime.now(timezone.utc).isoformat()
     campaign_id = args.campaign_id or (
@@ -665,10 +670,11 @@ def main() -> None:
     git_commit, git_dirty = _git_state()
     if git_dirty and not args.dry_run:
         raise RuntimeError("Study submission requires a clean committed checkout")
+    source_root = ensure_source_snapshot(git_commit, project_root=PROJECT_ROOT)
     base_experiments = {
         topology: {
-            "path": str(study.experiment_path(ROOT, topology)),
-            "sha256": _sha256_file(study.experiment_path(ROOT, topology)),
+            "path": str(study.experiment_path(source_root, topology)),
+            "sha256": _sha256_file(study.experiment_path(source_root, topology)),
         }
         for topology in topologies
     }
@@ -723,6 +729,9 @@ def main() -> None:
         "submission_identity": args.submission_identity,
         "submission_timestamp": submitted_at,
         "git_commit": git_commit,
+        "source_sha": git_commit,
+        "source_root": str(source_root),
+        "project_root": str(PROJECT_ROOT),
         "git_dirty": git_dirty,
         "study": study.name,
         "study_manifest": str(study_path),
@@ -807,6 +816,8 @@ def main() -> None:
                 stages=("evaluate", "plot"),
                 output_root=output_root,
                 expected_commit=git_commit,
+                source_root=source_root,
+                project_root=PROJECT_ROOT,
                 expected_manifest_sha256=manifest_sha256,
                 expected_gate_digest=study.gates_digest,
                 expected_experiments=base_experiments,
@@ -843,6 +854,8 @@ def main() -> None:
                 stages=("plot",),
                 output_root=output_root,
                 expected_commit=git_commit,
+                source_root=source_root,
+                project_root=PROJECT_ROOT,
                 expected_manifest_sha256=manifest_sha256,
                 expected_gate_digest=study.gates_digest,
                 expected_experiments=base_experiments,
@@ -878,6 +891,7 @@ def main() -> None:
             _post_command(
                 manifest_snapshot,
                 stage,
+                source_root=source_root,
                 output_root=output_root,
                 topologies=topologies,
                 variants=prediction_variants,
@@ -900,6 +914,8 @@ def main() -> None:
                 aggregate_worker,
                 aggregate_commands,
                 git_commit,
+                source_root,
+                PROJECT_ROOT,
                 manifest_snapshot,
                 manifest_sha256,
                 base_experiments,
@@ -958,6 +974,8 @@ def main() -> None:
             device="cuda",
             global_overrides=overrides,
             expected_commit=git_commit,
+            source_root=source_root,
+            project_root=PROJECT_ROOT,
             expected_manifest_sha256=manifest_sha256,
             expected_gate_digest=study.gates_digest,
             expected_experiments=base_experiments,
@@ -1044,6 +1062,8 @@ def main() -> None:
             device="cuda",
             global_overrides=overrides,
             expected_commit=git_commit,
+            source_root=source_root,
+            project_root=PROJECT_ROOT,
             expected_manifest_sha256=manifest_sha256,
             expected_gate_digest=study.gates_digest,
             expected_experiments=base_experiments,
@@ -1091,6 +1111,8 @@ def main() -> None:
                 stages=("evaluate", "plot"),
                 output_root=output_root,
                 expected_commit=git_commit,
+                source_root=source_root,
+                project_root=PROJECT_ROOT,
                 expected_manifest_sha256=manifest_sha256,
                 expected_gate_digest=study.gates_digest,
                 expected_experiments=base_experiments,
@@ -1118,6 +1140,7 @@ def main() -> None:
                 _post_command(
                     manifest_snapshot,
                     stage,
+                    source_root=source_root,
                     output_root=output_root,
                     topologies=topologies,
                     variants=prediction_variants,
@@ -1132,6 +1155,8 @@ def main() -> None:
                 aggregate_worker,
                 post_commands,
                 git_commit,
+                source_root,
+                PROJECT_ROOT,
                 manifest_snapshot,
                 manifest_sha256,
                 base_experiments,

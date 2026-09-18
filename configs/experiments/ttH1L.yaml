@@ -6,7 +6,7 @@ topology: configs/topology/ttH1L.yaml
 
 data:
   input: /scratch/w00238tl/phenoH5/hyper_converted_ttH_ttbb_train_10M_23May.h5
-  cache: /scratch/w00238tl/jer_cache
+  cache: cache
   subset_seed: 42
   events: {train: 100000, validation: 50000, test: 50000}
   max_assignment_states: 100000

@@ -9,6 +9,7 @@ study:
   requires: [visible_assignment, assignment_formulation, invisible_generator, invisible_coordinates, assignment_conditioning]
   inherit: [visible_assignment, assignment_formulation, invisible_generator, invisible_coordinates, assignment_conditioning]
   training: true
+  campaign: {enabled: false, state: deferred, reason: Deferred follow-up study; not on the Paper-1 critical path.}
 
 variants:
   continued_no_feedback:

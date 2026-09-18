@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 from omegaconf import DictConfig, OmegaConf
@@ -11,9 +10,10 @@ from joint_event_reconstruction.topology.compiler import load_topology
 from joint_event_reconstruction.models.invisible.mass_shell import (
     mass_shell_config as canonical_mass_shell_config,
 )
+from joint_event_reconstruction.runtime_paths import runtime_paths
 
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+REPO_ROOT = runtime_paths().source_root
 DEFAULTS_PATH = REPO_ROOT / "configs/defaults.yaml"
 PUBLIC_TOP_KEYS = {
     "experiment", "topology", "data", "inputs", "model", "inference", "training"
@@ -25,9 +25,9 @@ def _path(value: object, *, data_path: bool = False) -> Path:
     path = Path(str(value)).expanduser()
     if path.is_absolute():
         return path.resolve()
-    if data_path and os.environ.get("JER_DATA_ROOT"):
-        return (Path(os.environ["JER_DATA_ROOT"]).expanduser() / path).resolve()
-    return (REPO_ROOT / path).resolve()
+    roots = runtime_paths()
+    root = roots.project_root if data_path else roots.source_root
+    return (root / path).resolve()
 
 
 def _mapping(value, name: str):
@@ -1007,6 +1007,8 @@ def resolve_public_experiment(public: DictConfig, *, source_path: str | Path | N
             {key: float(value) for key, value in training_public.loss_weights.items()}
         )
 
+    output_value = training_public.get("output", f"results/{public.experiment.name}")
+    output_path = runtime_paths().project(output_value)
     return OmegaConf.create(
         {
             "experiment": _plain(public.experiment),
@@ -1069,7 +1071,7 @@ def resolve_public_experiment(public: DictConfig, *, source_path: str | Path | N
                 "loss_weights": loss_weights,
                 "scheduler": _plain(training.scheduler),
                 "early_stopping": _plain(training.early_stopping),
-                "output": str(training_public.get("output", f"results/{public.experiment.name}")),
+                "output": str(output_path),
             },
         }
     )
