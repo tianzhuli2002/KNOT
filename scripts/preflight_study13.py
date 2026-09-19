@@ -801,29 +801,52 @@ def _metrics_files(train_dir: Path) -> list[Path]:
 
 def _assert_training_metrics(train_dir: Path, variant: str) -> dict:
     files = _metrics_files(train_dir)
-    if not files:
-        raise FileNotFoundError(f"No Lightning metrics.csv was written for {variant}: {train_dir}")
     values: list[float] = []
     validation_values: list[float] = []
-    for path in files:
-        lines = path.read_text().splitlines()
-        if not lines:
-            continue
-        headers = lines[0].split(",")
-        for line in lines[1:]:
-            fields = line.split(",")
-            row = dict(zip(headers, fields))
+    sources: list[str] = []
+    if files:
+        for path in files:
+            lines = path.read_text().splitlines()
+            if not lines:
+                continue
+            headers = lines[0].split(",")
+            for line in lines[1:]:
+                fields = line.split(",")
+                row = dict(zip(headers, fields))
+                for name, destination in (("train_loss", values), ("val_loss", validation_values)):
+                    value = row.get(name, "")
+                    if value not in {"", "None"}:
+                        parsed = float(value)
+                        if not np.isfinite(parsed):
+                            raise FloatingPointError(f"{variant} has non-finite {name}: {path}")
+                        destination.append(parsed)
+            sources.append(str(path))
+    else:
+        event_files = sorted(
+            train_dir.glob("lightning_logs/version_*/events.out.tfevents.*")
+        )
+        if not event_files:
+            raise FileNotFoundError(
+                f"No Lightning metrics.csv or TensorBoard event file was written for {variant}: {train_dir}"
+            )
+        from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
+
+        for path in event_files:
+            accumulator = EventAccumulator(str(path.parent))
+            accumulator.Reload()
             for name, destination in (("train_loss", values), ("val_loss", validation_values)):
-                value = row.get(name, "")
-                if value not in {"", "None"}:
-                    parsed = float(value)
+                if name not in accumulator.Tags().get("scalars", []):
+                    continue
+                for event in accumulator.Scalars(name):
+                    parsed = float(event.value)
                     if not np.isfinite(parsed):
                         raise FloatingPointError(f"{variant} has non-finite {name}: {path}")
                     destination.append(parsed)
+            sources.append(str(path))
     if not values or not validation_values:
         raise RuntimeError(f"{variant} metrics do not contain finite train and validation losses")
     return {
-        "metrics_files": [str(path) for path in files],
+        "metrics_files": sources,
         "finite_train_loss": True,
         "finite_validation_loss": True,
         "initial_train_loss": values[0],
