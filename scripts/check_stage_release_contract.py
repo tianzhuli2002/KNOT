@@ -102,7 +102,10 @@ def check_release_payload() -> None:
                         "nonzero_invisible_update": True,
                         "finite_validation_loss": True,
                         "coordinate_inverse_check": True,
-                        "train_validation_batch_disjoint": True,
+                        "data_subset": {
+                            "train_validation_batch_disjoint": True,
+                            "test_accessed": False,
+                        },
                     },
                     "checkpoint_reload": {
                         "strict_reload": True,
@@ -166,6 +169,24 @@ def check_release_payload() -> None:
                 validation_root=root,
             ),
             "unsupported Study-15 evidence boolean",
+        )
+        integration.write_text(json.dumps(integration_payload))
+        bad_split = copy.deepcopy(integration_payload)
+        bad_split["branches"]["conditional_lgatr"]["training"]["data_subset"]["train_validation_batch_disjoint"] = False
+        integration.write_text(json.dumps(bad_split))
+        _must_fail(
+            lambda: validate_release_payload(
+                payload,
+                artifact_path=artifact,
+                expected_schema="study15_release_v1",
+                expected_source_sha="a" * 40,
+                expected_campaign_id="paper1-test",
+                expected_gate_digest="b" * 64,
+                expected_manifest_sha256="c" * 64,
+                expected_checkpoint_hashes={str(checkpoint): _sha(checkpoint)},
+                validation_root=root,
+            ),
+            "Study-15 train/validation split evidence",
         )
         integration.write_text(json.dumps(integration_payload))
         for key, value in (

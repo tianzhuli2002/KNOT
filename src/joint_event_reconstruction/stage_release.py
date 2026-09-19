@@ -144,6 +144,17 @@ def _validate_evaluation_evidence(value: object, label: str) -> None:
     _require_true(report.get("conditional_calibration"), f"{label}.conditional_calibration")
 
 
+def _validate_training_split_evidence(value: object, label: str) -> None:
+    """Validate the train/validation separation emitted by the mini-run probe."""
+    training = _require_mapping(value, label)
+    data_subset = _require_mapping(training.get("data_subset"), f"{label}.data_subset")
+    _require_true(
+        data_subset.get("train_validation_batch_disjoint"),
+        f"{label}.data_subset.train_validation_batch_disjoint",
+    )
+    _require_true(data_subset.get("test_accessed") is False, f"{label}.data_subset.test_accessed")
+
+
 def _validate_nested_subresults(
     report: dict,
     *,
@@ -225,8 +236,9 @@ def _validate_study15_evidence(
 
     conditional = _require_mapping(branches.get("conditional_lgatr"), "Study-15 Conditional L-GATr branch")
     training = _require_mapping(conditional.get("training"), "Study-15 Conditional L-GATr training")
-    for key in ("finite_initial_loss", "finite_gradients", "nonzero_invisible_update", "finite_validation_loss", "coordinate_inverse_check", "train_validation_batch_disjoint"):
+    for key in ("finite_initial_loss", "finite_gradients", "nonzero_invisible_update", "finite_validation_loss", "coordinate_inverse_check"):
         _require_true(training.get(key), f"Study-15 conditional training.{key}")
+    _validate_training_split_evidence(training, "Study-15 conditional training")
     reload = _require_mapping(conditional.get("checkpoint_reload"), "Study-15 Conditional L-GATr reload")
     _require_true(reload.get("strict_reload"), "Study-15 conditional strict reload")
     _require_true(reload.get("frozen_visible_equal", {}).get("equal"), "Study-15 conditional frozen visible weights")
@@ -377,8 +389,9 @@ def _validate_study03_evidence(
         )
         _validate_evaluation_evidence(branch.get("evaluation"), f"Study-03 {name} evaluation")
     refined_training = _require_mapping(branches["refined"].get("training"), "Study-03 refined training")
-    for key in ("finite_initial_loss", "finite_gradients", "nonzero_invisible_update", "coordinate_inverse_check", "train_validation_batch_disjoint"):
+    for key in ("finite_initial_loss", "finite_gradients", "nonzero_invisible_update", "coordinate_inverse_check"):
         _require_true(refined_training.get(key), f"Study-03 refined training.{key}")
+    _validate_training_split_evidence(refined_training, "Study-03 refined training")
     reload = _require_mapping(branches["refined"].get("checkpoint_reload"), "Study-03 refined reload")
     _require_true(reload.get("strict_reload"), "Study-03 strict reload")
     _require_true(reload.get("frozen_visible_equal", {}).get("equal"), "Study-03 frozen visible weights")
