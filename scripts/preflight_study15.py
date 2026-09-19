@@ -135,7 +135,7 @@ def _remove_allowed(value: object, path: tuple[str, ...], allowed: set[tuple[str
 
 def _config_diff(conventional: dict, conditional: dict) -> dict:
     allowed = {
-        ("model", "invisible", "generator", "backbone"),
+        ("model", "invisible", "backbone"),
         ("training", "trainable"),
         ("training", "output"),
         ("experiment", "seed"),
@@ -146,7 +146,7 @@ def _config_diff(conventional: dict, conditional: dict) -> dict:
         raise RuntimeError("Study-15 conventional and Conditional L-GATr configs differ outside the whitelist")
     return {
         "status": "PASS",
-        "allowed_differences": ["model.invisible.generator.backbone", "training.trainable", "training.output", "experiment.seed"],
+        "allowed_differences": ["model.invisible.backbone", "training.trainable", "training.output", "experiment.seed"],
         "unexpected_differences": [],
     }
 
@@ -156,7 +156,7 @@ def _strict_reload(config, checkpoint: Path, expected_backbone: str) -> dict:
     data = build_data(config, visible)
     data.setup("predict")
     module = load_trained(config, visible, data, str(checkpoint)).eval()
-    backbone = str(config.model.invisible.generator.backbone.type)
+    backbone = str(config.model.invisible.backbone.type)
     if backbone != expected_backbone:
         raise RuntimeError(f"Study-15 reloaded backbone is {backbone!r}, expected {expected_backbone!r}")
     trainable = [name for name, parameter in module.named_parameters() if parameter.requires_grad]
@@ -199,7 +199,7 @@ def run(*, output_dir: Path, device: str, gates_path: Path, expected_source_sha:
     config_diff = _config_diff(configs["conventional"], configs["conditional_lgatr"])
     if str(conventional_config.model.invisible.coordinates.type) != "met_residual":
         raise RuntimeError("Study-15 did not inherit the selected met_residual coordinates")
-    if str(conditional_config.model.invisible.generator.backbone.type) != "lgatr":
+    if str(conditional_config.model.invisible.backbone.type) != "lgatr":
         raise RuntimeError("Study-15 Conditional L-GATr branch did not construct an lgatr generator")
     if list(conditional_config.training.trainable) != ["invisible"]:
         raise RuntimeError(f"Study-15 trainable component policy changed: {conditional_config.training.trainable}")
@@ -317,7 +317,7 @@ def run(*, output_dir: Path, device: str, gates_path: Path, expected_source_sha:
         },
         "config_diff": config_diff,
         "conditional_lgatr_backbone": OmegaConf.to_container(
-            conditional_config.model.invisible.generator.backbone, resolve=True
+            conditional_config.model.invisible.backbone, resolve=True
         ),
         "branches": {
             "conventional": conventional_report,
