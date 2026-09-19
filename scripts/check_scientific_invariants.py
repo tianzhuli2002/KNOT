@@ -1437,6 +1437,25 @@ def check_campaign_identity_contract() -> None:
         raise AssertionError("Campaign identity is not deterministic")
 
 
+def check_release_source_snapshot_contract() -> None:
+    """Queued release workers must use the immutable source tree."""
+    from joint_event_reconstruction.campaign_controller import (
+        _release_source,
+        campaign_paths,
+    )
+
+    sha = subprocess.run(
+        ["git", "-C", str(ROOT), "rev-parse", "HEAD"],
+        text=True,
+        capture_output=True,
+        check=True,
+    ).stdout.strip()
+    source = _release_source(campaign_paths(), sha)
+    expected = ROOT / "runtime/source" / sha
+    if source != expected or not (source / "SOURCE_SNAPSHOT.json").is_file():
+        raise AssertionError(f"Release source handoff is not immutable: {source}")
+
+
 def check_paper1_controller_contract() -> None:
     """Campaign transitions, gate overlays and test sealing are explicit."""
     from joint_event_reconstruction.campaign_controller import transition_for_observation
@@ -2174,12 +2193,13 @@ def main() -> None:
     check_campaign_scheduler_contract()
     check_slurm_option_routing_contract()
     check_campaign_identity_contract()
+    check_release_source_snapshot_contract()
     check_paper1_controller_contract()
     print(
         "PASS: architecture, training-identity, partial-checkpoint, split-seed, "
         "nested-subset, coordinate, truth-oracle, exchange, permutation, "
         "freeze, public-input, same-flavour-role, campaign-gate, Slurm-option, "
-        "campaign-identity, campaign-scheduler, Paper-1-controller, prediction-writer, mass-shell, Conditional-L-GATr "
+        "campaign-identity, release-source-snapshot, campaign-scheduler, Paper-1-controller, prediction-writer, mass-shell, Conditional-L-GATr "
         "Slurm-snapshot and resumable-postprocess contracts"
     )
 

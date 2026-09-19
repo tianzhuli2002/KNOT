@@ -744,6 +744,13 @@ def _site_slurm(paths: CampaignPaths) -> dict:
     return raw["slurm"]
 
 
+def _release_source(paths: CampaignPaths, sha: str) -> Path:
+    """Return the immutable tree used by a queued composite release worker."""
+    source = ensure_source_snapshot(sha, project_root=paths.project_root)
+    verify_source_snapshot(sha, project_root=paths.project_root, source_root=source)
+    return source
+
+
 def _submit_smoke(paths: CampaignPaths, sha: str) -> dict:
     if not _latest_preflight(paths, sha):
         raise CampaignError(
@@ -764,7 +771,10 @@ def _submit_smoke(paths: CampaignPaths, sha: str) -> dict:
     ) + 1
     output = paths.project_root / "results/validation/study13-release" / sha / f"attempt-{attempt:03d}"
     output.mkdir(parents=True, exist_ok=False)
-    source = Path(paths.source_root)
+    # The live CLI is normally imported from the canonical checkout.  The
+    # release worker must nevertheless execute the immutable tree recorded in
+    # the campaign state, not that checkout.
+    source = _release_source(paths, sha)
     worker = output / "worker.sh"
     worker.write_text(
         "#!/usr/bin/env bash\nset -euo pipefail\n"
