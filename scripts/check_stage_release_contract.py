@@ -8,6 +8,7 @@ import hashlib
 import json
 from pathlib import Path
 import shutil
+import subprocess
 import tempfile
 
 from joint_event_reconstruction import campaign_controller as controller
@@ -39,8 +40,83 @@ def check_release_payload() -> None:
         root = Path(directory)
         checkpoint = root / "selected.ckpt"
         checkpoint.write_bytes(b"selected checkpoint")
-        subresult = root / "subresult.json"
-        subresult.write_text(json.dumps({"schema": "mini_v1", "status": "PASS", "source_sha": "a" * 40}))
+        conditional_checkpoint = root / "conditional.ckpt"
+        conditional_checkpoint.write_bytes(b"conditional checkpoint")
+        identity = root / "artifact_identity.json"
+        identity.write_text(json.dumps({"schema": "identity_v1", "source_sha": "a" * 40}))
+        prediction = {
+            "physical_four_vectors": True,
+            "event_id_unique": True,
+            "events": 16,
+            "four_vector_convention": "E_px_py_pz_GeV_v1",
+            "mass_shell": "fixed massless exact",
+            "top_k": 10,
+            "posterior_samples": 8,
+            "event_id_sha256": "e" * 64,
+        }
+        evaluation = {
+            "primary_metric_path": "invisible.top1_assignment_conditioned.energy_score_joint",
+            "primary_metric": 1.0,
+            "conditional_calibration": True,
+        }
+        conventional = root / "conventional.json"
+        conditional = root / "conditional.json"
+        conventional.write_text(json.dumps({"schema": "study15_branch_v1", "status": "PASS", "source_sha": "a" * 40}))
+        conditional.write_text(json.dumps({"schema": "study15_branch_v1", "status": "PASS", "source_sha": "a" * 40}))
+        integration = root / "integration.json"
+        selected_record = {"path": str(checkpoint), "sha256": _sha(checkpoint)}
+        conditional_record = {
+            "path": str(conditional_checkpoint),
+            "sha256": _sha(conditional_checkpoint),
+            "identity_file": str(identity),
+            "identity_sha256": _sha(identity),
+            "training_sha": "a" * 40,
+        }
+        integration_payload = {
+            "schema": "jer_study15_integration_v1",
+            "status": "PASS",
+            "source_sha": "a" * 40,
+            "test_accessed": False,
+            "selected_checkpoint_records": {
+                gate: selected_record
+                for gate in ("visible_assignment", "invisible_generator", "invisible_coordinates", "assignment_formulation")
+            },
+            "branches": {
+                "conventional": {
+                    "training_performed": False,
+                    "checkpoint_reused": True,
+                    "checkpoint": selected_record,
+                    "prediction": prediction,
+                    "evaluation": evaluation,
+                },
+                "conditional_lgatr": {
+                    "training": {
+                        "finite_initial_loss": True,
+                        "finite_gradients": True,
+                        "nonzero_invisible_update": True,
+                        "finite_validation_loss": True,
+                        "coordinate_inverse_check": True,
+                        "train_validation_batch_disjoint": True,
+                    },
+                    "checkpoint_reload": {
+                        "strict_reload": True,
+                        "frozen_visible_equal": {"equal": True},
+                        "frozen_assignment_equal": {"equal": True},
+                        "backbone": "lgatr",
+                    },
+                    "checkpoint": conditional_record,
+                    "prediction": prediction,
+                    "evaluation": evaluation,
+                },
+            },
+            "config_diff": {"status": "PASS", "unexpected_differences": []},
+            "conditional_lgatr_backbone": {"type": "lgatr"},
+            "subresults": {
+                "conventional": {"path": str(conventional), "schema": "study15_branch_v1"},
+                "conditional_lgatr": {"path": str(conditional), "schema": "study15_branch_v1"},
+            },
+        }
+        integration.write_text(json.dumps(integration_payload))
         artifact = root / "release.json"
         payload = {
             "schema": "study15_release_v1",
@@ -55,7 +131,7 @@ def check_release_payload() -> None:
             "manifest_sha256": "c" * 64,
             "required_components": {"mini": True},
             "checkpoint_hashes": {str(checkpoint): _sha(checkpoint)},
-            "subresults": {"mini": {"path": str(subresult), "schema": "mini_v1"}},
+            "subresults": {"integration": {"path": str(integration), "schema": "jer_study15_integration_v1"}},
         }
         validate_release_payload(
             payload,
@@ -68,6 +144,24 @@ def check_release_payload() -> None:
             expected_checkpoint_hashes={str(checkpoint): _sha(checkpoint)},
             validation_root=root,
         )
+        bad_evidence = copy.deepcopy(integration_payload)
+        bad_evidence["branches"]["conditional_lgatr"]["training"]["finite_gradients"] = False
+        integration.write_text(json.dumps(bad_evidence))
+        _must_fail(
+            lambda: validate_release_payload(
+                payload,
+                artifact_path=artifact,
+                expected_schema="study15_release_v1",
+                expected_source_sha="a" * 40,
+                expected_campaign_id="paper1-test",
+                expected_gate_digest="b" * 64,
+                expected_manifest_sha256="c" * 64,
+                expected_checkpoint_hashes={str(checkpoint): _sha(checkpoint)},
+                validation_root=root,
+            ),
+            "unsupported Study-15 evidence boolean",
+        )
+        integration.write_text(json.dumps(integration_payload))
         for key, value in (
             ("status", "EDITED"),
             ("source_sha", "d" * 40),
@@ -125,6 +219,42 @@ def check_release_payload() -> None:
         )
 
 
+def check_terminal_preflight_reporting() -> None:
+    """A terminal failure replaces, rather than preserves, an old pending reason."""
+    release = {
+        "status": "PENDING",
+        "reason": "stage preflight 123 is PENDING: QOSGrpGRES",
+    }
+    controller._record_stage_preflight_observation(
+        release,
+        "123",
+        {
+            "state": "FAILED",
+            "state_raw": "FAILED",
+            "exit_code": "1:0",
+            "reason": "state=FAILED; exit_code=1:0",
+        },
+    )
+    if release.get("status") != "FAILED" or release.get("scheduler_state") != "FAILED":
+        raise AssertionError("Terminal stage preflight failure was not recorded")
+    if release.get("scheduler_exit_code") != "1:0" or "QOSGrpGRES" in release.get("reason", ""):
+        raise AssertionError("Terminal stage preflight retained the stale pending reason")
+    paths = controller.CampaignPaths(Path("/tmp"), Path("/tmp"), Path("/tmp/jer-stage-release-test"))
+    original_job_state = controller._job_state
+    original_run = controller._run
+    try:
+        controller._job_state = lambda _paths, _job: ("FAILED", "accounting terminal failure")
+        controller._run = lambda _paths, _command, check=False: subprocess.CompletedProcess(
+            _command, 0, stdout="123|FAILED|1:0\n", stderr=""
+        )
+        observation = controller._scheduler_observation(paths, "123")
+    finally:
+        controller._job_state = original_job_state
+        controller._run = original_run
+    if observation["state"] != "FAILED" or observation["exit_code"] != "1:0":
+        raise AssertionError(f"Scheduler terminal evidence was not read exactly: {observation}")
+
+
 def check_continuation() -> None:
     if not PARENT.is_dir():
         raise AssertionError(f"completed parent campaign is missing: {PARENT}")
@@ -135,8 +265,19 @@ def check_continuation() -> None:
     }
     with tempfile.TemporaryDirectory(prefix="jer-continuation-") as directory:
         target = Path(directory) / "paper1-test-continuation-a1"
-        first = controller.continue_campaign(PARENT, target)
-        second = controller.continue_campaign(PARENT, target)
+        original_git = controller._git
+
+        def clean_fixture_git(paths, *arguments):
+            if arguments == ("status", "--porcelain"):
+                return ""
+            return original_git(paths, *arguments)
+
+        controller._git = clean_fixture_git
+        try:
+            first = controller.continue_campaign(PARENT, target)
+            second = controller.continue_campaign(PARENT, target)
+        finally:
+            controller._git = original_git
         if first != second:
             raise AssertionError("repeated continuation is not idempotent")
         if first["parent_campaign"]["campaign_id"] != "paper1-f2084c8b2308-a1":
@@ -186,6 +327,7 @@ def check_continuation() -> None:
 
 def main() -> None:
     check_release_payload()
+    check_terminal_preflight_reporting()
     check_continuation()
     print("PASS: deterministic continuation and stage-release contract checks")
 

@@ -17,6 +17,7 @@ import sys
 
 import h5py
 import numpy as np
+import torch
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -26,10 +27,15 @@ from joint_event_reconstruction.runtime_paths import runtime_paths  # noqa: E402
 from joint_event_reconstruction.studies import resolve_study  # noqa: E402
 from scripts.run_study import _gate_checkpoint, _public_run_config, _write_yaml  # noqa: E402
 from scripts.run_study10_controls import (  # noqa: E402
+    K_PREFIXES,
+    M_PREFIXES,
     _analyse_seed,
     _build_one_seed,
     _generate_prediction,
+    _input_tensors,
+    _load_features,
     _read_prediction,
+    visible_only_scorer_input,
 )
 
 
@@ -64,7 +70,7 @@ def _feature_event_ids(path: Path) -> tuple[np.ndarray, bool, str]:
     return event_ids, test_used, split
 
 
-def run(*, output_dir: Path, gates_path: Path, expected_source_sha: str, campaign_id: str) -> dict:
+def run(*, output_dir: Path, device: str, gates_path: Path, expected_source_sha: str, campaign_id: str) -> dict:
     paths = runtime_paths()
     if paths.source_sha != expected_source_sha:
         raise RuntimeError(f"SOURCE SHA MISMATCH: expected {expected_source_sha}, found {paths.source_sha}")
@@ -83,10 +89,10 @@ def run(*, output_dir: Path, gates_path: Path, expected_source_sha: str, campaig
         raise RuntimeError("Study-10 did not inherit the selected Study-13 coordinates")
 
     validation_prediction = _generate_prediction(
-        experiment, checkpoint, output_dir / "validation_prediction.h5", "validation", "cuda"
+        experiment, checkpoint, output_dir / "validation_prediction.h5", "validation", device
     )
     training_prediction = _generate_prediction(
-        experiment, checkpoint, output_dir / "training_prediction.h5", "train", "cuda"
+        experiment, checkpoint, output_dir / "training_prediction.h5", "train", device
     )
     validation_record = _read_prediction(validation_prediction)
     training_record = _read_prediction(training_prediction)
@@ -108,7 +114,7 @@ def run(*, output_dir: Path, gates_path: Path, expected_source_sha: str, campaig
         experiment,
         checkpoint,
         feature_dir / "seed_42_placeholder.h5",
-        "cuda",
+        device,
         64,
         42,
         _sha256(STUDY_PATH),
@@ -123,13 +129,34 @@ def run(*, output_dir: Path, gates_path: Path, expected_source_sha: str, campaig
     analysis = _analyse_seed(train_features, validation_features, output_dir, epochs=1, seed=42)
     with h5py.File(validation_features, "r") as source:
         nested = source["PHYSICS/nested_analytic_scores"][:]
+        k_prefixes = json.loads(source["PHYSICS"].attrs["K_prefixes"])
+        m_prefixes = json.loads(source["PHYSICS"].attrs["M_prefixes"])
         if not np.isfinite(nested).all() or nested.shape[1] != 5 or nested.shape[2] != 5:
             raise RuntimeError(f"Study-10 nested K/M product has the wrong shape: {nested.shape}")
-        if "K_prefixes" not in source["PHYSICS"].attrs or "M_prefixes" not in source["PHYSICS"].attrs:
-            raise RuntimeError("Study-10 nested K/M prefix metadata is missing")
+        if k_prefixes != list(K_PREFIXES) or m_prefixes != list(M_PREFIXES):
+            raise RuntimeError(
+                f"Study-10 nested K/M prefixes are not the declared prefixes: {k_prefixes}, {m_prefixes}"
+            )
         feature_names = json.loads(source.attrs["feature_names"])
     if not feature_names:
         raise RuntimeError("Study-10 physics feature schema is empty")
+    train_features_payload = _load_features(train_features)
+    validation_features_payload = _load_features(validation_features)
+    train_physics, train_visible = _input_tensors(train_features_payload)
+    validation_physics, validation_visible = _input_tensors(validation_features_payload)
+    if train_physics.shape[-1] <= 4 or validation_physics.shape[-1] != train_physics.shape[-1]:
+        raise RuntimeError("Study-10 scorer feature widths are not comparable")
+    expected_visible = visible_only_scorer_input(
+        train_features_payload["visible_log_score"].float(),
+        train_features_payload["visible_probability"].float(),
+        train_features_payload["entropy"].float(),
+        train_features_payload["margin"].float(),
+        target_features=train_physics.shape[-1],
+    )
+    if not torch.equal(train_visible, expected_visible) or not torch.equal(
+        train_visible[..., 4:], torch.zeros_like(train_visible[..., 4:])
+    ):
+        raise RuntimeError("Study-10 visible-only control input is not physics-blind")
     comparisons = analysis["comparisons"]
     required_controls = {"visible_baseline", "matched_visible_only_control", "analytic_physics", "learned_physics", "truth_neutrino_oracle"}
     if not required_controls <= set(comparisons):
@@ -159,19 +186,34 @@ def run(*, output_dir: Path, gates_path: Path, expected_source_sha: str, campaig
             "test_split_sealed": True,
         },
         "shared_posterior": {
-            "branches": 1,
+            "branches_per_prediction": 1,
             "Kmax": 10,
             "Mmax": 64,
             "nested_prefixes": True,
-            "posterior_generation_count": 1,
+            "generation_count_by_split": {"train": 1, "validation": 1},
+            "reused_across_rerankers": True,
+            "reused_across_K_M_prefixes": True,
         },
         "scorer_split_contract": {
             "training_feature_artifact": str(train_features),
             "validation_feature_artifact": str(validation_features),
-            "scaler_fit_on_training_only": True,
+            "training_feature_artifact_sha256": _sha256(train_features),
+            "validation_feature_artifact_sha256": _sha256(validation_features),
+            "scaler_fit_source_split": "train",
+            "scaler_identity_sha256": str(
+                train_features_payload.get("physics_scaler_sha256", "")
+            ),
+            "fit_event_id_sha256": hashlib.sha256(np.ascontiguousarray(train_feature_ids).tobytes()).hexdigest(),
+            "validation_event_id_sha256": hashlib.sha256(np.ascontiguousarray(validation_feature_ids).tobytes()).hexdigest(),
             "zero_event_overlap": True,
-            "validation_labels_not_used_for_fit": True,
-            "visible_only_control_excludes_physics_features": True,
+            "scorer_fit_source_split": "train",
+            "alpha_selection_source_split": "train",
+            "validation_used_after_fit": True,
+            "visible_only_input_contract": {
+                "source": "visible_only_scorer_input",
+                "visible_feature_columns": 4,
+                "physics_padding_zero": True,
+            },
             "feature_names": feature_names,
         },
         "scorer_artifacts": {
@@ -185,6 +227,13 @@ def run(*, output_dir: Path, gates_path: Path, expected_source_sha: str, campaig
             },
         },
         "controls": sorted(required_controls),
+        "nested_prefix_contract": {
+            "K_prefixes": list(K_PREFIXES),
+            "M_prefixes": list(M_PREFIXES),
+            "underlying_Kmax": 10,
+            "underlying_Mmax": 64,
+            "prefixes_from_single_posterior": True,
+        },
         "analysis": analysis,
         "required_components": {
             "selected_generator_loaded": True,
@@ -195,7 +244,7 @@ def run(*, output_dir: Path, gates_path: Path, expected_source_sha: str, campaig
             "learned_scorer_train_reload": True,
             "truth_neutrino_oracle": True,
             "nested_K_M_prefixes": True,
-            "test_accessed": False,
+            "test_split_sealed": True,
         },
         "test_accessed": False,
     }
@@ -209,8 +258,9 @@ def main() -> None:
     parser.add_argument("--gates-path", type=Path, required=True)
     parser.add_argument("--expected-source-sha", required=True)
     parser.add_argument("--campaign-id", required=True)
+    parser.add_argument("--device", choices=("cuda", "cpu"), default="cuda")
     args = parser.parse_args()
-    print(json.dumps(run(output_dir=args.output_dir.expanduser().resolve(), gates_path=args.gates_path.expanduser().resolve(), expected_source_sha=args.expected_source_sha, campaign_id=args.campaign_id), indent=2, sort_keys=True))
+    print(json.dumps(run(output_dir=args.output_dir.expanduser().resolve(), device=args.device, gates_path=args.gates_path.expanduser().resolve(), expected_source_sha=args.expected_source_sha, campaign_id=args.campaign_id), indent=2, sort_keys=True))
 
 
 if __name__ == "__main__":

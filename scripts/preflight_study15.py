@@ -225,7 +225,16 @@ def run(*, output_dir: Path, device: str, gates_path: Path, expected_source_sha:
         "evaluation": p13._evaluation_contract(conventional_prediction, conventional_evaluation),
         "test_accessed": False,
     }
-    _write_json(conventional_dir / "result.json", {"schema": "jer_study15_conventional_v1", "status": "PASS", **conventional_report})
+    _write_json(
+        conventional_dir / "result.json",
+        {
+            "schema": "jer_study15_conventional_v1",
+            "status": "PASS",
+            "source_sha": expected_source_sha,
+            "campaign_id": campaign_id,
+            **conventional_report,
+        },
+    )
 
     old_overrides = p13.SMALL_OVERRIDES
     p13.SMALL_OVERRIDES = SMALL_OVERRIDES
@@ -271,7 +280,16 @@ def run(*, output_dir: Path, device: str, gates_path: Path, expected_source_sha:
         ),
         "test_accessed": False,
     }
-    _write_json(output_dir / "conditional_lgatr/result.json", {"schema": "jer_study15_conditional_v1", "status": "PASS", **conditional_report})
+    _write_json(
+        output_dir / "conditional_lgatr/result.json",
+        {
+            "schema": "jer_study15_conditional_v1",
+            "status": "PASS",
+            "source_sha": expected_source_sha,
+            "campaign_id": campaign_id,
+            **conditional_report,
+        },
+    )
 
     result = {
         "schema": "jer_study15_integration_v1",

@@ -45,6 +45,17 @@ STAGE_INFO = {
 }
 
 
+def preflight_kwargs(*, output_dir: Path, gates_path: Path, expected_source_sha: str, campaign_id: str) -> dict:
+    """Build the one common callable contract used by every stage worker."""
+    return {
+        "output_dir": output_dir,
+        "device": "cuda",
+        "gates_path": gates_path,
+        "expected_source_sha": expected_source_sha,
+        "campaign_id": campaign_id,
+    }
+
+
 def _write(path: Path, value: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
@@ -58,6 +69,10 @@ def run(*, stage: str, output_dir: Path, release_artifact: Path, campaign_root: 
     paths = runtime_paths()
     if paths.source_sha != expected_source_sha:
         raise RuntimeError(f"SOURCE SHA MISMATCH: expected {expected_source_sha}, found {paths.source_sha}")
+    import torch
+
+    if not torch.cuda.is_available():
+        raise RuntimeError("Downstream stage release requires CUDA; no CUDA device is available")
     verify_source_snapshot(expected_source_sha, project_root=paths.project_root, source_root=paths.source_root)
     state = json.loads((campaign_root / "campaign.json").read_text())
     if state.get("campaign_id") != campaign_id or state.get("source_sha") != expected_source_sha:
@@ -67,12 +82,12 @@ def run(*, stage: str, output_dir: Path, release_artifact: Path, campaign_root: 
     study = resolve_study(manifest, gates_path)
     output_dir.mkdir(parents=True, exist_ok=True)
     module = __import__(f"scripts.{module_name}", fromlist=["run"])
-    result = module.run(
+    result = module.run(**preflight_kwargs(
         output_dir=output_dir,
         gates_path=gates_path,
         expected_source_sha=expected_source_sha,
         campaign_id=campaign_id,
-    )
+    ))
     if result.get("status") != "PASS" or result.get("schema") != sub_schema:
         raise RuntimeError(f"{stage} preflight did not produce a PASS {sub_schema} result")
     job_id = os.environ.get("SLURM_JOB_ID", "")

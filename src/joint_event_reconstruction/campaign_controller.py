@@ -317,11 +317,17 @@ def _job_state(paths: CampaignPaths, job_id: object) -> tuple[str, str]:
     return states[-1] if states else "UNKNOWN", "accounting incomplete"
 
 
-def _scheduler_terminal(paths: CampaignPaths, job_id: object) -> tuple[str, str]:
-    """Return the actual terminal state and exit code for one Slurm job."""
+def _scheduler_observation(paths: CampaignPaths, job_id: object) -> dict:
+    """Capture the exact scheduler state and exit code for a stage job."""
     state, reason = _job_state(paths, job_id)
-    if state != "COMPLETED":
-        return state, reason
+    observation = {
+        "state": state,
+        "reason": reason,
+        "exit_code": None,
+        "state_raw": state,
+    }
+    if state in ACTIVE_SCHEDULER_STATES or not job_id:
+        return observation
     account = _run(
         paths,
         ["sacct", "-n", "-P", "-j", str(job_id), "--format=JobIDRaw,State,ExitCode"],
@@ -332,11 +338,41 @@ def _scheduler_terminal(paths: CampaignPaths, job_id: object) -> tuple[str, str]
     if exact is None:
         exact = next((row for row in rows if len(row) > 2 and "." not in row[0]), None)
     if exact is None or len(exact) < 3:
-        return "UNKNOWN", "completed job has no exact sacct exit-code record"
+        return observation
+    raw_state = exact[1].strip()
     exit_code = exact[2].strip()
-    if exit_code != "0:0":
-        return "FAILED", f"Slurm exit code {exit_code}"
-    return "COMPLETED", exit_code
+    normalised = _normalise_state(raw_state)
+    if normalised == "COMPLETED" and exit_code != "0:0":
+        normalised = "FAILED"
+    observation.update(
+        {
+            "state": normalised,
+            "state_raw": raw_state,
+            "exit_code": exit_code,
+            "reason": f"state={raw_state}; exit_code={exit_code}",
+        }
+    )
+    return observation
+
+
+def _scheduler_terminal(paths: CampaignPaths, job_id: object) -> tuple[str, str]:
+    """Return the actual terminal state and exit code for one Slurm job."""
+    observation = _scheduler_observation(paths, job_id)
+    return str(observation["state"]), str(observation["reason"])
+
+
+def _record_stage_preflight_observation(release: dict, job_id: object, observation: dict) -> str:
+    """Persist one authoritative scheduler observation on a stage release."""
+    state = str(observation.get("state", "UNKNOWN"))
+    detail = str(observation.get("reason", "scheduler observation unavailable"))
+    release["scheduler_state"] = state
+    release["scheduler_state_raw"] = observation.get("state_raw")
+    release["scheduler_exit_code"] = observation.get("exit_code")
+    release["scheduler_reason"] = detail
+    if state in FAILURE_STATES:
+        release["status"] = "FAILED"
+        release["reason"] = f"stage preflight {job_id} failed: {detail}"
+    return release.get("reason", detail)
 
 
 def _job_group(paths: CampaignPaths, job_ids: list[str]) -> tuple[str, str]:
@@ -926,6 +962,8 @@ def _submit_stage_preflight(paths: CampaignPaths, state: dict, stage: str) -> di
         "status": "SUBMITTED",
         "preflight_job_id": job_id,
         "preflight_output_dir": str(output),
+        "preflight_stdout": str(output / f"jer-{stage.replace('_', '-')}-{job_id}.out"),
+        "preflight_stderr": str(output / f"jer-{stage.replace('_', '-')}-{job_id}.err"),
         "artifact": str(artifact),
         "preflight_attempt": attempt,
         "preflight_submitted_at": _now(),
@@ -1693,14 +1731,24 @@ def _stage_release_ready(paths: CampaignPaths, state: dict, stage: str) -> tuple
     artifact = Path(str(release.get("artifact", "")))
     if not artifact.is_file():
         if release.get("preflight_job_id"):
-            scheduler, detail = _scheduler_terminal(paths, release["preflight_job_id"])
+            observation = _scheduler_observation(paths, release["preflight_job_id"])
+            scheduler, detail = observation["state"], observation["reason"]
             if scheduler in ACTIVE_SCHEDULER_STATES:
                 release["reason"] = f"stage preflight {release['preflight_job_id']} is {scheduler}: {detail}"
                 return False, release["reason"]
             if scheduler != "COMPLETED":
-                release["status"] = "FAILED"
-                release["reason"] = f"stage preflight {release['preflight_job_id']} failed: {detail}"
+                _record_stage_preflight_observation(release, release["preflight_job_id"], observation)
                 return False, release["reason"]
+            release["status"] = "FAILED"
+            release["scheduler_state"] = "COMPLETED"
+            release["scheduler_state_raw"] = observation.get("state_raw")
+            release["scheduler_exit_code"] = observation.get("exit_code")
+            release["scheduler_reason"] = observation.get("reason")
+            release["reason"] = (
+                f"stage preflight {release['preflight_job_id']} completed successfully "
+                f"but did not materialise {release.get('contract')}"
+            )
+            return False, release["reason"]
         release["reason"] = f"{release.get('contract')} is not materialised; run the named production-equivalent preflight"
         return False, release["reason"]
     try:
@@ -1715,15 +1763,17 @@ def _stage_release_ready(paths: CampaignPaths, state: dict, stage: str) -> tuple
         return False, release["reason"]
     preflight_job = release.get("preflight_job_id")
     if preflight_job is not None:
-        scheduler, detail = _scheduler_terminal(paths, preflight_job)
+        observation = _scheduler_observation(paths, preflight_job)
+        scheduler, detail = observation["state"], observation["reason"]
         release["scheduler_state"] = scheduler
-        release["scheduler_exit_code"] = detail if scheduler == "COMPLETED" else None
+        release["scheduler_exit_code"] = observation.get("exit_code")
+        release["scheduler_state_raw"] = observation.get("state_raw")
+        release["scheduler_reason"] = detail
         if scheduler != "COMPLETED":
             if scheduler in ACTIVE_SCHEDULER_STATES:
                 release["reason"] = f"stage preflight {preflight_job} is {scheduler}: {detail}"
             else:
-                release["status"] = "FAILED"
-                release["reason"] = f"stage preflight {preflight_job} did not complete successfully: {detail}"
+                _record_stage_preflight_observation(release, preflight_job, observation)
             return False, release["reason"]
     try:
         source_root = Path(state["source_root"])
@@ -1910,7 +1960,8 @@ def _advance_locked(paths: CampaignPaths, state: dict, *, event: str | None = No
                     return
                 release = state.get("stage_releases", {}).get(stage, {})
                 if release.get("preflight_job_id"):
-                    scheduler, detail = _scheduler_terminal(paths, release["preflight_job_id"])
+                    observation = _scheduler_observation(paths, release["preflight_job_id"])
+                    scheduler, detail = observation["state"], observation["reason"]
                     if scheduler in ACTIVE_SCHEDULER_STATES:
                         _set_state(
                             state,
@@ -1919,11 +1970,13 @@ def _advance_locked(paths: CampaignPaths, state: dict, *, event: str | None = No
                         )
                         return
                     if scheduler != "COMPLETED":
-                        release["status"] = "FAILED"
+                        _record_stage_preflight_observation(
+                            release, release["preflight_job_id"], observation
+                        )
                         _set_state(
                             state,
                             "BLOCKED",
-                            reason=f"{stage} preflight failed: {detail}",
+                            reason=release.get("reason", f"{stage} preflight failed: {detail}"),
                         )
                         return
                 ready, reason = _stage_release_ready(paths, state, stage)
@@ -2313,7 +2366,7 @@ def transition_for_observation(state: dict, observation: dict) -> dict:
         if observation.get("decision_status") == "REVIEW_REQUIRED":
             result["state"] = "STUDY13_REVIEW"
         elif observation.get("decision"):
-            result["state"] = "STUDY15_RUNNING"
+            result["state"] = "STUDY15_PREFLIGHT_RUNNING"
             result["stage"] = "invisible_backbone"
     elif result.get("stage") == "invisible_backbone" and observation.get("study15") == "FAILED":
         result["state"] = "BLOCKED"
@@ -2322,7 +2375,7 @@ def transition_for_observation(state: dict, observation: dict) -> dict:
         if observation.get("decision_status") == "REVIEW_REQUIRED":
             result["state"] = "STUDY15_REVIEW"
         elif observation.get("decision"):
-            result["state"] = "STUDY10_RUNNING"
+            result["state"] = "STUDY10_PREFLIGHT_RUNNING"
             result["stage"] = "assignment_coupling"
     elif result.get("stage") == "assignment_coupling" and observation.get("study10") == "FAILED":
         result["state"] = "BLOCKED"
@@ -2330,7 +2383,7 @@ def transition_for_observation(state: dict, observation: dict) -> dict:
         if observation.get("decision") == "none":
             result["state"] = "READY_FOR_PRODUCTION_REVIEW"
         elif observation.get("decision") in {"analytic", "learned"}:
-            result["state"] = "STUDY03_RUNNING"
+            result["state"] = "STUDY03_PREFLIGHT_RUNNING"
             result["stage"] = "assignment_conditioning"
     elif result.get("stage") == "assignment_conditioning" and observation.get("study03") == "COMPLETE":
         result["state"] = "READY_FOR_PRODUCTION_REVIEW"

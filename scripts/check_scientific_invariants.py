@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import json
 import copy
+import importlib
+import inspect
 import os
 import subprocess
 import sys
@@ -1477,8 +1479,8 @@ def check_paper1_controller_contract() -> None:
         state,
         {"study13": "COMPLETE", "decision_status": "AUTO_SELECTED", "decision": "cartesian"},
     )
-    if state != {"state": "STUDY15_RUNNING", "stage": "invisible_backbone"}:
-        raise AssertionError("Paper-1 controller did not promote Study 13 deterministically")
+    if state != {"state": "STUDY15_PREFLIGHT_RUNNING", "stage": "invisible_backbone"}:
+        raise AssertionError("Paper-1 controller did not arm Study-15 preflight deterministically")
     review = transition_for_observation(
         {"state": "STUDY13_RUNNING", "stage": "invisible_coordinates"},
         {"study13": "COMPLETE", "decision_status": "REVIEW_REQUIRED"},
@@ -1491,6 +1493,24 @@ def check_paper1_controller_contract() -> None:
     )
     if failed["state"] != "BLOCKED":
         raise AssertionError("Training failure was not fail-closed")
+    study15 = transition_for_observation(
+        {"state": "STUDY15_RUNNING", "stage": "invisible_backbone"},
+        {"study15": "COMPLETE", "decision": "conventional", "decision_status": "AUTO_SELECTED"},
+    )
+    if study15 != {"state": "STUDY10_PREFLIGHT_RUNNING", "stage": "assignment_coupling"}:
+        raise AssertionError("Study-15 AUTO_SELECTED did not arm Study-10 preflight")
+    study10 = transition_for_observation(
+        {"state": "STUDY10_RUNNING", "stage": "assignment_coupling"},
+        {"study10": "COMPLETE", "decision": "learned"},
+    )
+    if study10 != {"state": "STUDY03_PREFLIGHT_RUNNING", "stage": "assignment_conditioning"}:
+        raise AssertionError("Deployable Study-10 coupling did not arm Study-03 preflight")
+    no_coupling = transition_for_observation(
+        {"state": "STUDY10_RUNNING", "stage": "assignment_coupling"},
+        {"study10": "COMPLETE", "decision": "none"},
+    )
+    if no_coupling["state"] != "READY_FOR_PRODUCTION_REVIEW":
+        raise AssertionError("Study-10 none decision did not stop at production review")
 
     with tempfile.TemporaryDirectory(prefix="jer-campaign-gate-contract-") as directory:
         gates = copy.deepcopy(load_scientific_gates())
@@ -1727,6 +1747,64 @@ def check_study10_control_contract() -> None:
     coupling = coupling_efficiency(0.50, 0.53, 0.60)
     if abs(float(coupling["Rcoupling"]) - 0.3) > 1.0e-6:
         raise AssertionError("Study-10 Rcoupling calculation is incorrect")
+
+
+def check_stage_preflight_interface_contract() -> None:
+    """Every dynamic stage preflight binds to the release worker protocol."""
+    from scripts.release_stage_gpu import STAGE_INFO, preflight_kwargs
+
+    kwargs = {
+        "output_dir": Path("/tmp/jer-stage-interface"),
+        "device": "cuda",
+        "gates_path": Path("/tmp/gates.json"),
+        "expected_source_sha": "0" * 40,
+        "campaign_id": "paper1-interface-test",
+    }
+    dispatch = preflight_kwargs(
+        output_dir=kwargs["output_dir"],
+        gates_path=kwargs["gates_path"],
+        expected_source_sha=kwargs["expected_source_sha"],
+        campaign_id=kwargs["campaign_id"],
+    )
+    if dispatch != kwargs:
+        raise AssertionError(f"Release dispatcher contract differs from the stage protocol: {dispatch}")
+    for stage, (_, _, _, module_name, _) in STAGE_INFO.items():
+        module = importlib.import_module(f"scripts.{module_name}")
+        try:
+            inspect.signature(module.run).bind(**kwargs)
+        except TypeError as error:
+            raise AssertionError(f"{stage} preflight does not bind to the release protocol: {error}") from error
+        help_result = subprocess.run(
+            [sys.executable, str(ROOT / f"scripts/{module_name}.py"), "--help"],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if help_result.returncode != 0 or "--device" not in help_result.stdout:
+            raise AssertionError(f"{stage} preflight CLI does not expose --device")
+
+
+def check_assignment_conditioning_context_contract() -> None:
+    """Predicted assignments alter generator context without truth leakage."""
+    from scripts.preflight_study03 import _conditioning_context_probe
+
+    config = load_experiment(
+        "configs/experiments/ttbar2L.yaml",
+        [
+            "model.mode=factorized",
+            "model.invisible.generator.type=cfm",
+            "model.invisible.conditioning.assignment=hypothesis",
+            "training.trainable=[invisible]",
+        ],
+    )
+    result = _conditioning_context_probe(config, device="cpu")
+    for key in (
+        "distinct_predicted_hypotheses",
+        "context_changes_with_predicted_assignment",
+        "context_independent_of_truth_assignment",
+    ):
+        if result.get(key) is not True:
+            raise AssertionError(f"Study-03 conditioning context contract failed: {key}")
 
 
 def check_campaign_scheduler_contract() -> None:
@@ -2183,6 +2261,8 @@ def main() -> None:
     check_partial_checkpoint_contract()
     check_nested_subsets()
     check_study10_control_contract()
+    check_stage_preflight_interface_contract()
+    check_assignment_conditioning_context_contract()
     check_loader_split_seed_contract()
     check_public_schema_and_inputs_contract()
     check_same_flavour_role_contract()
@@ -2209,7 +2289,8 @@ def main() -> None:
     print(
         "PASS: architecture, training-identity, partial-checkpoint, split-seed, "
         "nested-subset, coordinate, truth-oracle, exchange, permutation, "
-        "freeze, public-input, same-flavour-role, scorer-padding, campaign-gate, Slurm-option, "
+        "freeze, public-input, same-flavour-role, scorer-padding, campaign-gate, stage-preflight-interface, "
+        "assignment-conditioning-context, Slurm-option, "
         "campaign-identity, release-source-snapshot, campaign-scheduler, Paper-1-controller, prediction-writer, mass-shell, Conditional-L-GATr "
         "Slurm-snapshot and resumable-postprocess contracts"
     )

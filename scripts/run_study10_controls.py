@@ -330,6 +330,7 @@ def _write_feature_artifact(
             "topology_signature": spec.signature,
             "physics_signature": spec.physics_signature or "none",
             "physics_scaler_sha256": scaler.identity_sha256,
+            "physics_scaler_fit_split": "train",
             "feature_names": json.dumps(list(scaler.feature_names)),
             "Kmax": 10,
             "Mmax": 64,
@@ -371,6 +372,7 @@ def _load_features(path: Path) -> dict[str, torch.Tensor | list[str] | str]:
             "checkpoint_training_sha",
             "data_subset_identity",
             "prediction_settings",
+            "physics_scaler_fit_split",
         )
         missing_provenance = [
             name for name in required_provenance
@@ -398,6 +400,8 @@ def _load_features(path: Path) -> dict[str, torch.Tensor | list[str] | str]:
             "nested": torch.from_numpy(source["PHYSICS/nested_analytic_scores"][:]),
             "feature_names": feature_names,
             "source_sha": str(source.attrs["source_sha"]),
+            "physics_scaler_sha256": str(source.attrs["physics_scaler_sha256"]),
+            "physics_scaler_fit_split": str(source.attrs["physics_scaler_fit_split"]),
         }
 
 

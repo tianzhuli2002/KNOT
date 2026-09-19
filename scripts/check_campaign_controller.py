@@ -30,11 +30,13 @@ def check_happy_path() -> None:
     state = transition_for_observation(
         state, {"study13": "COMPLETE", "decision_status": "AUTO_SELECTED", "decision": "met_residual"}
     )
-    if state["state"] != "STUDY15_RUNNING":
-        raise AssertionError("Study 13 did not promote Study 15")
+    if state["state"] != "STUDY15_PREFLIGHT_RUNNING":
+        raise AssertionError("Study 13 did not arm the Study-15 preflight")
     state = transition_for_observation(
         state, {"study15": "COMPLETE", "decision_status": "AUTO_SELECTED", "decision": "conventional"}
     )
+    if state["state"] != "STUDY10_PREFLIGHT_RUNNING":
+        raise AssertionError("Study 15 did not arm the Study-10 preflight")
     state = transition_for_observation(
         state, {"study10": "COMPLETE", "decision_status": "AUTO_SELECTED", "decision": "none"}
     )
