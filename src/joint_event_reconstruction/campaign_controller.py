@@ -62,6 +62,11 @@ STAGE_GATES = {
     "assignment_coupling": "assignment_coupling",
     "assignment_conditioning": "assignment_conditioning",
 }
+STAGE_RELEASE_CONTRACTS = {
+    "invisible_backbone": "study15_release_v1",
+    "assignment_coupling": "study10_release_v1",
+    "assignment_conditioning": "study03_release_v1",
+}
 STATES = {
     "NEW",
     "WAITING_SMOKE",
@@ -71,12 +76,15 @@ STATES = {
     "STUDY13_REPAIR",
     "STUDY13_REVIEW",
     "STUDY15_RUNNING",
+    "STUDY15_PREFLIGHT_REQUIRED",
     "STUDY15_REPAIR",
     "STUDY15_REVIEW",
     "STUDY10_RUNNING",
+    "STUDY10_PREFLIGHT_REQUIRED",
     "STUDY10_REPAIR",
     "STUDY10_REVIEW",
     "STUDY03_RUNNING",
+    "STUDY03_PREFLIGHT_REQUIRED",
     "STUDY03_REPAIR",
     "STUDY03_REVIEW",
     "PRODUCTION_RUNNING",
@@ -426,7 +434,9 @@ def _initial_state(paths: CampaignPaths, sha: str, source: dict, policy: dict, g
     pending = sorted(name for name, gate in gates.items() if gate["status"] == "pending")
     state = {
         "schema": "jer_paper1_campaign_v1",
-        "campaign_id": f"paper1-{sha[:12]}",
+        "campaign_id": (
+            paths.root.name if paths.root.name != PAPER1 else f"paper1-{sha[:12]}"
+        ),
         "name": PAPER1,
         "mode": "AUTO",
         "source_sha": sha,
@@ -443,9 +453,14 @@ def _initial_state(paths: CampaignPaths, sha: str, source: dict, policy: dict, g
         "created_at": _now(),
         "updated_at": _now(),
         "state": "NEW",
-        "state_reason": "campaign created; waiting for exact-SHA GPU smoke",
+        "state_reason": "campaign created; waiting for the composite Study-13 release gate",
         "stage": None,
-        "smoke": {"status": "UNKNOWN", "job_id": None, "attempts": 0},
+        "smoke": {
+            "status": "UNKNOWN",
+            "job_id": None,
+            "attempts": 0,
+            "release_contract": "jer_study13_release_v1",
+        },
         "stages": {
             stage: {
                 "state": "NOT_STARTED",
@@ -456,6 +471,20 @@ def _initial_state(paths: CampaignPaths, sha: str, source: dict, policy: dict, g
                 "job_ids": [],
             }
             for stage in STAGES
+        },
+        "stage_releases": {
+            stage: {
+                "contract": contract,
+                "status": "NOT_IMPLEMENTED",
+                "artifact": str(
+                    paths.project_root
+                    / "results/validation/stage-release"
+                    / sha
+                    / f"{stage}.json"
+                ),
+                "reason": "Required downstream production-equivalent preflight is not yet materialised",
+            }
+            for stage, contract in STAGE_RELEASE_CONTRACTS.items()
         },
         "decisions": {},
         "pending_review": None,
@@ -485,34 +514,201 @@ def _write_smoke_registry(path: Path, records: list[dict]) -> None:
     _write_json(path, {"schema": "jer_gpu_smoke_v1", "smokes": records})
 
 
+def _release_registry(paths: CampaignPaths) -> tuple[Path, list[dict]]:
+    registry = paths.project_root / "results/validation/study13-release/registry.json"
+    if not registry.is_file():
+        return registry, []
+    raw = _read_json(registry)
+    records = raw.get("releases", [])
+    if not isinstance(records, list):
+        raise CampaignError(f"Study-13 release registry has invalid records: {registry}")
+    return registry, records
+
+
+def _write_release_registry(path: Path, records: list[dict]) -> None:
+    _write_json(path, {"schema": "jer_study13_release_registry_v1", "releases": records})
+
+
+def _validate_release_artifact(
+    paths: CampaignPaths,
+    record: dict,
+    sha: str,
+    scheduler_state: str,
+) -> tuple[bool, str]:
+    """Validate the executed composite release, not just a status string."""
+    del paths
+    if scheduler_state != "COMPLETED":
+        return False, f"release scheduler state is {scheduler_state}"
+    artifact_path = Path(str(record.get("artifact_path", "")))
+    result_path = artifact_path / "result.json"
+    if not result_path.is_file():
+        return False, f"missing composite release result: {result_path}"
+    try:
+        result = _read_json(result_path)
+    except CampaignError as error:
+        return False, str(error)
+    if result.get("schema") != "jer_study13_release_v1":
+        return False, f"unexpected release schema: {result.get('schema')!r}"
+    if result.get("status") != "PASS":
+        return False, "composite release result is not PASS"
+    if result.get("source_sha") != sha:
+        return False, "composite release source SHA does not match campaign"
+    if result.get("slurm_terminal_state") not in {"RUNNING", "COMPLETED"}:
+        return False, "composite release has no valid Slurm terminal-state marker"
+    if record.get("job_id") and str(result.get("slurm_job_id")) != str(record["job_id"]):
+        return False, "composite release job ID does not match registry"
+    required = result.get("required_components")
+    if not isinstance(required, dict) or not required or not all(required.values()):
+        return False, "composite release required_components is incomplete"
+    smoke = result.get("smoke", {})
+    integration = result.get("study13_integration", {})
+    smoke_result = Path(str(smoke.get("result", "")))
+    integration_result = Path(str(integration.get("result", "")))
+    if not smoke_result.is_file() or not integration_result.is_file():
+        return False, "composite release sub-results are missing"
+    try:
+        smoke_payload = _read_json(smoke_result)
+        integration_payload = _read_json(integration_result)
+    except CampaignError as error:
+        return False, str(error)
+    if smoke_payload.get("status") != "PASS":
+        return False, "selected-model hypothesis smoke is not PASS"
+    if smoke_payload.get("model_composition_status") != "PASS":
+        return False, "selected-model hypothesis smoke did not pass composition"
+    if smoke_payload.get("source_sha") != sha:
+        return False, "selected-model hypothesis smoke source SHA does not match campaign"
+    if (
+        smoke_payload.get("K") != 10
+        or smoke_payload.get("M") != 8
+        or smoke_payload.get("posterior_branches") != 1
+    ):
+        return False, "selected-model hypothesis smoke has the wrong posterior contract"
+    if not Path(str(smoke_payload.get("prediction", ""))).is_file():
+        return False, "selected-model hypothesis smoke prediction is missing"
+    composition_path = Path(str(result.get("model_composition", "")))
+    if not composition_path.is_file():
+        return False, "selected-model composition report is missing"
+    try:
+        composition = _read_json(composition_path)
+    except CampaignError as error:
+        return False, str(error)
+    if composition.get("schema") != "jer_study13_model_composition_v1":
+        return False, "selected-model composition report has the wrong schema"
+    if composition.get("status") != "PASS":
+        return False, "selected-model composition report is not PASS"
+    if composition.get("source_sha") != sha:
+        return False, "selected-model composition source SHA does not match campaign"
+    standalone = composition.get("standalone_vs_combined")
+    if (
+        not isinstance(standalone, dict)
+        or standalone.get("candidate_hypotheses_equal") is not True
+        or standalone.get("candidate_scores_equal") is not True
+    ):
+        return False, "selected-model standalone/combined output comparison is incomplete"
+    if integration_payload.get("schema") != "jer_study13_integration_v1":
+        return False, "Study-13 integration result has the wrong schema"
+    if integration_payload.get("status") != "PASS":
+        return False, "Study-13 integration result is not PASS"
+    if integration_payload.get("source_sha") != sha:
+        return False, "Study-13 integration source SHA does not match campaign"
+    if integration_payload.get("software_integration_evidence_only") is not True:
+        return False, "Study-13 integration is not labelled software evidence only"
+    subset = integration_payload.get("data_subset", {})
+    if subset != {
+        "train_events": 32,
+        "validation_events": 16,
+        "batch_size": 8,
+        "workers": 0,
+        "subset_seed": 42,
+        "test_accessed": False,
+    }:
+        return False, "Study-13 integration data subset contract is incomplete"
+    level_a = integration_payload.get("level_a", {})
+    if level_a.get("status") != "PASS" or level_a.get("model_composition", {}).get("status") != "PASS":
+        return False, "Study-13 integration Level-A evidence is incomplete"
+    population = integration_payload.get("matched_validation_population", {})
+    if population.get("all_branches_equal") is not True or population.get("events") != 16:
+        return False, "Study-13 integration validation population is not matched"
+    branches = integration_payload.get("branches", {})
+    for branch in ("cartesian", "met_residual", "met_exact"):
+        if not isinstance(branches.get(branch), dict):
+            return False, f"Study-13 integration branch is missing: {branch}"
+        branch_payload = branches[branch]
+        if not isinstance(branch_payload.get("evaluation"), dict):
+            return False, f"Study-13 integration evaluation is missing: {branch}"
+        prediction = branch_payload.get("prediction", {})
+        evaluation = branch_payload["evaluation"]
+        if (
+            prediction.get("physical_four_vectors") is not True
+            or prediction.get("event_id_unique") is not True
+            or prediction.get("events") != 16
+            or prediction.get("four_vector_convention") != "E_px_py_pz_GeV_v1"
+            or not prediction.get("event_id_sha256")
+            or not isinstance(evaluation.get("primary_metric"), (int, float))
+            or evaluation.get("primary_metric_path")
+            != "invisible.top1_assignment_conditioned.energy_score_joint"
+        ):
+            return False, f"Study-13 integration prediction/evaluation evidence is incomplete: {branch}"
+        if branch != "cartesian":
+            training = branch_payload.get("training", {})
+            reload = branch_payload.get("checkpoint_reload", {})
+            if (
+                training.get("finite_initial_loss") is not True
+                or training.get("finite_gradients") is not True
+                or training.get("nonzero_invisible_update") is not True
+                or training.get("finite_validation_loss") is not True
+                or reload.get("strict_reload") is not True
+                or reload.get("frozen_visible_equal", {}).get("equal") is not True
+                or reload.get("frozen_assignment_equal", {}).get("equal") is not True
+            ):
+                return False, f"Study-13 training/checkpoint evidence is incomplete: {branch}"
+            identity = branch_payload.get("artifact_identity", {})
+            if (
+                identity.get("source_sha") != sha
+                or identity.get("resolved_gate_digest") != result.get("resolved_gate_digest")
+                or not isinstance(identity.get("checkpoint"), dict)
+                or not identity["checkpoint"].get("sha256")
+                or not identity.get("prediction_sha256")
+            ):
+                return False, f"Study-13 artifact identity evidence is incomplete: {branch}"
+    if result.get("resolved_gate_digest") != integration_payload.get("resolved_gate_digest"):
+        return False, "release and integration gate digests differ"
+    if not result.get("study_manifest_sha256") or not result.get("resolved_gate_digest"):
+        return False, "release is missing immutable manifest or gate identity"
+    return True, "composite Study-13 release checks passed"
+
+
 def _reconcile_smoke(paths: CampaignPaths, sha: str) -> dict | None:
-    registry, records = _smoke_registry(paths)
+    registry, records = _release_registry(paths)
     matches = [record for record in records if record.get("source_sha") == sha]
     if not matches:
         return None
     record = matches[-1]
     status = str(record.get("status", "UNKNOWN"))
-    if status in {"SUBMITTED", "PENDING", "RUNNING"} and record.get("job_id"):
+    if status in {"SUBMITTED", "PENDING", "RUNNING", "PASS"} and record.get("job_id"):
         scheduler, reason = _job_state(paths, record["job_id"])
         record["scheduler_state"] = scheduler
         record["scheduler_reason"] = reason
         if scheduler == "COMPLETED":
-            artifact = Path(record.get("artifact_path", "")) / "smoke_result.json"
-            if artifact.is_file():
-                try:
-                    passed = _read_json(artifact).get("status") == "PASS"
-                except CampaignError:
-                    passed = False
-                record["status"] = "PASS" if passed else "FAILED"
-            else:
-                record["status"] = "FAILED"
+            passed, detail = _validate_release_artifact(paths, record, sha, scheduler)
+            record["status"] = "PASS" if passed else "FAILED"
+            record["release_validation"] = detail
+            if passed:
+                result_path = Path(record["artifact_path"]) / "result.json"
+                result = _read_json(result_path)
+                result["slurm_terminal_state"] = "COMPLETED"
+                result["slurm_exit_code"] = "0:0"
+                _write_json(result_path, result)
         elif scheduler in FAILURE_STATES:
             record["status"] = "FAILED"
         elif scheduler in {"PENDING", "CONFIGURING"}:
             record["status"] = "PENDING"
         elif scheduler in {"RUNNING", "COMPLETING"}:
             record["status"] = "RUNNING"
-        _write_smoke_registry(registry, records)
+        elif status == "PASS":
+            record["status"] = "FAILED"
+            record["release_validation"] = f"scheduler state changed to {scheduler}"
+        _write_release_registry(registry, records)
     return record
 
 
@@ -520,13 +716,21 @@ def _latest_preflight(paths: CampaignPaths, sha: str) -> bool:
     root = paths.project_root / "logs/preflight" / sha
     for result in sorted(root.glob("*/result.json"), reverse=True):
         try:
-            if _read_json(result).get("status") == "PASS":
+            payload = _read_json(result)
+            if (
+                payload.get("status") == "PASS"
+                and payload.get("study13_level_a", {}).get("status") == "PASS"
+            ):
                 return True
         except CampaignError:
             continue
     for output in sorted(root.glob("*/jer-preflight-*.out"), reverse=True):
         try:
-            if _read_json(output).get("status") == "PASS":
+            payload = _read_json(output)
+            if (
+                payload.get("status") == "PASS"
+                and payload.get("study13_level_a", {}).get("status") == "PASS"
+            ):
                 return True
         except CampaignError:
             continue
@@ -546,7 +750,7 @@ def _submit_smoke(paths: CampaignPaths, sha: str) -> dict:
             f"No successful CPU preflight exists for source SHA {sha}; run "
             "jer doctor --compute-node before arming the campaign"
         )
-    registry, records = _smoke_registry(paths)
+    registry, records = _release_registry(paths)
     active = [
         record
         for record in records
@@ -556,9 +760,9 @@ def _submit_smoke(paths: CampaignPaths, sha: str) -> dict:
     if active:
         return active[-1]
     attempt = len(
-        list((paths.project_root / "results/validation/gpu-smoke" / sha).glob("attempt-*"))
+        list((paths.project_root / "results/validation/study13-release" / sha).glob("attempt-*"))
     ) + 1
-    output = paths.project_root / "results/validation/gpu-smoke" / sha / f"attempt-{attempt:03d}"
+    output = paths.project_root / "results/validation/study13-release" / sha / f"attempt-{attempt:03d}"
     output.mkdir(parents=True, exist_ok=False)
     source = Path(paths.source_root)
     worker = output / "worker.sh"
@@ -570,15 +774,16 @@ def _submit_smoke(paths: CampaignPaths, sha: str) -> dict:
         f"export PYTHONPATH={shlex.quote(str(source / 'src'))}:{shlex.quote(str(source))}\n"
         "export PYTHONDONTWRITEBYTECODE=1\n"
         f"cd {shlex.quote(str(paths.project_root))}\n"
-        f"exec {shlex.quote(sys.executable)} {shlex.quote(str(source / 'scripts/smoke_hypothesis_gpu.py'))} "
-        f"--output-dir {shlex.quote(str(output))} --expected-source-sha {shlex.quote(sha)}\n"
+        f"exec {shlex.quote(sys.executable)} {shlex.quote(str(source / 'scripts/release_study13_gpu.py'))} "
+        f"--output-dir {shlex.quote(str(output))} --expected-source-sha {shlex.quote(sha)} "
+        f"--gates-path {shlex.quote(str(paths.gates))}\n"
     )
     worker.chmod(0o755)
     slurm = _site_slurm(paths)
     submit = _run(
         paths,
         [
-            "sbatch", "--parsable", "--job-name=jer-gpu-smoke",
+            "sbatch", "--parsable", "--job-name=jer-study13-release",
             f"--partition={slurm['gpu_partition']}", f"--gres={slurm['gpu_gres']}",
             f"--cpus-per-task={slurm['gpu_cpus']}", f"--mem={slurm['gpu_memory']}",
             f"--time={slurm['gpu_time']}", f"--output={output}/%x-%j.out",
@@ -597,10 +802,11 @@ def _submit_smoke(paths: CampaignPaths, sha: str) -> dict:
         "status": "SUBMITTED",
         "submitted_at": _now(),
         "artifact_path": str(output),
+        "contract": "jer_study13_release_v1",
         "controller_armed": True,
     }
     records.append(record)
-    _write_smoke_registry(registry, records)
+    _write_release_registry(registry, records)
     return record
 
 
@@ -1350,6 +1556,53 @@ def _validate_overlay_immutability(paths: CampaignPaths, state: dict) -> None:
             raise CampaignError(f"Campaign overlay changed non-pending base gate {name!r}")
 
 
+def _stage_release_ready(paths: CampaignPaths, state: dict, stage: str) -> tuple[bool, str]:
+    """Check the narrow downstream release contract before full submission."""
+    release = state.get("stage_releases", {}).get(stage)
+    if not isinstance(release, dict):
+        return False, f"no release contract is registered for {stage}"
+    artifact = Path(str(release.get("artifact", "")))
+    if not artifact.is_file():
+        release["status"] = "NOT_IMPLEMENTED"
+        release["reason"] = (
+            f"{release.get('contract')} is not materialised; run the named production-equivalent preflight"
+        )
+        return False, release["reason"]
+    try:
+        payload = _read_json(artifact)
+    except CampaignError as error:
+        release["status"] = "FAILED"
+        release["reason"] = str(error)
+        return False, release["reason"]
+    if (
+        payload.get("schema") != release.get("contract")
+        or payload.get("status") != "PASS"
+        or payload.get("source_sha") != state.get("source_sha")
+        or payload.get("software_integration_evidence_only") is not True
+    ):
+        release["status"] = "FAILED"
+        release["reason"] = (
+            f"{release.get('contract')} is incomplete or belongs to a different source SHA"
+        )
+        return False, release["reason"]
+    release["status"] = "PASS"
+    release["reason"] = "downstream production-equivalent preflight passed"
+    release["validated_at"] = _now()
+    return True, release["reason"]
+
+
+def _set_stage_preflight_required(
+    paths: CampaignPaths, state: dict, stage: str, reason: str
+) -> None:
+    state["stage"] = stage
+    state.setdefault("stage_releases", {}).setdefault(stage, {})["reason"] = reason
+    _set_state(
+        state,
+        f"STUDY{_stage_number(stage)}_PREFLIGHT_REQUIRED",
+        reason=reason,
+    )
+
+
 def _advance_after_gate(paths: CampaignPaths, state: dict, stage: str, decision: dict) -> None:
     if decision["status"] == "FAILED_VALIDATION":
         _set_state(state, "BLOCKED", reason=decision["reason"])
@@ -1393,6 +1646,10 @@ def _advance_after_gate(paths: CampaignPaths, state: dict, stage: str, decision:
         state["stage"] = next_stage
         return
     if next_stage:
+        ready, reason = _stage_release_ready(paths, state, next_stage)
+        if not ready:
+            _set_stage_preflight_required(paths, state, next_stage, reason)
+            return
         _submit_stage_and_controller(paths, state, next_stage)
 
 
@@ -1405,6 +1662,11 @@ def _submit_stage_and_controller(paths: CampaignPaths, state: dict, stage: str) 
         _set_state(state, "READY_FOR_PRODUCTION_REVIEW", reason="Production stage requires explicit manifest review")
         state["stage"] = stage
         return
+    if stage != "invisible_coordinates":
+        ready, reason = _stage_release_ready(paths, state, stage)
+        if not ready:
+            _set_stage_preflight_required(paths, state, stage, reason)
+            return
     stage_record = state["stages"][stage]
     if stage_record.get("submission_record"):
         return
@@ -1466,8 +1728,18 @@ def _advance_locked(paths: CampaignPaths, state: dict, *, event: str | None = No
         if state.get("stage") is None:
             _submit_stage_and_controller(paths, state, "invisible_coordinates")
         elif state.get("stage") in STAGE_STUDIES:
-            _reconcile_stage(paths, state, state["stage"])
             stage = state["stage"]
+            if not state["stages"][stage].get("submission_record"):
+                if stage == "invisible_coordinates":
+                    _submit_stage_and_controller(paths, state, stage)
+                    return
+                ready, reason = _stage_release_ready(paths, state, stage)
+                if not ready:
+                    _set_stage_preflight_required(paths, state, stage, reason)
+                    return
+                _submit_stage_and_controller(paths, state, stage)
+                return
+            _reconcile_stage(paths, state, stage)
             if state["stages"][stage].get("state") == "COMPLETE" and not state["decisions"].get(STAGE_GATES[stage], {}).get("materialised"):
                 decision = _policy_decision(paths, state, stage)
                 _write_decision(paths, state, STAGE_GATES[stage], decision)
@@ -1625,6 +1897,11 @@ def status(root: str | Path | None = None) -> dict:
         print(f"  state:    {state.get('state')} — {state.get('state_reason', '')}")
         smoke = state.get("smoke", {})
         print(f"\nSmoke\n  {smoke.get('status', 'UNKNOWN')} job={smoke.get('job_id', '-')}")
+        for stage, release in state.get("stage_releases", {}).items():
+            print(
+                f"  release {stage}: {release.get('status', 'UNKNOWN')}"
+                f" — {release.get('reason', '')}"
+            )
         for stage in STAGES:
             item = state.get("stages", {}).get(stage, {})
             label = STAGE_STUDIES.get(stage, "production")
@@ -1661,7 +1938,18 @@ def watch(root: str | Path | None = None, *, interval: float = 15.0) -> None:
         if marker != previous:
             print(f"{datetime.now().strftime('%H:%M')} campaign transition: {marker}", flush=True)
             previous = marker
-        if state.get("state") in {"READY_FOR_FINAL_TEST", "READY_FOR_PRODUCTION_REVIEW", "BLOCKED", "FAILED"} or state.get("pending_review"):
+        if (
+            state.get("state") in {
+                "READY_FOR_FINAL_TEST",
+                "READY_FOR_PRODUCTION_REVIEW",
+                "BLOCKED",
+                "FAILED",
+                "STUDY15_PREFLIGHT_REQUIRED",
+                "STUDY10_PREFLIGHT_REQUIRED",
+                "STUDY03_PREFLIGHT_REQUIRED",
+            }
+            or state.get("pending_review")
+        ):
             return
         time.sleep(interval)
 

@@ -712,6 +712,68 @@ def check_prediction_writer_shape_contract() -> None:
                 raise AssertionError("Prediction writer produced non-finite smoke output")
 
 
+def check_physical_posterior_shape_contract() -> None:
+    """The physical posterior contract covers every rank and axis explicitly."""
+    from joint_event_reconstruction.prediction_schema import (
+        validate_physical_posterior_shape,
+        validate_prediction,
+    )
+
+    valid = np.zeros((16, 10, 8, 2, 4), dtype=np.float32)
+    validate_physical_posterior_shape(
+        valid,
+        event_count=16,
+        top_k=10,
+        posterior_samples=8,
+        n_invisible_particles=2,
+    )
+    malformed = (
+        (16, 10, 8, 2),
+        (16, 9, 8, 2, 4),
+        (16, 10, 7, 2, 4),
+        (16, 10, 8, 3, 4),
+        (16, 10, 8, 2, 3),
+    )
+    for shape in malformed:
+        try:
+            validate_physical_posterior_shape(
+                np.zeros(shape, dtype=np.float32),
+                event_count=16,
+                top_k=10,
+                posterior_samples=8,
+                n_invisible_particles=2,
+            )
+        except ValueError:
+            continue
+        raise AssertionError(f"Malformed physical posterior shape was accepted: {shape}")
+
+    existing = (
+        ROOT
+        / "results/validation/gpu-smoke/c0093bff402cbe7ac83919b866f8a6c26b6f5cb3"
+        / "attempt-001/prediction.h5"
+    )
+    if not existing.is_file():
+        raise AssertionError(f"Known failed-smoke prediction artifact is missing: {existing}")
+    validate_prediction(existing)
+    import h5py
+
+    with h5py.File(existing, "r") as handle:
+        physical = handle["INVISIBLE/four_vectors"][:]
+        validate_physical_posterior_shape(
+            physical,
+            event_count=len(handle["EVENT_ID"]),
+            top_k=int(handle.attrs["K"]),
+            posterior_samples=int(handle.attrs["M"]),
+            n_invisible_particles=int(handle.attrs["invisible_role_count"]),
+            label="known failed-smoke INVISIBLE/four_vectors",
+        )
+        if str(handle.attrs["physics_vector_representation"]) != "E_px_py_pz_GeV_v1":
+            raise AssertionError("Known failed-smoke artifact does not contain physical E_px_py_pz")
+        mass_squared = physical[..., 0] ** 2 - (physical[..., 1:] ** 2).sum(axis=-1)
+        if not np.allclose(mass_squared, 0.0, atol=5.0e-2, rtol=2.0e-4):
+            raise AssertionError("Known failed-smoke physical posterior is not massless")
+
+
 def check_flow_coupling_context_contract() -> None:
     """Conditional OT must use role contexts before coordinate-token expansion."""
     import torch
@@ -2100,6 +2162,7 @@ def main() -> None:
     check_topology_physics_contract()
     check_conditional_lgatr_contract()
     check_prediction_writer_shape_contract()
+    check_physical_posterior_shape_contract()
     check_flow_coupling_context_contract()
     check_truth_oracle_unreconstructable_contract()
     check_exchange_and_permutation_contract()

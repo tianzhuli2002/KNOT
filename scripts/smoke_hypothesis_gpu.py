@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 
 import h5py
+import numpy as np
 import torch
 
 from joint_event_reconstruction.cli.run import (
@@ -26,6 +27,7 @@ from joint_event_reconstruction.prediction import (
     to_device,
 )
 from joint_event_reconstruction.prediction_schema import (
+    validate_physical_posterior_shape,
     validate_hypothesis_group,
     validate_prediction,
 )
@@ -33,6 +35,7 @@ from joint_event_reconstruction.runtime_paths import (
     runtime_paths,
     verify_source_snapshot,
 )
+from joint_event_reconstruction.studies import resolve_study
 from joint_event_reconstruction.topology.physics import (
     HypothesisEvaluator,
     LearnedHypothesisScorer,
@@ -76,6 +79,8 @@ def _load_module(experiment_path: Path, checkpoint: Path, device: str):
     config = load_experiment(experiment_path, _overrides())
     visible = load_visible_config(config)
     data = build_data(config, visible)
+    if device == "cpu":
+        data.config["pin_memory"] = False
     data.setup("predict")
     module = load_trained(config, visible, data, str(checkpoint)).to(device).eval()
     return config, data, module
@@ -105,7 +110,24 @@ def _assert_probability(name: str, value: torch.Tensor) -> None:
 def run(output_dir: Path, device: str, expected_source_sha: str | None = None) -> None:
     if device != "cuda" or not torch.cuda.is_available():
         raise RuntimeError("The hypothesis smoke requires a CUDA device")
-    for path in (VISIBLE_EXPERIMENT, VISIBLE_CHECKPOINT, CFM_EXPERIMENT, CFM_CHECKPOINT):
+    from scripts.run_study import _gate_checkpoint
+
+    study = resolve_study(
+        SOURCE_ROOT / "configs/studies/13_invisible_coordinates.yaml",
+        SOURCE_ROOT / "configs/studies/UPSTREAM_SELECTIONS.yaml",
+    )
+    selected_visible_checkpoint = _gate_checkpoint(
+        study, "visible_assignment", "ttbar2L", 42
+    )
+    selected_cfm_checkpoint = _gate_checkpoint(
+        study, "invisible_generator", "ttbar2L", 42
+    )
+    for path in (
+        VISIBLE_EXPERIMENT,
+        selected_visible_checkpoint,
+        CFM_EXPERIMENT,
+        selected_cfm_checkpoint,
+    ):
         if not path.is_file():
             raise FileNotFoundError(path)
 
@@ -126,17 +148,48 @@ def run(output_dir: Path, device: str, expected_source_sha: str | None = None) -
     print(f"GPU={torch.cuda.get_device_name(0)}", flush=True)
 
     visible_config, visible_data, visible_module = _load_module(
-        VISIBLE_EXPERIMENT, VISIBLE_CHECKPOINT, device
+        VISIBLE_EXPERIMENT, selected_visible_checkpoint, device
     )
-    del visible_config, visible_data, visible_module
-    gc.collect()
-    torch.cuda.empty_cache()
     print("PASS: selected L-GATr checkpoint strict load", flush=True)
 
-    config, data, module = _load_module(CFM_EXPERIMENT, CFM_CHECKPOINT, device)
+    config, data, module = _load_module(CFM_EXPERIMENT, selected_cfm_checkpoint, device)
     if str(module.event_model.invisible.assignment_mode) != "none":
         raise RuntimeError("The CFM smoke checkpoint is not unconditioned")
     print("PASS: selected CFM checkpoint strict load", flush=True)
+
+    from preflight_study13 import write_loaded_model_composition_report
+
+    composition_path = output_dir / "model_composition.json"
+    composition = write_loaded_model_composition_report(
+        visible_module=visible_module,
+        combined_module=module,
+        combined_data=data,
+        visible_checkpoint=selected_visible_checkpoint,
+        combined_checkpoint=selected_cfm_checkpoint,
+        source_sha=source_sha,
+        output_path=composition_path,
+        visible_selection={
+            "gate": "visible_assignment",
+            "selection_file": str(
+                SOURCE_ROOT / "configs/studies/UPSTREAM_SELECTIONS.yaml"
+            ),
+            **study.gate_artifact("visible_assignment", "ttbar2L", 42),
+        },
+        combined_selection={
+            "gate": "invisible_generator",
+            "selection_file": str(
+                SOURCE_ROOT / "configs/studies/UPSTREAM_SELECTIONS.yaml"
+            ),
+            **study.gate_artifact("invisible_generator", "ttbar2L", 42),
+        },
+    )
+    if composition["status"] != "PASS":
+        raise RuntimeError("Selected-model composition report did not pass")
+    print("PASS: selected L-GATr/assignment components are used by selected CFM", flush=True)
+
+    del visible_config, visible_data, visible_module
+    gc.collect()
+    torch.cuda.empty_cache()
 
     prediction_path = output_dir / "prediction.h5"
     sampling_calls = 0
@@ -159,7 +212,7 @@ def run(output_dir: Path, device: str, expected_source_sha: str | None = None) -
         posterior_samples=8,
         device=device,
         prediction_seed=424242,
-        checkpoint_path=str(CFM_CHECKPOINT),
+        checkpoint_path=str(selected_cfm_checkpoint),
     )
     torch.cuda.synchronize()
     elapsed = time.perf_counter() - started
@@ -177,8 +230,42 @@ def run(output_dir: Path, device: str, expected_source_sha: str | None = None) -
         raise RuntimeError(f"Expected one unconditioned flow call, observed {sampling_calls}")
     if unique_branches != 1:
         raise RuntimeError(f"Expected one posterior branch, observed {unique_branches}")
-    if physical_samples.shape[1:4] != (10, 8):
-        raise RuntimeError(f"Unexpected physical posterior shape {physical_samples.shape}")
+    validate_physical_posterior_shape(
+        physical_samples,
+        event_count=len(event_ids),
+        top_k=10,
+        posterior_samples=8,
+        n_invisible_particles=len(module.spec.invisible_roles),
+        label="INVISIBLE/four_vectors",
+    )
+    with h5py.File(prediction_path, "r") as source:
+        representation = source.attrs.get("physics_vector_representation")
+        if isinstance(representation, bytes):
+            representation = representation.decode()
+        if representation != "E_px_py_pz_GeV_v1":
+            raise RuntimeError(
+                "INVISIBLE/four_vectors is not recorded as physical E_px_py_pz vectors"
+            )
+    mass_squared = (
+        physical_samples[..., 0] ** 2
+        - (physical_samples[..., 1:] ** 2).sum(axis=-1)
+    )
+    if not (physical_samples[..., 0] >= -1.0e-5).all():
+        raise RuntimeError("Physical invisible four-vectors contain negative energy")
+    for role_index, role in enumerate(module.spec.invisible_roles):
+        shell = module.event_model.invisible.coordinates.mass_shells[role.key]
+        if shell.mode == "fixed":
+            expected_mass_squared = float(shell.value) ** 2
+            if not np.allclose(
+                mass_squared[..., role_index],
+                expected_mass_squared,
+                rtol=2.0e-4,
+                atol=5.0e-2,
+            ):
+                raise RuntimeError(
+                    f"Physical posterior violates the {role.key} mass-shell convention"
+                )
+    print("PASS: physical E_px_py_pz vectors, finite values and mass shell", flush=True)
     print("PASS: one unconditioned posterior branch reused for K=10", flush=True)
 
     batch = next(iter(data.val_dataloader()))
@@ -303,6 +390,8 @@ def run(output_dir: Path, device: str, expected_source_sha: str | None = None) -
     print("PASS: HYPOTHESES HDF5 write, schema validation and reload", flush=True)
 
     result = {
+        "schema": "jer_hypothesis_smoke_v2",
+        "source_sha": source_sha,
         "elapsed_seconds": elapsed,
         "gpu_peak_memory_mib": torch.cuda.max_memory_allocated() / (1024 * 1024),
         "K": 10,
@@ -313,6 +402,8 @@ def run(output_dir: Path, device: str, expected_source_sha: str | None = None) -
         "posterior_branches": unique_branches,
         "prediction": str(prediction_path),
         "prediction_with_hypotheses": str(hypotheses_path),
+        "model_composition": str(composition_path),
+        "model_composition_status": composition["status"],
         "physics_signature": str(module.spec.physics_signature),
         "status": "PASS",
     }

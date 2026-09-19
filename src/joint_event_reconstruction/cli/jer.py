@@ -783,20 +783,26 @@ def _main_new(argv: list[str]) -> int:
     campaign_sub = campaign.add_subparsers(dest="campaign_command", required=True)
     campaign_status = campaign_sub.add_parser("status")
     campaign_status.add_argument("campaign", nargs="?", default="paper1")
+    campaign_status.add_argument("--campaign-root", type=Path)
     campaign_launch = campaign_sub.add_parser("launch")
     campaign_launch.add_argument("campaign", nargs="?", default="paper1")
     campaign_launch.add_argument("--auto", action="store_true")
+    campaign_launch.add_argument("--campaign-root", type=Path)
     campaign_watch = campaign_sub.add_parser("watch")
     campaign_watch.add_argument("campaign", nargs="?", default="paper1")
     campaign_watch.add_argument("--interval", type=float, default=15.0)
+    campaign_watch.add_argument("--campaign-root", type=Path)
     campaign_resume = campaign_sub.add_parser("resume")
     campaign_resume.add_argument("campaign", nargs="?", default="paper1")
+    campaign_resume.add_argument("--campaign-root", type=Path)
     campaign_review = campaign_sub.add_parser("review")
     campaign_review.add_argument("campaign", nargs="?", default="paper1")
+    campaign_review.add_argument("--campaign-root", type=Path)
     campaign_approve = campaign_sub.add_parser("approve")
     campaign_approve.add_argument("campaign", nargs="?", default="paper1")
     campaign_approve.add_argument("gate")
     campaign_approve.add_argument("variant")
+    campaign_approve.add_argument("--campaign-root", type=Path)
     campaign_sub.add_parser("next")
     cleanup = sub.add_parser("cleanup")
     cleanup.add_argument("--dry-run", action="store_true")
@@ -835,7 +841,7 @@ def _main_new(argv: list[str]) -> int:
             if args.campaign != "paper1":
                 raise RuntimeError(f"Unknown campaign {args.campaign!r}; only paper1 is maintained")
             from joint_event_reconstruction import campaign_controller
-            campaign_controller.status()
+            campaign_controller.status(args.campaign_root)
             return 0
         if args.campaign_command == "launch":
             if args.campaign != "paper1":
@@ -844,7 +850,7 @@ def _main_new(argv: list[str]) -> int:
                 raise RuntimeError("Paper-1 launch requires the explicit --auto flag")
             from joint_event_reconstruction import campaign_controller
 
-            state = campaign_controller.launch(auto=args.auto)
+            state = campaign_controller.launch(args.campaign_root, auto=args.auto)
             print(
                 f"Paper-1 campaign armed: {state['campaign_id']}\n"
                 f"  source SHA: {state['source_sha']}\n"
@@ -858,14 +864,14 @@ def _main_new(argv: list[str]) -> int:
                 raise RuntimeError(f"Unknown campaign {args.campaign!r}; only paper1 is maintained")
             from joint_event_reconstruction import campaign_controller
 
-            campaign_controller.watch(interval=args.interval)
+            campaign_controller.watch(args.campaign_root, interval=args.interval)
             return 0
         if args.campaign_command == "resume":
             if args.campaign != "paper1":
                 raise RuntimeError(f"Unknown campaign {args.campaign!r}; only paper1 is maintained")
             from joint_event_reconstruction import campaign_controller
 
-            state = campaign_controller.resume()
+            state = campaign_controller.resume(args.campaign_root)
             print(f"Paper-1 campaign resumed: {state['state']}")
             return 0
         if args.campaign_command == "review":
@@ -873,14 +879,16 @@ def _main_new(argv: list[str]) -> int:
                 raise RuntimeError(f"Unknown campaign {args.campaign!r}; only paper1 is maintained")
             from joint_event_reconstruction import campaign_controller
 
-            campaign_controller.review()
+            campaign_controller.review(args.campaign_root)
             return 0
         if args.campaign_command == "approve":
             if args.campaign != "paper1":
                 raise RuntimeError(f"Unknown campaign {args.campaign!r}; only paper1 is maintained")
             from joint_event_reconstruction import campaign_controller
 
-            state = campaign_controller.approve(None, args.gate, args.variant)
+            state = campaign_controller.approve(
+                args.campaign_root, args.gate, args.variant
+            )
             print(f"Paper-1 campaign approved {args.gate}={args.variant}: {state['state']}")
             return 0
         _print_status()

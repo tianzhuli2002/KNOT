@@ -79,6 +79,16 @@ def run(events: int) -> dict:
             raise ValueError(f"Checkpoint has no state_dict: {checkpoint}")
         checkpoint_contracts[gate_name] = str(checkpoint)
 
+    from scripts.preflight_study13 import audit_level_a
+
+    level_a_directory = (
+        paths.results_root
+        / "validation/study13-level-a"
+        / paths.source_sha
+        / f"job-{os.environ.get('SLURM_JOB_ID', 'local')}"
+    )
+    level_a = audit_level_a(output_dir=level_a_directory)
+
     result = {
         "status": "PASS",
         "source_sha": paths.source_sha,
@@ -89,6 +99,7 @@ def run(events: int) -> dict:
         "cache_file": str(cache_file),
         "validation_events": int(events),
         "checkpoint_contracts": checkpoint_contracts,
+        "study13_level_a": level_a,
     }
     print(json.dumps(result, indent=2, sort_keys=True))
     return result

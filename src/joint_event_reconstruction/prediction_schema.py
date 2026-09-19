@@ -74,6 +74,41 @@ def _require_finite_dataset(
             raise ValueError(f"{label} contains non-finite values")
 
 
+def validate_physical_posterior_shape(
+    physical_samples,
+    *,
+    event_count: int,
+    top_k: int,
+    posterior_samples: int,
+    n_invisible_particles: int,
+    label: str = "physical posterior",
+    deep: bool = True,
+) -> None:
+    """Validate the complete physical posterior tensor contract.
+
+    The physical posterior is deliberately rank-five.  Its axes are
+    ``(event, assignment hypothesis, posterior sample, invisible role,
+    four-vector component)`` and the component convention is ``(E, px, py,
+    pz)``.  Keeping this check as a public helper prevents callers from
+    accidentally comparing a three-axis slice with a two-axis expectation.
+    """
+    expected = (
+        int(event_count),
+        int(top_k),
+        int(posterior_samples),
+        int(n_invisible_particles),
+        4,
+    )
+    observed = tuple(getattr(physical_samples, "shape", ()))
+    if observed != expected:
+        raise ValueError(
+            f"Unexpected {label} shape {observed}; expected {expected} "
+            "for (events, hypotheses, samples, invisible_roles, E_px_py_pz)"
+        )
+    if deep and not np.isfinite(physical_samples).all():
+        raise ValueError(f"{label} contains non-finite values")
+
+
 def _require_score_dataset(
     dataset: h5py.Dataset,
     valid: np.ndarray,
@@ -464,11 +499,14 @@ def validate_prediction(path: str | Path, *, deep: bool = True) -> None:
                 _require_finite_dataset(values, name, deep=deep)
             physical = source.get("INVISIBLE/four_vectors")
             if physical is not None:
-                expected = (count, top_k, posterior_samples, len(roles), 4)
-                if physical.shape != expected:
-                    raise ValueError("Prediction output has invalid invisible four-vectors")
-                _require_finite_dataset(
-                    physical, "INVISIBLE/four_vectors", deep=deep
+                validate_physical_posterior_shape(
+                    physical[:],
+                    event_count=count,
+                    top_k=top_k,
+                    posterior_samples=posterior_samples,
+                    n_invisible_particles=len(roles),
+                    label="INVISIBLE/four_vectors",
+                    deep=deep,
                 )
                 for name in ("INVISIBLE/four_vector_mean", "INVISIBLE/four_vector_std"):
                     values = source[name]
