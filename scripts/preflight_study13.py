@@ -43,6 +43,7 @@ from joint_event_reconstruction.models.invisible.coordinates import (  # noqa: E
 from joint_event_reconstruction.prediction import to_device  # noqa: E402
 from joint_event_reconstruction.prediction_schema import (  # noqa: E402
     validate_physical_posterior_shape,
+    validate_physical_mass_shell,
     validate_prediction,
 )
 from joint_event_reconstruction.runtime_paths import (  # noqa: E402
@@ -907,9 +908,11 @@ def _prediction_contract(path: Path, *, coordinate_type: str, expected_events: i
             n_invisible_particles=len(roles),
             label=f"{coordinate_type} physical posterior",
         )
-        mass_squared = physical[..., 0] ** 2 - (physical[..., 1:] ** 2).sum(axis=-1)
-        if not np.allclose(mass_squared, 0.0, atol=5.0e-2, rtol=2.0e-4):
-            raise RuntimeError(f"{coordinate_type} physical posterior is not massless on shell")
+        mass_shell = validate_physical_mass_shell(
+            physical,
+            mass=0.0,
+            label=f"{coordinate_type} physical posterior",
+        )
         if _as_text(source.attrs["physics_vector_representation"]) != "E_px_py_pz_GeV_v1":
             raise RuntimeError(f"{coordinate_type} prediction has the wrong four-vector convention")
         if coordinate_type == "met_exact":
@@ -928,6 +931,7 @@ def _prediction_contract(path: Path, *, coordinate_type: str, expected_events: i
             "physical_four_vectors": True,
             "four_vector_convention": "E_px_py_pz_GeV_v1",
             "mass_shell": "fixed massless exact",
+            "mass_shell_evidence": mass_shell,
             "top_k": int(source.attrs["K"]),
             "posterior_samples": int(source.attrs["M"]),
             "met_exact_closure": coordinate_type == "met_exact",

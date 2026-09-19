@@ -109,6 +109,58 @@ def validate_physical_posterior_shape(
         raise ValueError(f"{label} contains non-finite values")
 
 
+def validate_physical_mass_shell(
+    physical_samples,
+    *,
+    mass: float = 0.0,
+    label: str = "physical posterior",
+    ulp_tolerance: float = 8.0,
+) -> dict[str, float | str]:
+    """Validate an exact mass shell after the product's storage precision.
+
+    Prediction HDF5 files store physical four-vectors as float32.  Comparing
+    ``E**2 - |p|**2`` with a fixed absolute tolerance is therefore invalid for
+    high-energy vectors: ordinary float32 round-off grows with the vector
+    scale.  Compare the stored energy with the shell energy using a bounded
+    number of storage-precision ulps instead.
+    """
+    values = np.asarray(physical_samples)
+    if values.shape[-1:] != (4,):
+        raise ValueError(f"{label} must end in (E, px, py, pz), observed {values.shape}")
+    if not np.issubdtype(values.dtype, np.floating):
+        raise ValueError(f"{label} must use a floating dtype, observed {values.dtype}")
+    if not np.isfinite(values).all():
+        raise ValueError(f"{label} contains non-finite values")
+    if not np.isfinite(mass) or mass < 0:
+        raise ValueError(f"{label} mass must be finite and non-negative")
+    if (values[..., 0] < 0).any():
+        raise ValueError(f"{label} contains negative energy")
+
+    work = values.astype(np.float64, copy=False)
+    spatial_squared = np.sum(work[..., 1:] ** 2, axis=-1)
+    expected_energy = np.sqrt(spatial_squared + float(mass) ** 2)
+    residual = np.abs(work[..., 0] - expected_energy)
+    storage_epsilon = np.finfo(values.dtype).eps
+    scale = np.maximum(1.0, np.maximum(np.abs(work[..., 0]), expected_energy))
+    tolerance = float(ulp_tolerance) * storage_epsilon * scale
+    if np.any(residual > tolerance):
+        ratio = residual / np.maximum(tolerance, np.finfo(np.float64).tiny)
+        raise ValueError(
+            f"{label} is outside its configured mass shell after storage rounding: "
+            f"max_energy_residual={float(residual.max()):.6g}, "
+            f"max_allowed={float(tolerance.max()):.6g}, "
+            f"max_ulp_ratio={float(ratio.max()):.6g}"
+        )
+    return {
+        "max_energy_residual": float(residual.max(initial=0.0)),
+        "max_relative_energy_residual": float(
+            (residual / np.maximum(scale, np.finfo(np.float64).tiny)).max(initial=0.0)
+        ),
+        "storage_dtype": str(values.dtype),
+        "ulp_tolerance": float(ulp_tolerance),
+    }
+
+
 def _require_score_dataset(
     dataset: h5py.Dataset,
     valid: np.ndarray,

@@ -107,7 +107,12 @@ def _require_finite(value: object, label: str) -> None:
         raise StageReleaseError(f"{label} is not finite")
 
 
-def _validate_prediction_evidence(value: object, label: str) -> None:
+def _validate_prediction_evidence(
+    value: object,
+    label: str,
+    *,
+    expected_posterior_samples: int,
+) -> None:
     report = _require_mapping(value, label)
     _require_true(report.get("physical_four_vectors"), f"{label}.physical_four_vectors")
     _require_true(report.get("event_id_unique"), f"{label}.event_id_unique")
@@ -115,10 +120,18 @@ def _validate_prediction_evidence(value: object, label: str) -> None:
         raise StageReleaseError(f"{label}.events is not the 16-event integration contract")
     if report.get("four_vector_convention") != "E_px_py_pz_GeV_v1":
         raise StageReleaseError(f"{label} has the wrong physical four-vector convention")
-    if report.get("top_k") != 10 or report.get("posterior_samples") != 8:
+    if report.get("top_k") != 10 or report.get("posterior_samples") != expected_posterior_samples:
         raise StageReleaseError(f"{label} has the wrong bounded posterior dimensions")
     if report.get("mass_shell") != "fixed massless exact":
         raise StageReleaseError(f"{label} has no mass-shell evidence")
+    evidence = _require_mapping(report.get("mass_shell_evidence"), f"{label}.mass_shell_evidence")
+    _require_finite(evidence.get("max_energy_residual"), f"{label}.mass_shell_evidence.max_energy_residual")
+    _require_finite(
+        evidence.get("max_relative_energy_residual"),
+        f"{label}.mass_shell_evidence.max_relative_energy_residual",
+    )
+    if evidence.get("storage_dtype") != "float32" or evidence.get("ulp_tolerance") != 8.0:
+        raise StageReleaseError(f"{label} has incomplete storage-precision mass-shell evidence")
     if not report.get("event_id_sha256"):
         raise StageReleaseError(f"{label} has no event-order identity")
 
@@ -203,7 +216,11 @@ def _validate_study15_evidence(
     coordinate_record = _require_mapping(selected_records.get("invisible_coordinates"), "Study-15 coordinate checkpoint")
     if conventional_checkpoint != Path(str(coordinate_record.get("path"))).expanduser().resolve():
         raise StageReleaseError("Study-15 conventional branch is not seed-matched to the Study-13 coordinate checkpoint")
-    _validate_prediction_evidence(conventional.get("prediction"), "Study-15 conventional prediction")
+    _validate_prediction_evidence(
+        conventional.get("prediction"),
+        "Study-15 conventional prediction",
+        expected_posterior_samples=32,
+    )
     _validate_evaluation_evidence(conventional.get("evaluation"), "Study-15 conventional evaluation")
 
     conditional = _require_mapping(branches.get("conditional_lgatr"), "Study-15 Conditional L-GATr branch")
@@ -231,7 +248,11 @@ def _validate_study15_evidence(
         raise StageReleaseError("Study-15 conditional checkpoint identity hash is incorrect")
     if conditional["checkpoint"].get("training_sha") != expected_source_sha:
         raise StageReleaseError("Study-15 conditional checkpoint training SHA is not the release SHA")
-    _validate_prediction_evidence(conditional.get("prediction"), "Study-15 conditional prediction")
+    _validate_prediction_evidence(
+        conditional.get("prediction"),
+        "Study-15 conditional prediction",
+        expected_posterior_samples=32,
+    )
     _validate_evaluation_evidence(conditional.get("evaluation"), "Study-15 conditional evaluation")
     config_diff = _require_mapping(report.get("config_diff"), "Study-15 config difference")
     if config_diff.get("status") != "PASS" or config_diff.get("unexpected_differences") != []:
@@ -349,7 +370,11 @@ def _validate_study03_evidence(
     branches = _require_mapping(report.get("branches"), "Study-03 branches")
     for name in ("none", "refined"):
         branch = _require_mapping(branches.get(name), f"Study-03 {name} branch")
-        _validate_prediction_evidence(branch.get("prediction"), f"Study-03 {name} prediction")
+        _validate_prediction_evidence(
+            branch.get("prediction"),
+            f"Study-03 {name} prediction",
+            expected_posterior_samples=32,
+        )
         _validate_evaluation_evidence(branch.get("evaluation"), f"Study-03 {name} evaluation")
     refined_training = _require_mapping(branches["refined"].get("training"), "Study-03 refined training")
     for key in ("finite_initial_loss", "finite_gradients", "nonzero_invisible_update", "coordinate_inverse_check", "train_validation_batch_disjoint"):

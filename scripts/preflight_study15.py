@@ -113,9 +113,33 @@ def _resolved_configs(study, output_root: Path) -> tuple[Any, Any, dict]:
     _, _, conditional_config = _public_run_config(
         study, "ttbar2L", conditional, 42, output_root, SMALL_OVERRIDES
     )
+    conventional_prediction_config = _public_run_config(
+        study,
+        "ttbar2L",
+        conventional,
+        42,
+        output_root,
+        SMALL_OVERRIDES,
+        conventional.predictions[0],
+    )[2]
+    conditional_prediction_config = _public_run_config(
+        study,
+        "ttbar2L",
+        conditional,
+        42,
+        output_root,
+        SMALL_OVERRIDES,
+        conditional.predictions[0],
+    )[2]
     return conventional_config, conditional_config, {
         "conventional": OmegaConf.to_container(conventional_config, resolve=True),
         "conditional_lgatr": OmegaConf.to_container(conditional_config, resolve=True),
+        "conventional_prediction": OmegaConf.to_container(
+            conventional_prediction_config, resolve=True
+        ),
+        "conditional_lgatr_prediction": OmegaConf.to_container(
+            conditional_prediction_config, resolve=True
+        ),
     }
 
 
@@ -196,7 +220,9 @@ def run(*, output_dir: Path, device: str, gates_path: Path, expected_source_sha:
     })
 
     conventional_config, conditional_config, configs = _resolved_configs(study, output_dir)
-    config_diff = _config_diff(configs["conventional"], configs["conditional_lgatr"])
+    config_diff = _config_diff(
+        configs["conventional_prediction"], configs["conditional_lgatr_prediction"]
+    )
     if str(conventional_config.model.invisible.coordinates.type) != "met_residual":
         raise RuntimeError("Study-15 did not inherit the selected met_residual coordinates")
     if str(conditional_config.model.invisible.backbone.type) != "lgatr":

@@ -718,6 +718,7 @@ def check_physical_posterior_shape_contract() -> None:
     """The physical posterior contract covers every rank and axis explicitly."""
     from joint_event_reconstruction.prediction_schema import (
         validate_physical_posterior_shape,
+        validate_physical_mass_shell,
         validate_prediction,
     )
 
@@ -771,9 +772,26 @@ def check_physical_posterior_shape_contract() -> None:
         )
         if str(handle.attrs["physics_vector_representation"]) != "E_px_py_pz_GeV_v1":
             raise AssertionError("Known failed-smoke artifact does not contain physical E_px_py_pz")
-        mass_squared = physical[..., 0] ** 2 - (physical[..., 1:] ** 2).sum(axis=-1)
-        if not np.allclose(mass_squared, 0.0, atol=5.0e-2, rtol=2.0e-4):
-            raise AssertionError("Known failed-smoke physical posterior is not massless")
+        validate_physical_mass_shell(
+            physical,
+            mass=0.0,
+            label="known failed-smoke physical posterior",
+        )
+
+    rounded_high_energy = np.asarray(
+        [[[[[1000.0, 600.0, 700.0, 400.0]]]]], dtype=np.float32
+    )
+    rounded_high_energy[..., 0] = np.sqrt(
+        np.sum(rounded_high_energy[..., 1:] ** 2, axis=-1)
+    ).astype(np.float32)
+    validate_physical_mass_shell(rounded_high_energy, mass=0.0)
+    rounded_high_energy[..., 0] *= np.float32(1.001)
+    try:
+        validate_physical_mass_shell(rounded_high_energy, mass=0.0)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("Mass-shell regression accepted a non-shell high-energy vector")
 
 
 def check_learned_scorer_padding_contract() -> None:

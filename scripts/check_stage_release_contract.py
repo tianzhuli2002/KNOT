@@ -50,8 +50,14 @@ def check_release_payload() -> None:
             "events": 16,
             "four_vector_convention": "E_px_py_pz_GeV_v1",
             "mass_shell": "fixed massless exact",
+            "mass_shell_evidence": {
+                "max_energy_residual": 0.0001,
+                "max_relative_energy_residual": 1.0e-7,
+                "storage_dtype": "float32",
+                "ulp_tolerance": 8.0,
+            },
             "top_k": 10,
-            "posterior_samples": 8,
+            "posterior_samples": 32,
             "event_id_sha256": "e" * 64,
         }
         evaluation = {
