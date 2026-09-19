@@ -107,6 +107,11 @@ def _assert_probability(name: str, value: torch.Tensor) -> None:
         raise RuntimeError(f"{name} is not normalised over valid hypotheses")
 
 
+def _sanitized_scorer_input(reduction: torch.Tensor) -> torch.Tensor:
+    """Apply the production scorer contract to padded posterior features."""
+    return torch.nan_to_num(reduction, nan=0.0, posinf=0.0, neginf=0.0)
+
+
 def run(output_dir: Path, device: str, expected_source_sha: str | None = None) -> None:
     if device != "cuda" or not torch.cuda.is_available():
         raise RuntimeError("The hypothesis smoke requires a CUDA device")
@@ -358,10 +363,14 @@ def run(output_dir: Path, device: str, expected_source_sha: str | None = None) -
     optimizer.step()
     scorer_path = output_dir / "learned_scorer.pt"
     torch.save(scorer.state_dict(), scorer_path)
-    reloaded = LearnedHypothesisScorer(3 * len(feature_names) + 1).to(device)
+    scorer.eval()
+    reloaded = LearnedHypothesisScorer(3 * len(feature_names) + 1).to(device).eval()
     reloaded.load_state_dict(torch.load(scorer_path, map_location=device, weights_only=True))
     with torch.no_grad():
-        reduced = learned.reduction.as_tensor()
+        # Padded hypotheses carry -inf analytic evidence.  The maintained
+        # evaluator sanitizes this tensor before the learned scorer; the smoke
+        # reload check must exercise the same input contract.
+        reduced = _sanitized_scorer_input(learned.reduction.as_tensor())
         if not torch.allclose(scorer(reduced), reloaded(reduced), atol=1e-6, rtol=1e-6):
             raise RuntimeError("Reloaded learned scorer is not deterministic")
     _assert_probability("learned final probability", learned.final_probability)

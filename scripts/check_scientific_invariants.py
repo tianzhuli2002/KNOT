@@ -774,6 +774,16 @@ def check_physical_posterior_shape_contract() -> None:
             raise AssertionError("Known failed-smoke physical posterior is not massless")
 
 
+def check_learned_scorer_padding_contract() -> None:
+    """Padded posterior evidence is sanitised before learned scoring/reload."""
+    from scripts.smoke_hypothesis_gpu import _sanitized_scorer_input
+
+    padded = torch.tensor([[1.0, float("-inf"), float("nan")]])
+    sanitised = _sanitized_scorer_input(padded)
+    if not torch.isfinite(sanitised).all() or sanitised.tolist() != [[1.0, 0.0, 0.0]]:
+        raise AssertionError(f"Padded scorer features were not sanitised: {sanitised}")
+
+
 def check_flow_coupling_context_contract() -> None:
     """Conditional OT must use role contexts before coordinate-token expansion."""
     import torch
@@ -2182,6 +2192,7 @@ def main() -> None:
     check_conditional_lgatr_contract()
     check_prediction_writer_shape_contract()
     check_physical_posterior_shape_contract()
+    check_learned_scorer_padding_contract()
     check_flow_coupling_context_contract()
     check_truth_oracle_unreconstructable_contract()
     check_exchange_and_permutation_contract()
@@ -2198,7 +2209,7 @@ def main() -> None:
     print(
         "PASS: architecture, training-identity, partial-checkpoint, split-seed, "
         "nested-subset, coordinate, truth-oracle, exchange, permutation, "
-        "freeze, public-input, same-flavour-role, campaign-gate, Slurm-option, "
+        "freeze, public-input, same-flavour-role, scorer-padding, campaign-gate, Slurm-option, "
         "campaign-identity, release-source-snapshot, campaign-scheduler, Paper-1-controller, prediction-writer, mass-shell, Conditional-L-GATr "
         "Slurm-snapshot and resumable-postprocess contracts"
     )
