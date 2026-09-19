@@ -803,6 +803,16 @@ def _main_new(argv: list[str]) -> int:
     campaign_approve.add_argument("gate")
     campaign_approve.add_argument("variant")
     campaign_approve.add_argument("--campaign-root", type=Path)
+    campaign_continue = campaign_sub.add_parser("continue")
+    campaign_continue.add_argument("campaign", nargs="?", default="paper1")
+    campaign_continue.add_argument("--from-campaign", type=Path, required=True)
+    campaign_continue.add_argument("--campaign-root", type=Path, required=True)
+    campaign_preflight = campaign_sub.add_parser("preflight")
+    campaign_preflight.add_argument("campaign", nargs="?", default="paper1")
+    campaign_preflight.add_argument(
+        "stage", choices=("invisible_backbone", "assignment_coupling", "assignment_conditioning")
+    )
+    campaign_preflight.add_argument("--campaign-root", type=Path, required=True)
     campaign_sub.add_parser("next")
     cleanup = sub.add_parser("cleanup")
     cleanup.add_argument("--dry-run", action="store_true")
@@ -890,6 +900,31 @@ def _main_new(argv: list[str]) -> int:
                 args.campaign_root, args.gate, args.variant
             )
             print(f"Paper-1 campaign approved {args.gate}={args.variant}: {state['state']}")
+            return 0
+        if args.campaign_command == "continue":
+            if args.campaign != "paper1":
+                raise RuntimeError(f"Unknown campaign {args.campaign!r}; only paper1 is maintained")
+            from joint_event_reconstruction import campaign_controller
+
+            state = campaign_controller.continue_campaign(args.from_campaign, args.campaign_root)
+            print(
+                f"Paper-1 campaign continuation created: {state['campaign_id']}\n"
+                f"  source SHA: {state['source_sha']}\n"
+                f"  parent: {state['parent_campaign']['campaign_id']}\n"
+                f"  state: {state['state']}"
+            )
+            return 0
+        if args.campaign_command == "preflight":
+            if args.campaign != "paper1":
+                raise RuntimeError(f"Unknown campaign {args.campaign!r}; only paper1 is maintained")
+            from joint_event_reconstruction import campaign_controller
+
+            state = campaign_controller.preflight(args.campaign_root, args.stage)
+            release = state["stage_releases"][args.stage]
+            print(
+                f"Paper-1 {args.stage} preflight armed: job={release.get('preflight_job_id')} "
+                f"controller={state['stages'][args.stage].get('controller_job')} state={state['state']}"
+            )
             return 0
         _print_status()
         return 0

@@ -40,6 +40,12 @@ from joint_event_reconstruction.studies import (
     load_study,
     resolve_study,
 )
+from joint_event_reconstruction.stage_release import (
+    StageReleaseError,
+    gate_checkpoint_hashes,
+    sha256_file,
+    validate_release_payload,
+)
 
 
 PAPER1 = "paper1"
@@ -77,14 +83,17 @@ STATES = {
     "STUDY13_REVIEW",
     "STUDY15_RUNNING",
     "STUDY15_PREFLIGHT_REQUIRED",
+    "STUDY15_PREFLIGHT_RUNNING",
     "STUDY15_REPAIR",
     "STUDY15_REVIEW",
     "STUDY10_RUNNING",
     "STUDY10_PREFLIGHT_REQUIRED",
+    "STUDY10_PREFLIGHT_RUNNING",
     "STUDY10_REPAIR",
     "STUDY10_REVIEW",
     "STUDY03_RUNNING",
     "STUDY03_PREFLIGHT_REQUIRED",
+    "STUDY03_PREFLIGHT_RUNNING",
     "STUDY03_REPAIR",
     "STUDY03_REVIEW",
     "PRODUCTION_RUNNING",
@@ -308,6 +317,28 @@ def _job_state(paths: CampaignPaths, job_id: object) -> tuple[str, str]:
     return states[-1] if states else "UNKNOWN", "accounting incomplete"
 
 
+def _scheduler_terminal(paths: CampaignPaths, job_id: object) -> tuple[str, str]:
+    """Return the actual terminal state and exit code for one Slurm job."""
+    state, reason = _job_state(paths, job_id)
+    if state != "COMPLETED":
+        return state, reason
+    account = _run(
+        paths,
+        ["sacct", "-n", "-P", "-j", str(job_id), "--format=JobIDRaw,State,ExitCode"],
+        check=False,
+    )
+    rows = [line.strip().split("|") for line in account.stdout.splitlines() if line.strip()]
+    exact = next((row for row in rows if row and row[0] == str(job_id)), None)
+    if exact is None:
+        exact = next((row for row in rows if len(row) > 2 and "." not in row[0]), None)
+    if exact is None or len(exact) < 3:
+        return "UNKNOWN", "completed job has no exact sacct exit-code record"
+    exit_code = exact[2].strip()
+    if exit_code != "0:0":
+        return "FAILED", f"Slurm exit code {exit_code}"
+    return "COMPLETED", exit_code
+
+
 def _job_group(paths: CampaignPaths, job_ids: list[str]) -> tuple[str, str]:
     unique = list(dict.fromkeys(str(job) for job in job_ids if job))
     if not unique:
@@ -480,7 +511,11 @@ def _initial_state(paths: CampaignPaths, sha: str, source: dict, policy: dict, g
                     paths.project_root
                     / "results/validation/stage-release"
                     / sha
-                    / f"{stage}.json"
+                    / {
+                        "invisible_backbone": "invisible_backbone.json",
+                        "assignment_coupling": "assignment_coupling.json",
+                        "assignment_conditioning": "assignment_conditioning.json",
+                    }[stage]
                 ),
                 "reason": "Required downstream production-equivalent preflight is not yet materialised",
             }
@@ -818,6 +853,90 @@ def _submit_smoke(paths: CampaignPaths, sha: str) -> dict:
     records.append(record)
     _write_release_registry(registry, records)
     return record
+
+
+def _submit_stage_preflight(paths: CampaignPaths, state: dict, stage: str) -> dict:
+    """Submit exactly one bounded GPU preflight for a downstream stage."""
+    if stage not in STAGE_RELEASE_CONTRACTS:
+        raise CampaignError(f"No downstream release preflight is defined for {stage!r}")
+    release = state.setdefault("stage_releases", {}).setdefault(stage, {})
+    existing_job = release.get("preflight_job_id")
+    if existing_job:
+        scheduler, _ = _job_state(paths, existing_job)
+        if scheduler in ACTIVE_SCHEDULER_STATES:
+            return {"job_id": str(existing_job), "status": release.get("status", "SUBMITTED")}
+        if scheduler == "COMPLETED" and release.get("status") == "PASS":
+            return {"job_id": str(existing_job), "status": "PASS"}
+        if scheduler in FAILURE_STATES or release.get("status") == "FAILED":
+            raise CampaignError(
+                f"{stage} preflight already failed ({existing_job}); create a new source-SHA continuation"
+            )
+    if not _latest_preflight(paths, state["source_sha"]):
+        raise CampaignError(
+            f"No successful CPU preflight exists for source SHA {state['source_sha']}; "
+            "run jer doctor --compute-node before arming the stage preflight"
+        )
+    source = _release_source(paths, state["source_sha"])
+    validation_root = paths.project_root / "results/validation/stage-release" / state["source_sha"]
+    attempt = len(list((validation_root / stage).glob("attempt-*"))) + 1
+    output = validation_root / stage / f"attempt-{attempt:03d}"
+    output.mkdir(parents=True, exist_ok=False)
+    artifact_name = {
+        "invisible_backbone": "invisible_backbone.json",
+        "assignment_coupling": "assignment_coupling.json",
+        "assignment_conditioning": "assignment_conditioning.json",
+    }[stage]
+    artifact = validation_root / artifact_name
+    worker = output / "worker.sh"
+    worker.write_text(
+        "#!/usr/bin/env bash\nset -euo pipefail\n"
+        f"export JER_PROJECT_ROOT={shlex.quote(str(paths.project_root))}\n"
+        f"export JER_SOURCE_ROOT={shlex.quote(str(source))}\n"
+        f"export JER_SOURCE_SHA={shlex.quote(state['source_sha'])}\n"
+        f"export PYTHONPATH={shlex.quote(str(source / 'src'))}:{shlex.quote(str(source))}\n"
+        "export PYTHONDONTWRITEBYTECODE=1\n"
+        f"cd {shlex.quote(str(paths.project_root))}\n"
+        f"exec {shlex.quote(sys.executable)} {shlex.quote(str(source / 'scripts/release_stage_gpu.py'))} "
+        f"--stage {shlex.quote(stage)} --output-dir {shlex.quote(str(output))} "
+        f"--release-artifact {shlex.quote(str(artifact))} "
+        f"--campaign-root {shlex.quote(str(paths.root))} "
+        f"--expected-source-sha {shlex.quote(state['source_sha'])} "
+        f"--gates-path {shlex.quote(str(paths.gates))} "
+        f"--campaign-id {shlex.quote(state['campaign_id'])}\n"
+    )
+    worker.chmod(0o755)
+    slurm = _site_slurm(paths)
+    submitted = _run(
+        paths,
+        [
+            "sbatch", "--parsable", f"--job-name=jer-{stage.replace('_', '-')}"
+            , f"--partition={slurm['gpu_partition']}", f"--gres={slurm['gpu_gres']}"
+            , f"--cpus-per-task={slurm['gpu_cpus']}", f"--mem={slurm['gpu_memory']}"
+            , f"--time={slurm['gpu_time']}", f"--output={output}/%x-%j.out"
+            , f"--error={output}/%x-%j.err", str(worker),
+        ],
+        check=False,
+    )
+    if submitted.returncode:
+        raise CampaignError(submitted.stderr.strip() or f"{stage} preflight submission failed")
+    job_id = submitted.stdout.strip().split(";", 1)[0]
+    if not job_id.isdigit():
+        raise CampaignError(f"Could not parse {stage} preflight job ID: {submitted.stdout!r}")
+    release.update({
+        "status": "SUBMITTED",
+        "preflight_job_id": job_id,
+        "preflight_output_dir": str(output),
+        "artifact": str(artifact),
+        "preflight_attempt": attempt,
+        "preflight_submitted_at": _now(),
+        "reason": "bounded real-data stage preflight submitted; controller is armed",
+    })
+    state["stages"][stage]["preflight_job_id"] = job_id
+    state["stages"][stage]["preflight_output_dir"] = str(output)
+    state["stage"] = stage
+    _set_state(state, f"STUDY{_stage_number(stage)}_PREFLIGHT_RUNNING", reason=f"{stage} preflight submitted")
+    _submit_controller(paths, state, stage, [job_id])
+    return {"job_id": job_id, "status": "SUBMITTED", "artifact": str(artifact)}
 
 
 def _controller_dependency(job_ids: list[str]) -> str | None:
@@ -1567,16 +1686,22 @@ def _validate_overlay_immutability(paths: CampaignPaths, state: dict) -> None:
 
 
 def _stage_release_ready(paths: CampaignPaths, state: dict, stage: str) -> tuple[bool, str]:
-    """Check the narrow downstream release contract before full submission."""
+    """Check an execution-backed downstream release before full submission."""
     release = state.get("stage_releases", {}).get(stage)
     if not isinstance(release, dict):
         return False, f"no release contract is registered for {stage}"
     artifact = Path(str(release.get("artifact", "")))
     if not artifact.is_file():
-        release["status"] = "NOT_IMPLEMENTED"
-        release["reason"] = (
-            f"{release.get('contract')} is not materialised; run the named production-equivalent preflight"
-        )
+        if release.get("preflight_job_id"):
+            scheduler, detail = _scheduler_terminal(paths, release["preflight_job_id"])
+            if scheduler in ACTIVE_SCHEDULER_STATES:
+                release["reason"] = f"stage preflight {release['preflight_job_id']} is {scheduler}: {detail}"
+                return False, release["reason"]
+            if scheduler != "COMPLETED":
+                release["status"] = "FAILED"
+                release["reason"] = f"stage preflight {release['preflight_job_id']} failed: {detail}"
+                return False, release["reason"]
+        release["reason"] = f"{release.get('contract')} is not materialised; run the named production-equivalent preflight"
         return False, release["reason"]
     try:
         payload = _read_json(artifact)
@@ -1584,19 +1709,54 @@ def _stage_release_ready(paths: CampaignPaths, state: dict, stage: str) -> tuple
         release["status"] = "FAILED"
         release["reason"] = str(error)
         return False, release["reason"]
-    if (
-        payload.get("schema") != release.get("contract")
-        or payload.get("status") != "PASS"
-        or payload.get("source_sha") != state.get("source_sha")
-        or payload.get("software_integration_evidence_only") is not True
-    ):
+    if release.get("preflight_job_id") and str(payload.get("slurm_job_id")) != str(release["preflight_job_id"]):
         release["status"] = "FAILED"
-        release["reason"] = (
-            f"{release.get('contract')} is incomplete or belongs to a different source SHA"
+        release["reason"] = "release artifact Slurm job does not match the submitted preflight"
+        return False, release["reason"]
+    preflight_job = release.get("preflight_job_id")
+    if preflight_job is not None:
+        scheduler, detail = _scheduler_terminal(paths, preflight_job)
+        release["scheduler_state"] = scheduler
+        release["scheduler_exit_code"] = detail if scheduler == "COMPLETED" else None
+        if scheduler != "COMPLETED":
+            if scheduler in ACTIVE_SCHEDULER_STATES:
+                release["reason"] = f"stage preflight {preflight_job} is {scheduler}: {detail}"
+            else:
+                release["status"] = "FAILED"
+                release["reason"] = f"stage preflight {preflight_job} did not complete successfully: {detail}"
+            return False, release["reason"]
+    try:
+        source_root = Path(state["source_root"])
+        manifest = next(
+            path
+            for path in sorted((source_root / "configs/studies").glob("[0-9][0-9]_*.yaml"))
+            if load_study(path).name == STAGE_STUDIES[stage]
         )
+        study = resolve_study(manifest, paths.gates)
+        gates = load_scientific_gates(paths.gates)
+        expected_checkpoints = gate_checkpoint_hashes(gates, study.requires, seeds=(42,))
+        validation_root = paths.project_root / "results/validation/stage-release" / state["source_sha"]
+        validate_release_payload(
+            payload,
+            artifact_path=artifact,
+            expected_schema=str(release.get("contract")),
+            expected_source_sha=str(state["source_sha"]),
+            expected_campaign_id=str(state["campaign_id"]),
+            expected_gate_digest=str(study.gates_digest),
+            expected_manifest_sha256=sha256_file(manifest),
+            expected_checkpoint_hashes=expected_checkpoints,
+            validation_root=validation_root,
+        )
+        if preflight_job is None:
+            scheduler, detail = _scheduler_terminal(paths, payload.get("slurm_job_id"))
+            if scheduler != "COMPLETED":
+                raise StageReleaseError(f"release Slurm job is not complete: {scheduler} {detail}")
+    except (CampaignError, StageReleaseError, FileNotFoundError, ScientificGatePending, ScientificGateNotApplicable, ValueError, StopIteration) as error:
+        release["status"] = "FAILED"
+        release["reason"] = str(error)
         return False, release["reason"]
     release["status"] = "PASS"
-    release["reason"] = "downstream production-equivalent preflight passed"
+    release["reason"] = "execution-backed production-equivalent preflight passed"
     release["validated_at"] = _now()
     return True, release["reason"]
 
@@ -1659,6 +1819,11 @@ def _advance_after_gate(paths: CampaignPaths, state: dict, stage: str, decision:
         ready, reason = _stage_release_ready(paths, state, next_stage)
         if not ready:
             _set_stage_preflight_required(paths, state, next_stage, reason)
+            if state.get("mode") == "AUTO":
+                try:
+                    _submit_stage_preflight(paths, state, next_stage)
+                except CampaignError as error:
+                    state["stage_releases"][next_stage]["reason"] = str(error)
             return
         _submit_stage_and_controller(paths, state, next_stage)
 
@@ -1734,7 +1899,7 @@ def _advance_locked(paths: CampaignPaths, state: dict, *, event: str | None = No
     smoke = _reconcile_smoke(paths, state["source_sha"])
     if smoke is not None:
         state["smoke"].update({key: smoke.get(key) for key in ("job_id", "status", "artifact_path", "scheduler_state", "scheduler_reason") if key in smoke})
-    if state["smoke"].get("status") == "PASS":
+    if state["smoke"].get("status") in {"PASS", "INHERITED"}:
         if state.get("stage") is None:
             _submit_stage_and_controller(paths, state, "invisible_coordinates")
         elif state.get("stage") in STAGE_STUDIES:
@@ -1743,9 +1908,30 @@ def _advance_locked(paths: CampaignPaths, state: dict, *, event: str | None = No
                 if stage == "invisible_coordinates":
                     _submit_stage_and_controller(paths, state, stage)
                     return
+                release = state.get("stage_releases", {}).get(stage, {})
+                if release.get("preflight_job_id"):
+                    scheduler, detail = _scheduler_terminal(paths, release["preflight_job_id"])
+                    if scheduler in ACTIVE_SCHEDULER_STATES:
+                        _set_state(
+                            state,
+                            f"STUDY{_stage_number(stage)}_PREFLIGHT_RUNNING",
+                            reason=f"{stage} preflight pending: {detail}",
+                        )
+                        return
+                    if scheduler != "COMPLETED":
+                        release["status"] = "FAILED"
+                        _set_state(
+                            state,
+                            "BLOCKED",
+                            reason=f"{stage} preflight failed: {detail}",
+                        )
+                        return
                 ready, reason = _stage_release_ready(paths, state, stage)
                 if not ready:
-                    _set_stage_preflight_required(paths, state, stage, reason)
+                    if release.get("preflight_job_id"):
+                        _set_state(state, "BLOCKED", reason=reason)
+                    else:
+                        _set_stage_preflight_required(paths, state, stage, reason)
                     return
                 _submit_stage_and_controller(paths, state, stage)
                 return
@@ -1764,6 +1950,148 @@ def _advance_locked(paths: CampaignPaths, state: dict, *, event: str | None = No
         _set_state(state, "SMOKE_FAILED", reason="exact source-SHA GPU smoke failed; inspect its artifact before retrying")
         return
     _set_state(state, "WAITING_SMOKE", reason="exact source-SHA GPU smoke has not been submitted")
+
+
+def _validate_parent_coordinate_gate(parent: CampaignPaths, parent_state: dict) -> tuple[dict, Path, str]:
+    if parent_state.get("state") not in {
+        "STUDY15_PREFLIGHT_REQUIRED",
+        "STUDY15_PREFLIGHT_RUNNING",
+        "STUDY15_RUNNING",
+        "STUDY15_REVIEW",
+        "STUDY10_PREFLIGHT_REQUIRED",
+        "STUDY10_PREFLIGHT_RUNNING",
+        "STUDY10_RUNNING",
+        "READY_FOR_PRODUCTION_REVIEW",
+    }:
+        raise CampaignError(f"Parent campaign is not a completed Study-13 continuation point: {parent_state.get('state')}")
+    stage = parent_state.get("stages", {}).get("invisible_coordinates", {})
+    if stage.get("state") != "COMPLETE" or stage.get("selected_variant") != "met_residual":
+        raise CampaignError("Parent campaign does not contain a completed met_residual Study-13 gate")
+    decision_path = parent.decisions / "invisible_coordinates.json"
+    decision = _read_json(decision_path)
+    if decision.get("status") != "AUTO_SELECTED" or decision.get("decision") != "met_residual":
+        raise CampaignError("Parent Study-13 coordinate decision is not the locked automatic selection")
+    gates = load_scientific_gates(parent.gates)
+    gate = gates.get("invisible_coordinates")
+    if not isinstance(gate, dict) or gate.get("status") != "locked" or gate.get("selected_variant") != "met_residual":
+        raise CampaignError("Parent Study-13 coordinate gate is not locked to met_residual")
+    for topology, by_seed in (gate.get("artifacts") or {}).items():
+        for seed, artifact in by_seed.items():
+            checkpoint = Path(str(artifact["checkpoint"])).expanduser().resolve()
+            identity = Path(str(artifact["identity_file"])).expanduser().resolve()
+            if not checkpoint.is_file() or sha256_file(checkpoint) != artifact.get("checkpoint_sha256"):
+                raise CampaignError(f"Parent selected checkpoint is missing or mismatched: {checkpoint}")
+            if not identity.is_file() or sha256_file(identity) != artifact.get("identity_sha256"):
+                raise CampaignError(f"Parent selected checkpoint identity is missing or mismatched: {identity}")
+            payload = _read_json(identity)
+            if payload.get("artifact", {}).get("sha256") != artifact.get("checkpoint_sha256"):
+                raise CampaignError(f"Parent identity artifact does not match selected checkpoint: {identity}")
+            observed = payload.get("identity", {})
+            if observed.get("git_commit") != artifact.get("git_sha") or int(observed.get("model_seed", -1)) != int(str(seed).removeprefix("seed_")):
+                raise CampaignError(f"Parent selected checkpoint training provenance is inconsistent: {identity}")
+            if observed.get("topology") != topology:
+                raise CampaignError(f"Parent selected checkpoint topology is inconsistent: {identity}")
+    return gate, decision_path, _sha256_file(decision_path)
+
+
+def continue_campaign(
+    parent_root: str | Path,
+    campaign_root: str | Path,
+) -> dict:
+    """Create a new source-pinned continuation while leaving the parent untouched."""
+    parent = campaign_paths(parent_root)
+    target = campaign_paths(campaign_root)
+    if not parent.state.is_file():
+        raise CampaignError(f"Parent campaign does not exist: {parent.root}")
+    parent_state = _read_json(parent.state)
+    gate, decision_path, decision_sha = _validate_parent_coordinate_gate(parent, parent_state)
+    with _campaign_lock(target):
+        current_sha = _git(target, "rev-parse", "HEAD")
+        if _git(target, "status", "--porcelain"):
+            raise CampaignError("Campaign continuation requires a clean committed checkout")
+        source = _source_metadata(target, current_sha)
+        if target.state.is_file():
+            existing = _read_json(target.state)
+            parent_record = existing.get("parent_campaign", {})
+            if (
+                existing.get("source_sha") == current_sha
+                and parent_record.get("campaign_root") == str(parent.root)
+                and parent_record.get("parent_decision_sha256") == decision_sha
+            ):
+                return existing
+            raise CampaignError(f"Campaign root already exists with a different identity: {target.root}")
+        existing_entries = [item for item in target.root.iterdir() if item.name != "campaign.lock"]
+        if existing_entries:
+            raise CampaignError(f"Refusing to initialise non-empty campaign root: {target.root}")
+        target.root.mkdir(parents=True, exist_ok=True)
+        policy = OmegaConf.to_container(OmegaConf.load(target.policy_source), resolve=True)
+        base = load_scientific_gates(target.source_root / "configs/studies/UPSTREAM_SELECTIONS.yaml")
+        state = _initial_state(target, current_sha, source, policy, base)
+        shutil.copyfile(target.policy_source, target.policy_snapshot)
+        _write_json(target.source_json, source)
+        base["invisible_coordinates"] = deepcopy(gate)
+        _write_json(target.gates, base)
+        target.decisions.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(decision_path, target.decisions / decision_path.name)
+        state["parent_campaign"] = {
+            "campaign_id": parent_state.get("campaign_id"),
+            "source_sha": parent_state.get("source_sha"),
+            "campaign_root": str(parent.root),
+            "imported_gates": ["invisible_coordinates"],
+            "parent_decision_sha256": decision_sha,
+            "parent_decision_artifact": str(decision_path),
+            "continuation_source_sha": current_sha,
+        }
+        state["smoke"] = {
+            "status": "INHERITED",
+            "job_id": parent_state.get("smoke", {}).get("job_id"),
+            "artifact_path": parent_state.get("smoke", {}).get("artifact_path"),
+            "attempts": 0,
+            "release_contract": "jer_study13_release_v1",
+            "inherited_from": parent_state.get("campaign_id"),
+            "validated_source_sha": parent_state.get("source_sha"),
+        }
+        state["stages"]["invisible_coordinates"].update({
+            "state": "COMPLETE",
+            "selected_variant": "met_residual",
+            "completion_reason": "Inherited locked Study-13 scientific gate; no Study-13 resubmission permitted",
+            "inherited_from": parent_state.get("campaign_id"),
+            "inherited_gate_digest": _json_digest(gate),
+        })
+        state["decisions"]["invisible_coordinates"] = {
+            "materialised": True,
+            "path": str(target.decisions / decision_path.name),
+            "sha256": decision_sha,
+            "inherited_from": parent_state.get("campaign_id"),
+        }
+        state["stage"] = "invisible_backbone"
+        _set_state(state, "STUDY15_PREFLIGHT_REQUIRED", reason="Study-13 gate inherited; run the execution-backed Study-15 preflight")
+        _ensure_campaign_files(target)
+        _validate_overlay_immutability(target, state)
+        _save_state(target, state)
+        return state
+
+
+def preflight(root: str | Path, stage: str) -> dict:
+    """Arm one stage preflight, idempotently, behind its current campaign state."""
+    paths = campaign_paths(root)
+    with _campaign_lock(paths):
+        if not paths.state.is_file():
+            raise CampaignError(f"No Paper-1 campaign exists: {paths.root}")
+        state = _read_json(paths.state)
+        if state.get("stage") != stage:
+            raise CampaignError(f"Campaign current stage is {state.get('stage')!r}, not {stage!r}")
+        if stage not in STAGE_RELEASE_CONTRACTS:
+            raise CampaignError(f"Stage has no downstream preflight: {stage}")
+        ready, reason = _stage_release_ready(paths, state, stage)
+        if ready:
+            _save_state(paths, state)
+            return state
+        if state.get("stage_releases", {}).get(stage, {}).get("status") == "FAILED":
+            raise CampaignError(reason)
+        _submit_stage_preflight(paths, state, stage)
+        _save_state(paths, state)
+        return state
 
 
 def launch(root: str | Path | None = None, *, auto: bool = True) -> dict:
@@ -1918,6 +2246,12 @@ def status(root: str | Path | None = None) -> dict:
             selected = item.get("selected_variant") or "-"
             print(f"\n{label}")
             print(f"  {item.get('state', 'NOT_STARTED')}  decision={selected}")
+            if item.get("preflight_job_id"):
+                release = state.get("stage_releases", {}).get(stage, {})
+                print(
+                    f"  preflight: {item['preflight_job_id']} "
+                    f"{release.get('status', 'UNKNOWN')}"
+                )
             if item.get("submission_record"):
                 job_status, job_reason = _stage_job_status(paths, item)
                 print(f"  jobs: {job_status} {' '.join(item.get('job_ids', [])) or 'none'}")
