@@ -2005,8 +2005,13 @@ def _advance_locked(paths: CampaignPaths, state: dict, *, event: str | None = No
     _set_state(state, "WAITING_SMOKE", reason="exact source-SHA GPU smoke has not been submitted")
 
 
-def _validate_parent_coordinate_gate(parent: CampaignPaths, parent_state: dict) -> tuple[dict, Path, str]:
-    if parent_state.get("state") not in {
+def _validate_parent_coordinate_gate(
+    parent: CampaignPaths,
+    parent_state: dict,
+    *,
+    allow_blocked: bool = False,
+) -> tuple[dict, Path, str]:
+    allowed_states = {
         "STUDY15_PREFLIGHT_REQUIRED",
         "STUDY15_PREFLIGHT_RUNNING",
         "STUDY15_RUNNING",
@@ -2015,7 +2020,10 @@ def _validate_parent_coordinate_gate(parent: CampaignPaths, parent_state: dict) 
         "STUDY10_PREFLIGHT_RUNNING",
         "STUDY10_RUNNING",
         "READY_FOR_PRODUCTION_REVIEW",
-    }:
+    }
+    if allow_blocked:
+        allowed_states.add("BLOCKED")
+    if parent_state.get("state") not in allowed_states:
         raise CampaignError(f"Parent campaign is not a completed Study-13 continuation point: {parent_state.get('state')}")
     stage = parent_state.get("stages", {}).get("invisible_coordinates", {})
     if stage.get("state") != "COMPLETE" or stage.get("selected_variant") != "met_residual":
@@ -2026,7 +2034,14 @@ def _validate_parent_coordinate_gate(parent: CampaignPaths, parent_state: dict) 
         raise CampaignError("Parent Study-13 coordinate decision is not the locked automatic selection")
     gates = load_scientific_gates(parent.gates)
     gate = gates.get("invisible_coordinates")
-    if not isinstance(gate, dict) or gate.get("status") != "locked" or gate.get("selected_variant") != "met_residual":
+    selected_patch = gate.get("selected_patch", {}) if isinstance(gate, dict) else {}
+    coordinate_type = selected_patch.get("model", {}).get("invisible", {}).get("coordinates", {}).get("type")
+    if (
+        not isinstance(gate, dict)
+        or gate.get("status") != "locked"
+        or gate.get("selected_variant") != "met_residual"
+        or coordinate_type != "met_residual"
+    ):
         raise CampaignError("Parent Study-13 coordinate gate is not locked to met_residual")
     for topology, by_seed in (gate.get("artifacts") or {}).items():
         for seed, artifact in by_seed.items():
@@ -2047,17 +2062,145 @@ def _validate_parent_coordinate_gate(parent: CampaignPaths, parent_state: dict) 
     return gate, decision_path, _sha256_file(decision_path)
 
 
+def _validate_parent_invisible_backbone_gate(
+    parent: CampaignPaths,
+    parent_state: dict,
+    coordinate_gate: dict,
+) -> tuple[dict, Path, str]:
+    """Validate the completed Study-15 result before inheriting it.
+
+    A blocked parent is acceptable here only when the completed Study-15
+    stage, its scientific outputs and its execution-backed release are all
+    independently intact.  The later failed Study-10 preflight is not an
+    input to this validation and is deliberately not imported.
+    """
+    stage = parent_state.get("stages", {}).get("invisible_backbone", {})
+    if stage.get("state") != "COMPLETE" or stage.get("selected_variant") != "conventional":
+        raise CampaignError("Parent does not contain a completed conventional Study-15 gate")
+    if int(stage.get("submission_attempts", 0)) < 1 or not stage.get("submission_record"):
+        raise CampaignError("Parent Study-15 has no completed scientific submission record")
+
+    decision_path = parent.decisions / "invisible_backbone.json"
+    if not decision_path.is_file():
+        raise CampaignError(f"Parent Study-15 decision artifact is missing: {decision_path}")
+    decision = _read_json(decision_path)
+    decision_sha = _sha256_file(decision_path)
+    if (
+        decision.get("status") != "AUTO_SELECTED"
+        or decision.get("decision") != "conventional"
+        or decision.get("gate") != "invisible_backbone"
+        or decision.get("source_sha") != parent_state.get("source_sha")
+    ):
+        raise CampaignError("Parent Study-15 decision is not the locked automatic conventional selection")
+    decision_record = parent_state.get("decisions", {}).get("invisible_backbone", {})
+    if decision_record.get("materialised") is not True:
+        raise CampaignError("Parent Study-15 decision is not materialised in campaign state")
+    if decision_record.get("decision_artifact") and Path(str(decision_record["decision_artifact"])) != decision_path:
+        raise CampaignError("Parent Study-15 decision path does not match campaign state")
+
+    gates = load_scientific_gates(parent.gates)
+    gate = gates.get("invisible_backbone")
+    if (
+        not isinstance(gate, dict)
+        or gate.get("status") != "locked"
+        or gate.get("selected_variant") != "conventional"
+        or gate.get("validated_sha") != parent_state.get("source_sha")
+    ):
+        raise CampaignError("Parent Study-15 gate is not locked to the recorded conventional selection")
+
+    coordinate_artifacts = (coordinate_gate.get("artifacts") or {}).get("ttbar2L", {})
+    backbone_artifacts = (gate.get("artifacts") or {}).get("ttbar2L", {})
+    expected_seeds = {"seed_42", "seed_43", "seed_44"}
+    if set(coordinate_artifacts) != expected_seeds or set(backbone_artifacts) != expected_seeds:
+        raise CampaignError("Parent Study-15 gate does not contain exactly the three seed-matched ttbar2L artifacts")
+
+    for seed in sorted(expected_seeds):
+        coordinate = coordinate_artifacts[seed]
+        artifact = backbone_artifacts[seed]
+        if (
+            artifact.get("checkpoint") != coordinate.get("checkpoint")
+            or artifact.get("checkpoint_sha256") != coordinate.get("checkpoint_sha256")
+            or artifact.get("identity_file") != coordinate.get("identity_file")
+            or artifact.get("identity_sha256") != coordinate.get("identity_sha256")
+            or artifact.get("model_seed") != coordinate.get("model_seed")
+            or artifact.get("architecture_identity") != coordinate.get("architecture_identity")
+            or artifact.get("source_study") != "invisible_coordinates"
+            or artifact.get("variant") != "met_residual"
+            or artifact.get("git_sha") != coordinate.get("git_sha")
+        ):
+            raise CampaignError(f"Parent Study-15 conventional checkpoint is not seed-matched to Study 13: {seed}")
+        if artifact.get("selection_provenance", {}).get("source_study") != "lgatr_invisible_generator":
+            raise CampaignError(f"Parent Study-15 checkpoint has invalid selection provenance: {seed}")
+        selection = artifact.get("selection_provenance", {})
+        if (
+            selection.get("variant") != "conventional"
+            or selection.get("decision_artifact") != str(decision_path)
+            or selection.get("decision_sha256") != decision_sha
+        ):
+            raise CampaignError(f"Parent Study-15 checkpoint selection provenance is inconsistent: {seed}")
+
+    for topology, by_seed in (gate.get("artifacts") or {}).items():
+        if topology != "ttbar2L" or set(by_seed) != expected_seeds:
+            raise CampaignError("Parent Study-15 checkpoint topology/seed mapping is invalid")
+        for seed, artifact in by_seed.items():
+            checkpoint = Path(str(artifact["checkpoint"])).expanduser().resolve()
+            identity = Path(str(artifact["identity_file"])).expanduser().resolve()
+            if not checkpoint.is_file() or sha256_file(checkpoint) != artifact.get("checkpoint_sha256"):
+                raise CampaignError(f"Parent Study-15 checkpoint is missing or mismatched: {checkpoint}")
+            if not identity.is_file() or sha256_file(identity) != artifact.get("identity_sha256"):
+                raise CampaignError(f"Parent Study-15 checkpoint identity is missing or mismatched: {identity}")
+            payload = _read_json(identity)
+            if payload.get("artifact", {}).get("sha256") != artifact.get("checkpoint_sha256"):
+                raise CampaignError(f"Parent Study-15 identity artifact does not match checkpoint: {identity}")
+            observed = payload.get("identity", {})
+            expected_seed = int(seed.removeprefix("seed_"))
+            if (
+                observed.get("git_commit") != artifact.get("git_sha")
+                or int(observed.get("model_seed", -1)) != expected_seed
+                or observed.get("topology") != topology
+            ):
+                raise CampaignError(f"Parent Study-15 checkpoint training provenance is inconsistent: {identity}")
+
+    record = _read_json(Path(str(stage["submission_record"])))
+    if record.get("study") != "lgatr_invisible_generator" or record.get("source_sha") != parent_state.get("source_sha"):
+        raise CampaignError("Parent Study-15 submission record has the wrong study or source SHA")
+    if stage.get("study_manifest_sha256") and record.get("study_manifest_sha256") != stage.get("study_manifest_sha256"):
+        raise CampaignError("Parent Study-15 submission manifest does not match campaign state")
+    job_state, job_reason = _stage_job_status(parent, stage)
+    if job_state != "COMPLETE":
+        raise CampaignError(f"Parent Study-15 scientific jobs are not complete: {job_reason}")
+    output_valid, output_reason = _stage_output_complete(parent, stage, "lgatr_invisible_generator")
+    if not output_valid:
+        raise CampaignError(f"Parent Study-15 scientific outputs are incomplete: {output_reason}")
+    release_valid, release_reason = _stage_release_ready(parent, parent_state, "invisible_backbone")
+    if not release_valid:
+        raise CampaignError(f"Parent Study-15 release evidence is invalid: {release_reason}")
+    return gate, decision_path, decision_sha
+
+
 def continue_campaign(
     parent_root: str | Path,
     campaign_root: str | Path,
+    *,
+    inherit_through: str | None = None,
 ) -> dict:
     """Create a new source-pinned continuation while leaving the parent untouched."""
+    if inherit_through not in {None, "invisible_backbone"}:
+        raise CampaignError(f"Unsupported continuation boundary: {inherit_through!r}")
     parent = campaign_paths(parent_root)
     target = campaign_paths(campaign_root)
     if not parent.state.is_file():
         raise CampaignError(f"Parent campaign does not exist: {parent.root}")
     parent_state = _read_json(parent.state)
-    gate, decision_path, decision_sha = _validate_parent_coordinate_gate(parent, parent_state)
+    gate, decision_path, decision_sha = _validate_parent_coordinate_gate(
+        parent, parent_state, allow_blocked=inherit_through == "invisible_backbone"
+    )
+    backbone_gate = backbone_decision_path = None
+    backbone_decision_sha = None
+    if inherit_through == "invisible_backbone":
+        backbone_gate, backbone_decision_path, backbone_decision_sha = _validate_parent_invisible_backbone_gate(
+            parent, parent_state, gate
+        )
     with _campaign_lock(target):
         current_sha = _git(target, "rev-parse", "HEAD")
         if _git(target, "status", "--porcelain"):
@@ -2066,10 +2209,18 @@ def continue_campaign(
         if target.state.is_file():
             existing = _read_json(target.state)
             parent_record = existing.get("parent_campaign", {})
+            expected_hashes = {"invisible_coordinates": decision_sha}
+            if backbone_decision_sha is not None:
+                expected_hashes["invisible_backbone"] = backbone_decision_sha
+            imported_hashes_match = parent_record.get("imported_decision_hashes") == expected_hashes
+            if inherit_through is None and parent_record.get("imported_decision_hashes") is None:
+                imported_hashes_match = True
             if (
                 existing.get("source_sha") == current_sha
                 and parent_record.get("campaign_root") == str(parent.root)
                 and parent_record.get("parent_decision_sha256") == decision_sha
+                and parent_record.get("inherit_through") == inherit_through
+                and imported_hashes_match
             ):
                 return existing
             raise CampaignError(f"Campaign root already exists with a different identity: {target.root}")
@@ -2083,18 +2234,42 @@ def continue_campaign(
         shutil.copyfile(target.policy_source, target.policy_snapshot)
         _write_json(target.source_json, source)
         base["invisible_coordinates"] = deepcopy(gate)
+        if backbone_gate is not None:
+            base["invisible_backbone"] = deepcopy(backbone_gate)
         _write_json(target.gates, base)
         target.decisions.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(decision_path, target.decisions / decision_path.name)
+        if backbone_decision_path is not None:
+            shutil.copyfile(backbone_decision_path, target.decisions / backbone_decision_path.name)
+        imported_hashes = {"invisible_coordinates": decision_sha}
+        imported_artifacts = {"invisible_coordinates": str(decision_path)}
+        if backbone_decision_path is not None and backbone_decision_sha is not None:
+            imported_hashes["invisible_backbone"] = backbone_decision_sha
+            imported_artifacts["invisible_backbone"] = str(backbone_decision_path)
         state["parent_campaign"] = {
             "campaign_id": parent_state.get("campaign_id"),
             "source_sha": parent_state.get("source_sha"),
             "campaign_root": str(parent.root),
-            "imported_gates": ["invisible_coordinates"],
+            "imported_gates": ["invisible_coordinates"] + (["invisible_backbone"] if backbone_gate is not None else []),
             "parent_decision_sha256": decision_sha,
             "parent_decision_artifact": str(decision_path),
             "continuation_source_sha": current_sha,
+            "inherit_through": inherit_through,
+            "imported_decision_hashes": imported_hashes,
+            "imported_decision_artifacts": imported_artifacts,
         }
+        if backbone_gate is not None:
+            state["parent_campaign"]["inherited_stage_provenance"] = {
+                "invisible_coordinates": {
+                    "job_ids": parent_state.get("stages", {}).get("invisible_coordinates", {}).get("job_ids", []),
+                    "submission_record": parent_state.get("stages", {}).get("invisible_coordinates", {}).get("submission_record"),
+                },
+                "invisible_backbone": {
+                    "job_ids": parent_state.get("stages", {}).get("invisible_backbone", {}).get("job_ids", []),
+                    "controller_job": parent_state.get("stages", {}).get("invisible_backbone", {}).get("controller_job"),
+                    "submission_record": parent_state.get("stages", {}).get("invisible_backbone", {}).get("submission_record"),
+                },
+            }
         state["smoke"] = {
             "status": "INHERITED",
             "job_id": parent_state.get("smoke", {}).get("job_id"),
@@ -2117,8 +2292,28 @@ def continue_campaign(
             "sha256": decision_sha,
             "inherited_from": parent_state.get("campaign_id"),
         }
-        state["stage"] = "invisible_backbone"
-        _set_state(state, "STUDY15_PREFLIGHT_REQUIRED", reason="Study-13 gate inherited; run the execution-backed Study-15 preflight")
+        if backbone_gate is not None and backbone_decision_path is not None and backbone_decision_sha is not None:
+            state["stages"]["invisible_backbone"].update({
+                "state": "COMPLETE",
+                "selected_variant": "conventional",
+                "completion_reason": "Inherited locked Study-15 scientific gate; no Study-15 resubmission permitted",
+                "inherited_from": parent_state.get("campaign_id"),
+                "inherited_gate_digest": _json_digest(backbone_gate),
+                "historical_submission_record": parent_state.get("stages", {}).get("invisible_backbone", {}).get("submission_record"),
+            })
+            state["decisions"]["invisible_backbone"] = {
+                "materialised": True,
+                "path": str(target.decisions / backbone_decision_path.name),
+                "sha256": backbone_decision_sha,
+                "inherited_from": parent_state.get("campaign_id"),
+                "selected_variant": "conventional",
+                "status": "AUTO_SELECTED",
+            }
+            state["stage"] = "assignment_coupling"
+            _set_state(state, "STUDY10_PREFLIGHT_REQUIRED", reason="Study-13 and Study-15 gates inherited; run the execution-backed Study-10 preflight")
+        else:
+            state["stage"] = "invisible_backbone"
+            _set_state(state, "STUDY15_PREFLIGHT_REQUIRED", reason="Study-13 gate inherited; run the execution-backed Study-15 preflight")
         _ensure_campaign_files(target)
         _validate_overlay_immutability(target, state)
         _save_state(target, state)

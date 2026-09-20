@@ -1767,6 +1767,73 @@ def check_study10_control_contract() -> None:
         raise AssertionError("Study-10 Rcoupling calculation is incorrect")
 
 
+def check_study10_event_alignment_contract() -> None:
+    """Loader event reordering must carry every event-dependent tensor with it."""
+    from scripts.run_study10_controls import _collect_split
+
+    static_leaf = {"jet": torch.tensor([0, 1], dtype=torch.long)}
+    static_child = {"top": torch.tensor([0], dtype=torch.long)}
+
+    class Fixture:
+        def __init__(self, loader_ids: list[int]):
+            ids = torch.tensor(loader_ids, dtype=torch.long)
+            values = torch.tensor(loader_ids, dtype=torch.float32)
+            batch = {
+                "event_index": ids,
+                "physics_vectors": values[:, None, None].expand(-1, 2, 4).clone(),
+                "met_xy": torch.stack((values, -values), dim=1),
+                "invisible_truth": values[:, None, None].expand(-1, 2, 4).clone(),
+                "structured": {
+                    "pools": {
+                        "node": {
+                            "candidate_mask": torch.stack((ids % 2 == 0, ids % 3 == 0), dim=1),
+                            "leaf_indices": static_leaf,
+                            "child_indices": static_child,
+                        }
+                    }
+                },
+            }
+            self._batch = batch
+            spec = type("Spec", (), {"dag_order": ("node",)})()
+            self.structured_collator = type("Collator", (), {"spec": spec})()
+
+        def train_dataloader(self):
+            return [self._batch]
+
+        def val_dataloader(self):
+            return [self._batch]
+
+    for prediction_ids in ([30, 10, 20], [10, 20, 30]):
+        result = _collect_split(Fixture([30, 10, 20]), "train", np.asarray(prediction_ids))
+        if not np.array_equal(result["event_id"], np.asarray(prediction_ids)):
+            raise AssertionError("Study-10 alignment did not follow prediction EVENT_ID order")
+        expected = torch.tensor(prediction_ids, dtype=torch.float32)
+        if not torch.equal(result["physics_vectors"][:, 0, 0], expected):
+            raise AssertionError("Study-10 alignment changed physics-vector event ownership")
+        if not torch.equal(result["met_xy"][:, 0], expected):
+            raise AssertionError("Study-10 alignment changed MET event ownership")
+        if not torch.equal(result["invisible_truth"][:, 0, 0], expected):
+            raise AssertionError("Study-10 alignment changed truth event ownership")
+        expected_mask = torch.stack((expected.to(torch.long) % 2 == 0, expected.to(torch.long) % 3 == 0), dim=1)
+        if not torch.equal(result["pools"]["node"]["candidate_mask"], expected_mask):
+            raise AssertionError("Study-10 alignment changed candidate-mask event ownership")
+        aligned_pool = result["pools"]["node"]
+        if (
+            not torch.equal(aligned_pool["leaf_indices"]["jet"], static_leaf["jet"])
+            or not torch.equal(aligned_pool["child_indices"]["top"], static_child["top"])
+        ):
+            raise AssertionError("Study-10 alignment altered static topology metadata")
+
+    for bad_ids, message in (([30, 10, 10], "duplicate"), ([30, 10, 40], "populations differ")):
+        try:
+            _collect_split(Fixture(bad_ids), "train", np.asarray([10, 20, 30]))
+        except ValueError as error:
+            if message not in str(error):
+                raise AssertionError(f"Study-10 alignment rejected bad IDs for the wrong reason: {error}") from error
+        else:
+            raise AssertionError("Study-10 alignment accepted invalid event IDs")
+
+
 def check_stage_preflight_interface_contract() -> None:
     """Every dynamic stage preflight binds to the release worker protocol."""
     from scripts.release_stage_gpu import STAGE_INFO, preflight_kwargs
@@ -2279,6 +2346,7 @@ def main() -> None:
     check_partial_checkpoint_contract()
     check_nested_subsets()
     check_study10_control_contract()
+    check_study10_event_alignment_contract()
     check_stage_preflight_interface_contract()
     check_assignment_conditioning_context_contract()
     check_loader_split_seed_contract()

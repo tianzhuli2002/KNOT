@@ -807,6 +807,9 @@ def _main_new(argv: list[str]) -> int:
     campaign_continue.add_argument("campaign", nargs="?", default="paper1")
     campaign_continue.add_argument("--from-campaign", type=Path, required=True)
     campaign_continue.add_argument("--campaign-root", type=Path, required=True)
+    campaign_continue.add_argument(
+        "--inherit-through", choices=("invisible_backbone",), default=None
+    )
     campaign_preflight = campaign_sub.add_parser("preflight")
     campaign_preflight.add_argument("campaign", nargs="?", default="paper1")
     campaign_preflight.add_argument(
@@ -906,7 +909,11 @@ def _main_new(argv: list[str]) -> int:
                 raise RuntimeError(f"Unknown campaign {args.campaign!r}; only paper1 is maintained")
             from joint_event_reconstruction import campaign_controller
 
-            state = campaign_controller.continue_campaign(args.from_campaign, args.campaign_root)
+            state = campaign_controller.continue_campaign(
+                args.from_campaign,
+                args.campaign_root,
+                inherit_through=args.inherit_through,
+            )
             print(
                 f"Paper-1 campaign continuation created: {state['campaign_id']}\n"
                 f"  source SHA: {state['source_sha']}\n"
