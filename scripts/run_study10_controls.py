@@ -166,25 +166,73 @@ def _collect_split(data, split: str, expected_event_id: np.ndarray) -> dict:
     batches = list(loader)
     if not batches:
         raise ValueError(f"Study 10 {split} loader produced no events")
-    event_id = torch.cat([batch["event_index"] for batch in batches]).cpu().numpy()
-    if not np.array_equal(event_id, expected_event_id):
-        raise ValueError(f"Prediction EVENT_ID order disagrees with {split} data loader")
+
+    event_id = torch.cat(
+        [batch["event_index"] for batch in batches]
+    ).cpu().numpy()
+    expected_event_id = np.asarray(expected_event_id)
+
+    if event_id.ndim != 1 or expected_event_id.ndim != 1:
+        raise ValueError(f"Study 10 {split} EVENT_ID arrays must be one-dimensional")
+    if event_id.dtype.kind not in "iu" or expected_event_id.dtype.kind not in "iu":
+        raise ValueError(f"Study 10 {split} EVENT_ID arrays must contain integers")
+    if len(np.unique(event_id)) != len(event_id):
+        raise ValueError(f"Study 10 {split} data loader contains duplicate EVENT_IDs")
+    if len(np.unique(expected_event_id)) != len(expected_event_id):
+        raise ValueError(f"Study 10 {split} predictions contain duplicate EVENT_IDs")
+
+    if (
+        len(event_id) != len(expected_event_id)
+        or not np.array_equal(np.sort(event_id), np.sort(expected_event_id))
+    ):
+        missing = np.setdiff1d(expected_event_id, event_id)
+        extra = np.setdiff1d(event_id, expected_event_id)
+        raise ValueError(
+            f"Study 10 {split} prediction/loader EVENT_ID populations differ: "
+            f"prediction_count={len(expected_event_id)}, loader_count={len(event_id)}, "
+            f"missing_from_loader={missing[:10].tolist()}, "
+            f"extra_in_loader={extra[:10].tolist()}"
+        )
+
+    # Prediction files define the target event order. Each loader row must
+    # carry all its physics information and pool masks into that same order.
+    positions = {int(identifier): i for i, identifier in enumerate(event_id)}
+    indices = np.asarray(
+        [positions[int(identifier)] for identifier in expected_event_id],
+        dtype=np.int64,
+    )
+    permutation = torch.from_numpy(indices)
+
+    aligned_event_id = event_id[indices]
+    if not np.array_equal(aligned_event_id, expected_event_id):
+        raise ValueError(f"Study 10 {split} EVENT_ID alignment failed")
+
+    def aligned(name: str) -> torch.Tensor:
+        values = torch.cat([batch[name] for batch in batches], dim=0)
+        return values.index_select(0, permutation)
+
     spec = data.structured_collator.spec
     pools = {}
     for node in spec.dag_order:
         first = batches[0]["structured"]["pools"][node]
+        candidate_mask = torch.cat(
+            [
+                batch["structured"]["pools"][node]["candidate_mask"]
+                for batch in batches
+            ],
+            dim=0,
+        )
         pools[node] = {
-            "candidate_mask": torch.cat(
-                [batch["structured"]["pools"][node]["candidate_mask"] for batch in batches], dim=0
-            ),
+            "candidate_mask": candidate_mask.index_select(0, permutation),
             "leaf_indices": first["leaf_indices"],
             "child_indices": first["child_indices"],
         }
+
     return {
-        "event_id": event_id,
-        "physics_vectors": torch.cat([batch["physics_vectors"] for batch in batches]),
-        "met_xy": torch.cat([batch["met_xy"] for batch in batches]),
-        "invisible_truth": torch.cat([batch["invisible_truth"] for batch in batches]),
+        "event_id": aligned_event_id,
+        "physics_vectors": aligned("physics_vectors"),
+        "met_xy": aligned("met_xy"),
+        "invisible_truth": aligned("invisible_truth"),
         "pools": pools,
     }
 
