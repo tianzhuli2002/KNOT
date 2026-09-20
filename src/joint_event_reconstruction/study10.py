@@ -56,9 +56,24 @@ def visible_only_scorer_input(
     is deterministic zero padding solely to match the physics scorer input
     width; it does not carry any invisible or physics-derived value.
     """
+    if visible_log_score.ndim != 2:
+        raise ValueError("Visible-only Study-10 log scores must have shape [B,K]")
     shape = visible_log_score.shape
-    if any(value.shape != shape for value in (visible_probability, assignment_entropy, top1_top2_margin)):
-        raise ValueError("Visible-only Study-10 features must share [B,K] shape")
+    if visible_probability.shape != shape:
+        raise ValueError("Visible-only Study-10 probabilities must have shape [B,K]")
+
+    def expand_event_feature(value: torch.Tensor, name: str) -> torch.Tensor:
+        if value.shape == shape:
+            return value
+        if value.ndim == 1 and value.shape[0] == shape[0]:
+            return value[:, None].expand(-1, shape[1])
+        raise ValueError(
+            f"Visible-only Study-10 {name} must have shape [B] or [B,K]; "
+            f"received {tuple(value.shape)} for [B,K]={tuple(shape)}"
+        )
+
+    assignment_entropy = expand_event_feature(assignment_entropy, "assignment entropy")
+    top1_top2_margin = expand_event_feature(top1_top2_margin, "top1-top2 margin")
     if target_features < 4:
         raise ValueError("Matched visible-only control needs at least four input features")
     base = torch.stack(
@@ -156,7 +171,12 @@ def select_alpha(
     """Select alpha on TRAIN only; ties resolve to the smallest alpha."""
     results: dict[str, float] = {}
     for alpha in alphas:
-        correct = rank_correctness(visible_log_score + float(alpha) * analytic_score, truth, valid)
+        score = (
+            visible_log_score
+            if float(alpha) == 0.0
+            else visible_log_score + float(alpha) * analytic_score
+        )
+        correct = rank_correctness(score, truth, valid)
         results[str(float(alpha))] = float(correct.float().mean())
     selected = min(alphas, key=lambda alpha: (-results[str(float(alpha))], float(alpha)))
     return float(selected), results

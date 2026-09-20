@@ -129,10 +129,20 @@ def run(*, output_dir: Path, device: str, gates_path: Path, expected_source_sha:
     analysis = _analyse_seed(train_features, validation_features, output_dir, epochs=1, seed=42)
     with h5py.File(validation_features, "r") as source:
         nested = source["PHYSICS/nested_analytic_scores"][:]
+        valid_hypotheses = source["valid_hypotheses"][:].astype(bool, copy=False)
         k_prefixes = json.loads(source["PHYSICS"].attrs["K_prefixes"])
         m_prefixes = json.loads(source["PHYSICS"].attrs["M_prefixes"])
-        if not np.isfinite(nested).all() or nested.shape[1] != 5 or nested.shape[2] != 5:
+        if nested.shape[:2] != (len(K_PREFIXES), len(M_PREFIXES)):
             raise RuntimeError(f"Study-10 nested K/M product has the wrong shape: {nested.shape}")
+        if np.isnan(nested).any() or np.isposinf(nested).any():
+            raise RuntimeError("Study-10 nested K/M product contains NaN or positive infinity")
+        for k_index, k in enumerate(K_PREFIXES):
+            active = valid_hypotheses[:, :k]
+            for m_index in range(len(M_PREFIXES)):
+                if not np.isfinite(nested[k_index, m_index, :, :k][active]).all():
+                    raise RuntimeError(
+                        f"Study-10 nested K/M product is non-finite for valid hypotheses: K={k}"
+                    )
         if k_prefixes != list(K_PREFIXES) or m_prefixes != list(M_PREFIXES):
             raise RuntimeError(
                 f"Study-10 nested K/M prefixes are not the declared prefixes: {k_prefixes}, {m_prefixes}"

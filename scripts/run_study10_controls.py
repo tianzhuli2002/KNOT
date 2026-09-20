@@ -454,8 +454,18 @@ def _load_features(path: Path) -> dict[str, torch.Tensor | list[str] | str]:
 
 
 def _input_tensors(features: dict) -> tuple[torch.Tensor, torch.Tensor]:
+    analytic = features["analytic"].float()
+    valid = features["valid"]
+    if not torch.isfinite(analytic[valid]).all():
+        raise FloatingPointError("Study-10 analytic score is non-finite for a valid hypothesis")
+    # Invalid hypotheses are masked before ranking/loss evaluation. Their
+    # stored -inf sentinel must nevertheless be finite while it passes through
+    # the learned scorer, otherwise ordinary linear layers create NaN gradients.
+    analytic_for_scorer = torch.where(
+        torch.isfinite(analytic), analytic, torch.zeros_like(analytic)
+    )
     reduction = torch.cat(
-        (features["physics_mean"], features["physics_std"], features["physics_rms"], features["analytic"].unsqueeze(-1)),
+        (features["physics_mean"], features["physics_std"], features["physics_rms"], analytic_for_scorer.unsqueeze(-1)),
         dim=-1,
     )
     physics = torch.cat(
@@ -494,6 +504,8 @@ def _generate_prediction(experiment: Path, checkpoint: Path, output: Path, split
     config = load_experiment(experiment, overrides)
     visible = load_visible_config(config)
     data = build_data(config, visible)
+    if device == "cpu":
+        data.config.pin_memory = False
     data.setup("predict")
     module = load_trained(config, visible, data, str(checkpoint)).to(device).eval()
     predict_hdf5(
@@ -532,6 +544,8 @@ def _build_one_seed(
     config = load_experiment(experiment, ["training.workers=0"])
     visible = load_visible_config(config)
     data = build_data(config, visible)
+    if device == "cpu":
+        data.config.pin_memory = False
     data.setup("predict")
     spec = load_topology(
         config.topology_config, OmegaConf.to_container(config.data.truth_bindings, resolve=True)
@@ -597,12 +611,16 @@ def _analyse_seed(train_path: Path, validation_path: Path, output_dir: Path, epo
     )
     with torch.no_grad():
         baseline = validation["visible_log_score"]
-        alpha_zero_score = baseline + 0.0 * validation["analytic"]
+        alpha_zero_score = baseline
         if not torch.isfinite(alpha_zero_score).all():
             raise FloatingPointError("Study-10 alpha=0 control contains non-finite scores")
         physics_score = baseline + scorers.physics(validation_physics)
         visible_only_score = baseline + scorers.visible_only(validation_visible)
-        analytic_score = baseline + alpha * validation["analytic"]
+        analytic_score = (
+            baseline
+            if alpha == 0.0
+            else baseline + alpha * validation["analytic"]
+        )
         oracle_score = validation["oracle"]
     records = {
         "visible_baseline": _transitions_for(baseline, validation),

@@ -1735,6 +1735,41 @@ def check_study10_control_contract() -> None:
         raise AssertionError("Visible-only Study-10 control does not preserve its explicit input contract")
     if not torch.equal(visible_input[..., 4:], torch.zeros_like(visible_input[..., 4:])):
         raise AssertionError("Visible-only Study-10 control received physics features in padding")
+    event_entropy = torch.arange(batch, dtype=torch.float32)
+    event_margin = torch.arange(batch, dtype=torch.float32) + 10.0
+    broadcast_input = visible_only_scorer_input(
+        visible_log_score,
+        visible_probability,
+        event_entropy,
+        event_margin,
+        target_features=12,
+    )
+    if broadcast_input.shape != (batch, top_k, 12):
+        raise AssertionError("Visible-only event-level features were not broadcast to [B,K,F]")
+    if not torch.equal(broadcast_input[..., 2], event_entropy[:, None].expand(-1, top_k)):
+        raise AssertionError("Visible-only entropy broadcast changed event values")
+    if not torch.equal(broadcast_input[..., 3], event_margin[:, None].expand(-1, top_k)):
+        raise AssertionError("Visible-only margin broadcast changed event values")
+    for bad_entropy, bad_margin in (
+        (torch.zeros(batch, 1, top_k), event_margin),
+        (torch.zeros(top_k), event_margin),
+    ):
+        try:
+            visible_only_scorer_input(
+                visible_log_score, visible_probability, bad_entropy, bad_margin, target_features=12
+            )
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("Visible-only scorer accepted an invalid event-feature shape")
+    try:
+        visible_only_scorer_input(
+            visible_log_score, visible_probability[:, :-1], entropy, margin, target_features=12
+        )
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("Visible-only scorer accepted mismatched score/probability shapes")
 
     truth = torch.zeros(batch, top_k, dtype=torch.bool)
     truth[:, 0] = True
