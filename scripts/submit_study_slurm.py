@@ -491,6 +491,169 @@ def _post_script(
     path.chmod(0o755)
 
 
+def _write_study10_analysis_task_file(
+    path: Path, tasks: list[tuple[int, Path, Path, str, Path, str, Path]]
+) -> None:
+    """Write one independently resumable Study-10 seed analysis task per row."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "".join(
+            "\t".join(
+                (
+                    str(seed), str(prediction), str(experiment), experiment_sha,
+                    str(checkpoint), checkpoint_sha, str(seed_record),
+                )
+            ) + "\n"
+            for seed, prediction, experiment, experiment_sha, checkpoint, checkpoint_sha, seed_record in tasks
+        )
+    )
+
+
+def _study10_analysis_worker_script(
+    path: Path,
+    *,
+    task_file: Path,
+    output: Path,
+    study_path: Path,
+    expected_commit: str,
+    source_root: Path,
+    project_root: Path,
+    expected_manifest_sha256: str,
+    expected_gate_digest: str,
+) -> None:
+    """Write the GPU worker for one-seed, resumable Study-10 analysis."""
+    command = [
+        sys.executable,
+        str(source_root / "scripts/run_study10_controls.py"),
+        "--prediction", '"$prediction"',
+        "--experiment", '"$experiment"',
+        "--checkpoint", '"$checkpoint"',
+        "--output", str(output),
+        "--device", "cuda",
+        "--seed", '"$seed"',
+        "--seed-record", '"$seed_record"',
+        "--study-manifest-sha256", expected_manifest_sha256,
+        "--gate-digest", expected_gate_digest,
+    ]
+    rendered = " ".join(
+        token if token.startswith('"$') else shlex.quote(token) for token in command
+    )
+    path.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        + _runtime_header(source_root, project_root, expected_commit)
+        + f"manifest_snapshot={shlex.quote(str(study_path))}\n"
+        + f"expected_manifest_sha256={shlex.quote(expected_manifest_sha256)}\n"
+        + 'actual_manifest_sha256=$(sha256sum "$manifest_snapshot" | cut -d" " -f1)\n'
+        + 'if [[ "$actual_manifest_sha256" != "$expected_manifest_sha256" ]]; then\n'
+        + '    echo "Study manifest snapshot changed after submission" >&2\n'
+        + "    exit 3\n"
+        + "fi\n"
+        + f"task_file={shlex.quote(str(task_file))}\n"
+        + 'line=$(sed -n "$((SLURM_ARRAY_TASK_ID + 1))p" "$task_file")\n'
+        + 'if [[ -z "$line" ]]; then echo "Missing Study-10 analysis task" >&2; exit 2; fi\n'
+        + "IFS=$'\\t' read -r seed prediction experiment experiment_sha checkpoint checkpoint_sha seed_record <<< \"$line\"\n"
+        + 'actual_experiment_sha=$(sha256sum "$experiment" | cut -d" " -f1)\n'
+        + 'if [[ "$actual_experiment_sha" != "$experiment_sha" ]]; then\n'
+        + '    echo "Study-10 experiment changed after submission" >&2\n'
+        + "    exit 3\n"
+        + "fi\n"
+        + 'actual_checkpoint_sha=$(sha256sum "$checkpoint" | cut -d" " -f1)\n'
+        + 'if [[ "$actual_checkpoint_sha" != "$checkpoint_sha" ]]; then\n'
+        + '    echo "Study-10 checkpoint changed after submission" >&2\n'
+        + "    exit 3\n"
+        + "fi\n"
+        + rendered
+        + "\n"
+    )
+    path.chmod(0o755)
+
+
+def _study10_seed_tasks(
+    study: StudySpec,
+    *,
+    topology: str,
+    variant: VariantSpec,
+    seeds: tuple[int, ...],
+    output_root: Path,
+    expected_source_sha: str,
+    expected_manifest_sha256: str,
+    expected_gate_digest: str,
+) -> tuple[list[tuple[int, Path, Path, str, Path, str, Path]], list[int]]:
+    from scripts.run_study import _prediction_checkpoint, _prediction_path, _run_dir
+    from scripts.run_study10_controls import _seed_record_contract
+
+    if len(variant.predictions) != 1:
+        raise ValueError("Study-10 resumable analysis requires one stored posterior prediction")
+    prediction_name = variant.predictions[0].name
+    tasks = []
+    skipped = []
+    for seed in seeds:
+        prediction = _prediction_path(
+            output_root, study, topology, variant.name, seed, prediction_name
+        )
+        experiment = _run_dir(
+            output_root, study, topology, variant.name, seed
+        ) / "predictions/posterior.yaml"
+        checkpoint = _prediction_checkpoint(
+            study, variant, topology, seed, output_root
+        )
+        seed_record = (
+            output_root / study.name / "study10_seed_records" / f"seed_{seed}.json"
+        )
+        try:
+            _seed_record_contract(
+                seed_record,
+                expected_seed=seed,
+                expected_source_sha=expected_source_sha,
+                expected_manifest_sha256=expected_manifest_sha256,
+                expected_gate_digest=expected_gate_digest,
+                expected_checkpoint=checkpoint,
+                expected_checkpoint_sha256=_sha256_file(checkpoint),
+            )
+        except (OSError, ValueError, KeyError, RuntimeError, EOFError):
+            pass
+        else:
+            skipped.append(seed)
+            continue
+        tasks.append(
+            (
+                seed,
+                prediction,
+                experiment,
+                _sha256_file(experiment),
+                checkpoint,
+                _sha256_file(checkpoint),
+                seed_record,
+            )
+        )
+    return tasks, skipped
+
+
+def _study10_finalize_command(
+    *,
+    source_root: Path,
+    output_root: Path,
+    study: StudySpec,
+    seeds: tuple[int, ...],
+    manifest_sha256: str,
+    gate_digest: str,
+) -> list[str]:
+    command = [
+        sys.executable,
+        str(source_root / "scripts/run_study10_controls.py"),
+        "--finalize",
+        "--output", str(output_root / study.name / "study10_human_review"),
+        "--study-manifest-sha256", manifest_sha256,
+        "--gate-digest", gate_digest,
+    ]
+    for seed in seeds:
+        command.extend(
+            ["--seed-record", str(output_root / study.name / "study10_seed_records" / f"seed_{seed}.json")]
+        )
+    return command
+
+
 def _sbatch_array(
     *,
     worker: Path,
@@ -919,29 +1082,131 @@ def main() -> None:
         submitted["evaluation_job"] = evaluation_job
         submitted["plot_job"] = plot_job
 
-        aggregate_commands = [
-            _post_command(
-                manifest_snapshot,
-                stage,
-                source_root=source_root,
-                output_root=output_root,
-                topologies=topologies,
-                variants=prediction_variants,
-                seeds=seeds,
-                overrides=overrides,
-                expected_gate_digest=study.gates_digest,
-                gates_path=gates_path,
-            )
-            for stage in ("compare", "summary", "analyze")
+        analysis_job = None
+        analysis_dependencies = [
+            job for job in (evaluation_job, plot_job) if job is not None
         ]
-        aggregate_path = output_root / study.name / "summary_aggregate.json"
-        aggregate_job = None
-        if not (
-            not evaluation_tasks
-            and not plot_tasks
-            and aggregate_path.is_file()
-            and aggregate_path.stat().st_size > 0
+        from scripts.submit_campaign import _outputs_complete
+
+        outputs_complete, _ = _outputs_complete(study, submitted)
+        if study.name == "compatibility_reranking" and not outputs_complete:
+            selected = [
+                variant for variant in prediction_variants
+                if variant.name == "compatibility"
+            ]
+            if len(selected) != 1 or len(topologies) != 1:
+                raise ValueError(
+                    "Study-10 postprocessing requires compatibility/ttbar2L"
+                )
+            analysis_tasks, skipped_analysis_seeds = _study10_seed_tasks(
+                study,
+                topology=topologies[0],
+                variant=selected[0],
+                seeds=seeds,
+                output_root=output_root,
+                expected_source_sha=git_commit,
+                expected_manifest_sha256=manifest_sha256,
+                expected_gate_digest=study.gates_digest or "",
+            )
+            submitted["skipped_complete_analysis_seeds"] = skipped_analysis_seeds
+            submitted["analysis_tasks"] = len(analysis_tasks)
+            if analysis_tasks:
+                analysis_file = slurm_root / "study10_analysis.tsv"
+                analysis_worker = slurm_root / "study10_analysis.sh"
+                _write_study10_analysis_task_file(analysis_file, analysis_tasks)
+                _study10_analysis_worker_script(
+                    analysis_worker,
+                    task_file=analysis_file,
+                    output=output_root / study.name / "study10_human_review",
+                    study_path=manifest_snapshot,
+                    expected_commit=git_commit,
+                    source_root=source_root,
+                    project_root=PROJECT_ROOT,
+                    expected_manifest_sha256=manifest_sha256,
+                    expected_gate_digest=study.gates_digest or "",
+                )
+                analysis_dependency = ":".join(analysis_dependencies) if analysis_dependencies else args.dependency_afterok
+                analysis_job = _submit(
+                    _sbatch_array(
+                        worker=analysis_worker,
+                        task_count=len(analysis_tasks),
+                        job_name=f"jer-{study.name[:18]}-analysis",
+                        log_dir=log_dir,
+                        partition=args.gpu_partition,
+                        gres=args.gpu_gres,
+                        cpus=args.gpu_cpus,
+                        memory=args.gpu_mem,
+                        time_limit=args.gpu_time,
+                        dependency=analysis_dependency,
+                        extra=gpu_extra,
+                    ),
+                    dry_run=args.dry_run,
+                    fake_id=fake_id,
+                )
+                fake_id += 1
+                submitted["analysis_task_file"] = str(analysis_file)
+                submitted["analysis_worker"] = str(analysis_worker)
+                submitted["analysis_job"] = analysis_job
+                submitted["analysis_depends_on"] = list(analysis_dependencies)
+                submitted["postprocess_tasks"] += len(analysis_tasks)
+                if analysis_job is not None:
+                    analysis_dependencies.append(analysis_job)
+            else:
+                submitted["analysis_job"] = None
+        else:
+            submitted["analysis_tasks"] = 0
+            submitted["analysis_job"] = None
+            submitted["skipped_complete_analysis_seeds"] = []
+
+        aggregate_commands: list[list[str]] = []
+        summary_root = output_root / study.name
+        if study.name != "compatibility_reranking" or not all(
+            (summary_root / name).is_file() and (summary_root / name).stat().st_size > 0
+            for name in ("summary.json", "summary_aggregate.json")
         ):
+            aggregate_commands.extend(
+                _post_command(
+                    manifest_snapshot,
+                    stage,
+                    source_root=source_root,
+                    output_root=output_root,
+                    topologies=topologies,
+                    variants=prediction_variants,
+                    seeds=seeds,
+                    overrides=overrides,
+                    expected_gate_digest=study.gates_digest,
+                    gates_path=gates_path,
+                )
+                for stage in ("compare", "summary")
+            )
+        if study.name == "compatibility_reranking":
+            aggregate_commands.append(
+                _study10_finalize_command(
+                    source_root=source_root,
+                    output_root=output_root,
+                    study=study,
+                    seeds=seeds,
+                    manifest_sha256=manifest_sha256,
+                    gate_digest=study.gates_digest or "",
+                )
+            )
+        else:
+            aggregate_commands.append(
+                _post_command(
+                    manifest_snapshot,
+                    "analyze",
+                    source_root=source_root,
+                    output_root=output_root,
+                    topologies=topologies,
+                    variants=prediction_variants,
+                    seeds=seeds,
+                    overrides=overrides,
+                    expected_gate_digest=study.gates_digest,
+                    gates_path=gates_path,
+                )
+            )
+        aggregate_job = None
+        if not outputs_complete:
             aggregate_worker = slurm_root / "aggregate.sh"
             _post_script(
                 aggregate_worker,
@@ -953,7 +1218,7 @@ def main() -> None:
                 manifest_sha256,
                 base_experiments,
             )
-            dependencies = [job for job in (evaluation_job, plot_job) if job is not None]
+            dependencies = list(dict.fromkeys(analysis_dependencies))
             if not dependencies and args.dependency_afterok:
                 dependencies.append(args.dependency_afterok)
             dependency_text = ":".join(dependencies) if dependencies else None
@@ -978,7 +1243,7 @@ def main() -> None:
             submitted["aggregate_worker"] = str(aggregate_worker)
         submitted["aggregate_job"] = aggregate_job
         submitted["aggregate_depends_on"] = [
-            job for job in (evaluation_job, plot_job) if job is not None
+            job for job in analysis_dependencies if job is not None
         ]
         _save_submission(submission_path, submitted)
         slurm_base.mkdir(parents=True, exist_ok=True)

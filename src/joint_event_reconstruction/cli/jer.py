@@ -795,6 +795,9 @@ def _main_new(argv: list[str]) -> int:
     campaign_resume = campaign_sub.add_parser("resume")
     campaign_resume.add_argument("campaign", nargs="?", default="paper1")
     campaign_resume.add_argument("--campaign-root", type=Path)
+    campaign_recover = campaign_sub.add_parser("recover")
+    campaign_recover.add_argument("campaign", nargs="?", default="paper1")
+    campaign_recover.add_argument("--campaign-root", type=Path, required=True)
     campaign_review = campaign_sub.add_parser("review")
     campaign_review.add_argument("campaign", nargs="?", default="paper1")
     campaign_review.add_argument("--campaign-root", type=Path)
@@ -886,6 +889,19 @@ def _main_new(argv: list[str]) -> int:
 
             state = campaign_controller.resume(args.campaign_root)
             print(f"Paper-1 campaign resumed: {state['state']}")
+            return 0
+        if args.campaign_command == "recover":
+            if args.campaign != "paper1":
+                raise RuntimeError(f"Unknown campaign {args.campaign!r}; only paper1 is maintained")
+            from joint_event_reconstruction import campaign_controller
+
+            state = campaign_controller.recover_postprocess(args.campaign_root)
+            stage = state["stages"]["assignment_coupling"]
+            print(
+                f"Paper-1 Study-10 postprocessing recovery armed: "
+                f"jobs={stage.get('recovery_job_ids', [])} "
+                f"controller={stage.get('controller_job', '-')} state={state['state']}"
+            )
             return 0
         if args.campaign_command == "review":
             if args.campaign != "paper1":

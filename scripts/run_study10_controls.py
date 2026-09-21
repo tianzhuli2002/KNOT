@@ -12,6 +12,7 @@ import argparse
 from dataclasses import dataclass
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import sys
@@ -352,7 +353,8 @@ def _write_feature_artifact(
         oracle_scores.append(truth_reduction.analytic_log_evidence.detach().cpu().numpy())
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    with h5py.File(path, "w") as destination:
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    with h5py.File(temporary, "w") as destination:
         destination.attrs.update({
             "schema": "jer_study10_features_v1",
             "split": prediction.split,
@@ -404,6 +406,7 @@ def _write_feature_artifact(
         physics.attrs["ablation_names"] = json.dumps(list(FEATURE_ABLATIONS))
         physics.attrs["K_prefixes"] = json.dumps(list(REQUESTED_K))
         physics.attrs["M_prefixes"] = json.dumps(list(REQUESTED_M))
+    temporary.replace(path)
 
 
 def _load_features(path: Path) -> dict[str, torch.Tensor | list[str] | str]:
@@ -451,6 +454,172 @@ def _load_features(path: Path) -> dict[str, torch.Tensor | list[str] | str]:
             "physics_scaler_sha256": str(source.attrs["physics_scaler_sha256"]),
             "physics_scaler_fit_split": str(source.attrs["physics_scaler_fit_split"]),
         }
+
+
+def _atomic_json(path: Path, payload: object) -> None:
+    """Publish one analysis record only after it has been written completely."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    temporary.replace(path)
+
+
+def _feature_artifact_contract(
+    path: Path,
+    *,
+    expected_split: str,
+    expected_source_sha: str | None = None,
+    expected_manifest_sha256: str | None = None,
+    expected_gate_digest: str | None = None,
+    expected_checkpoint_sha256: str | None = None,
+) -> dict:
+    """Validate the cheap, provenance-bearing part of one feature artifact.
+
+    This deliberately opens and inspects the HDF5 file rather than treating a
+    non-empty pathname as a completed computation.  The full tensor checks are
+    still performed by ``_load_features`` before scorer training.
+    """
+    required = {
+        "EVENT_ID": ("EVENT_ID",),
+        "visible_log_score": ("visible_log_score",),
+        "visible_probability": ("visible_probability",),
+        "truth": ("truth",),
+        "valid_hypotheses": ("valid_hypotheses",),
+        "physics_mean": ("PHYSICS/mean",),
+        "physics_std": ("PHYSICS/std",),
+        "physics_rms": ("PHYSICS/rms",),
+        "analytic_score": ("PHYSICS/analytic_score",),
+        "truth_neutrino_score": ("PHYSICS/truth_neutrino_score",),
+        "ablation_scores": ("PHYSICS/ablation_scores",),
+        "nested_analytic_scores": ("PHYSICS/nested_analytic_scores",),
+    }
+    if not path.is_file() or path.stat().st_size <= 0:
+        raise ValueError(f"Study-10 feature artifact is absent or empty: {path}")
+    with h5py.File(path, "r") as source:
+        if source.attrs.get("schema") != "jer_study10_features_v1":
+            raise ValueError(f"Unsupported Study-10 feature artifact: {path}")
+        split = str(source.attrs.get("split", ""))
+        if split != expected_split:
+            raise ValueError(f"Study-10 feature split mismatch for {path}: {split!r}")
+        if bool(source.attrs.get("test_split_used", True)):
+            raise ValueError(f"Study-10 feature artifact claims test data: {path}")
+        for key, candidates in required.items():
+            if not any(candidate in source for candidate in candidates):
+                raise ValueError(f"Study-10 feature artifact is missing {key}: {path}")
+        event_id = source["EVENT_ID"][:]
+        if event_id.ndim != 1 or len(np.unique(event_id)) != len(event_id):
+            raise ValueError(f"Study-10 feature artifact has invalid EVENT_IDs: {path}")
+        count = len(event_id)
+        for name in (
+            "visible_log_score", "visible_probability", "truth",
+            "valid_hypotheses", "PHYSICS/mean", "PHYSICS/std", "PHYSICS/rms",
+            "PHYSICS/analytic_score", "PHYSICS/truth_neutrino_score",
+            "PHYSICS/ablation_scores",
+        ):
+            if source[name].shape[0] != count:
+                raise ValueError(f"Study-10 feature event dimension mismatch in {path}: {name}")
+        nested = source["PHYSICS/nested_analytic_scores"]
+        if nested.shape != (len(REQUESTED_K), len(REQUESTED_M), count, 10):
+            raise ValueError(f"Study-10 feature nested K/M shape is invalid: {path}")
+        attrs = {
+            "source_sha": str(source.attrs.get("source_sha", "")),
+            "study_manifest_sha256": str(source.attrs.get("study_manifest_sha256", "")),
+            "resolved_gate_digest": str(source.attrs.get("resolved_gate_digest", "")),
+            "checkpoint_sha256": str(source.attrs.get("checkpoint_sha256", "")),
+            "checkpoint_training_sha": str(source.attrs.get("checkpoint_training_sha", "")),
+            "physics_scaler_sha256": str(source.attrs.get("physics_scaler_sha256", "")),
+            "physics_scaler_fit_split": str(source.attrs.get("physics_scaler_fit_split", "")),
+            "prediction_sha256": str(source.attrs.get("prediction_sha256", "")),
+        }
+    expected = {
+        "source_sha": expected_source_sha,
+        "study_manifest_sha256": expected_manifest_sha256,
+        "resolved_gate_digest": expected_gate_digest,
+        "checkpoint_sha256": expected_checkpoint_sha256,
+    }
+    for name, value in expected.items():
+        if value is not None and attrs[name] != str(value):
+            raise ValueError(
+                f"Study-10 feature provenance mismatch for {path}: "
+                f"{name}={attrs[name]!r}, expected {value!r}"
+            )
+    if attrs["physics_scaler_fit_split"] != "train":
+        raise ValueError(f"Study-10 physics scaler was not fit on train: {path}")
+    return {"event_ids": event_id, **attrs}
+
+
+def _seed_record_contract(
+    path: Path,
+    *,
+    expected_seed: int,
+    expected_source_sha: str,
+    expected_manifest_sha256: str,
+    expected_gate_digest: str,
+    expected_checkpoint: Path | None = None,
+    expected_checkpoint_sha256: str | None = None,
+) -> dict:
+    """Validate one resumable seed result and all of its retained products."""
+    if not path.is_file() or path.stat().st_size <= 0:
+        raise ValueError(f"Study-10 seed record is absent or empty: {path}")
+    try:
+        payload = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError(f"Study-10 seed record is not valid JSON: {path}: {error}") from error
+    if not isinstance(payload, dict) or int(payload.get("seed", -1)) != int(expected_seed):
+        raise ValueError(f"Study-10 seed record has the wrong seed: {path}")
+    for name, expected in (
+        ("source_sha", expected_source_sha),
+        ("study_manifest_sha256", expected_manifest_sha256),
+        ("resolved_gate_digest", expected_gate_digest),
+    ):
+        if payload.get(name) != expected:
+            raise ValueError(
+                f"Study-10 seed record provenance mismatch: {path}: "
+                f"{name}={payload.get(name)!r}, expected {expected!r}"
+            )
+    if expected_checkpoint is not None and Path(str(payload.get("checkpoint", ""))).resolve() != expected_checkpoint.resolve():
+        raise ValueError(f"Study-10 seed record checkpoint path mismatch: {path}")
+    if expected_checkpoint_sha256 is not None and payload.get("checkpoint_sha256") != expected_checkpoint_sha256:
+        raise ValueError(f"Study-10 seed record checkpoint checksum mismatch: {path}")
+    comparisons = payload.get("comparisons")
+    required_comparisons = {
+        "visible_baseline", "matched_visible_only_control", "analytic_physics",
+        "learned_physics", "truth_neutrino_oracle", "top_k_ceiling",
+        "coupling_efficiency", "feature_ablations", "nested_K_M_convergence",
+    }
+    if not isinstance(comparisons, dict) or not required_comparisons <= set(comparisons):
+        raise ValueError(f"Study-10 seed record is missing scientific controls: {path}")
+    checkpoint_sha256 = str(payload.get("checkpoint_sha256", ""))
+    train_path = Path(str(payload.get("train_feature_artifact", "")))
+    validation_path = Path(str(payload.get("validation_feature_artifact", "")))
+    train = _feature_artifact_contract(
+        train_path, expected_split="train", expected_source_sha=expected_source_sha,
+        expected_manifest_sha256=expected_manifest_sha256,
+        expected_gate_digest=expected_gate_digest,
+        expected_checkpoint_sha256=checkpoint_sha256,
+    )
+    validation = _feature_artifact_contract(
+        validation_path, expected_split="validation", expected_source_sha=expected_source_sha,
+        expected_manifest_sha256=expected_manifest_sha256,
+        expected_gate_digest=expected_gate_digest,
+        expected_checkpoint_sha256=checkpoint_sha256,
+    )
+    if set(train["event_ids"].tolist()) & set(validation["event_ids"].tolist()):
+        raise ValueError(f"Study-10 seed record train/validation populations overlap: {path}")
+    scorer_artifacts = payload.get("scorer_artifacts")
+    if not isinstance(scorer_artifacts, dict) or not {"physics", "visible_only"} <= set(scorer_artifacts):
+        raise ValueError(f"Study-10 seed record has no scorer identities: {path}")
+    for name in ("physics", "visible_only"):
+        item = scorer_artifacts[name]
+        scorer_path = Path(str(item.get("path", "")))
+        if not scorer_path.is_file() or scorer_path.stat().st_size <= 0:
+            raise ValueError(f"Study-10 scorer artifact is missing: {scorer_path}")
+        if _sha256(scorer_path) != item.get("sha256"):
+            raise ValueError(f"Study-10 scorer artifact checksum mismatch: {scorer_path}")
+        state = torch.load(scorer_path, map_location="cpu", weights_only=True)
+        if not isinstance(state, dict) or not state:
+            raise ValueError(f"Study-10 scorer artifact is not a state dict: {scorer_path}")
+    return payload
 
 
 def _input_tensors(features: dict) -> tuple[torch.Tensor, torch.Tensor]:
@@ -586,8 +755,13 @@ def _analyse_seed(train_path: Path, validation_path: Path, output_dir: Path, epo
     scorer_dir.mkdir(parents=True, exist_ok=True)
     physics_path = scorer_dir / f"seed_{seed}_physics.pt"
     visible_path = scorer_dir / f"seed_{seed}_visible_only.pt"
-    torch.save(scorers.physics.state_dict(), physics_path)
-    torch.save(scorers.visible_only.state_dict(), visible_path)
+    for model, path in (
+        (scorers.physics, physics_path),
+        (scorers.visible_only, visible_path),
+    ):
+        temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+        torch.save(model.state_dict(), temporary)
+        temporary.replace(path)
     reloaded_physics = LearnedHypothesisScorer(
         scorers.physics_input_features, hidden=scorers.hidden_features
     )
@@ -671,52 +845,120 @@ def _analyse_seed(train_path: Path, validation_path: Path, output_dir: Path, epo
         "physics_input_features": scorers.physics_input_features,
         "hidden_features": scorers.hidden_features,
         "alpha_scan": alpha_scan,
+        "scorer_artifacts": {
+            "physics": {"path": str(physics_path), "sha256": _sha256(physics_path)},
+            "visible_only": {"path": str(visible_path), "sha256": _sha256(visible_path)},
+        },
         "comparisons": records,
         "source_sha": validation["source_sha"],
     }
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--prediction", action="append", required=True)
-    parser.add_argument("--training-prediction", action="append", default=[])
-    parser.add_argument("--experiment", action="append", required=True)
-    parser.add_argument("--checkpoint", action="append", required=True)
-    parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--device", choices=("cpu", "cuda"), default="cuda")
-    parser.add_argument("--chunk-size", type=int, default=256)
-    parser.add_argument("--epochs", type=int, default=32)
-    parser.add_argument("--study-manifest-sha256", required=True)
-    parser.add_argument("--gate-digest", required=True)
-    args = parser.parse_args()
-    if len(args.experiment) != len(args.prediction) or len(args.checkpoint) != len(args.prediction):
-        raise ValueError("Each Study-10 validation prediction needs one experiment and checkpoint")
-    if args.training_prediction and len(args.training_prediction) != len(args.prediction):
-        raise ValueError("--training-prediction must be supplied once per validation prediction")
-    if args.device == "cuda" and not torch.cuda.is_available():
-        raise RuntimeError("Study 10 feature production requested CUDA but no GPU is available")
-    output = args.output.expanduser().resolve()
-    feature_dir = output.parent / "feature_artifacts"
-    results = []
-    for index, validation in enumerate(args.prediction):
-        train_prediction = args.training_prediction[index] if args.training_prediction else None
-        train_path, validation_path = _build_one_seed(
-            Path(validation),
-            None if train_prediction is None else Path(train_prediction),
-            Path(args.experiment[index]), Path(args.checkpoint[index]),
-            feature_dir / f"seed_{index + 42}_placeholder.h5", args.device, args.chunk_size, index + 42,
-            args.study_manifest_sha256,
-            args.gate_digest,
+def _seed_record_path(output: Path, seed: int) -> Path:
+    return output.parent / "study10_seed_records" / f"seed_{seed}.json"
+
+
+def _run_one_seed(
+    *,
+    prediction: Path,
+    training_prediction: Path | None,
+    experiment: Path,
+    checkpoint: Path,
+    output: Path,
+    device: str,
+    chunk_size: int,
+    epochs: int,
+    seed: int,
+    study_manifest_sha256: str,
+    gate_digest: str,
+    seed_record: Path,
+) -> dict:
+    """Run or reuse one seed without publishing the three-seed review."""
+    expected_source = _source_sha()
+    try:
+        return _seed_record_contract(
+            seed_record,
+            expected_seed=seed,
+            expected_source_sha=expected_source,
+            expected_manifest_sha256=study_manifest_sha256,
+            expected_gate_digest=gate_digest,
+            expected_checkpoint=checkpoint,
+            expected_checkpoint_sha256=_sha256(checkpoint),
         )
-        results.append(_analyse_seed(train_path, validation_path, output.parent, args.epochs, index + 42))
+    except (OSError, ValueError, KeyError, RuntimeError, EOFError):
+        pass
+
+    feature_dir = output.parent / "feature_artifacts"
+    train_path = feature_dir / f"seed_{seed}_train_features.h5"
+    validation_path = feature_dir / f"seed_{seed}_validation_features.h5"
+    try:
+        _feature_artifact_contract(
+            train_path,
+            expected_split="train",
+            expected_source_sha=expected_source,
+            expected_manifest_sha256=study_manifest_sha256,
+            expected_gate_digest=gate_digest,
+            expected_checkpoint_sha256=_sha256(checkpoint),
+        )
+        _feature_artifact_contract(
+            validation_path,
+            expected_split="validation",
+            expected_source_sha=expected_source,
+            expected_manifest_sha256=study_manifest_sha256,
+            expected_gate_digest=gate_digest,
+            expected_checkpoint_sha256=_sha256(checkpoint),
+        )
+    except (OSError, ValueError, KeyError, RuntimeError):
+        placeholder = feature_dir / f"seed_{seed}_placeholder.h5"
+        train_path, validation_path = _build_one_seed(
+            prediction,
+            training_prediction,
+            experiment,
+            checkpoint,
+            placeholder,
+            device,
+            chunk_size,
+            seed,
+            study_manifest_sha256,
+            gate_digest,
+        )
+    analysis = _analyse_seed(train_path, validation_path, output.parent, epochs=epochs, seed=seed)
+    analysis.update({
+        "seed": int(seed),
+        "source_sha": expected_source,
+        "study_manifest_sha256": study_manifest_sha256,
+        "resolved_gate_digest": gate_digest,
+        "checkpoint": str(checkpoint.resolve()),
+        "checkpoint_sha256": _sha256(checkpoint),
+        "checkpoint_training_sha": _checkpoint_training_sha(checkpoint),
+        "seed_record_path": str(seed_record),
+    })
+    _atomic_json(seed_record, analysis)
+    return _seed_record_contract(
+        seed_record,
+        expected_seed=seed,
+        expected_source_sha=expected_source,
+        expected_manifest_sha256=study_manifest_sha256,
+        expected_gate_digest=gate_digest,
+        expected_checkpoint=checkpoint,
+        expected_checkpoint_sha256=_sha256(checkpoint),
+    )
+
+
+def _write_review(output: Path, records: list[dict], study_manifest_sha256: str, gate_digest: str) -> None:
+    if {int(record["seed"]) for record in records} != {42, 43, 44}:
+        raise ValueError("Study-10 finalisation requires exactly seed records 42, 43 and 44")
+    source_values = {record.get("source_sha") for record in records}
+    if len(source_values) != 1:
+        raise ValueError("Study-10 seed records were produced by different source revisions")
     review = {
         "study": "compatibility_reranking",
         "selection_split": "validation",
         "training_split_for_scorers": True,
         "test_split_used": False,
-        "study_manifest_sha256": args.study_manifest_sha256,
-        "resolved_gate_digest": args.gate_digest,
-        "source_sha": _source_sha(),
+        "study_manifest_sha256": study_manifest_sha256,
+        "resolved_gate_digest": gate_digest,
+        "source_sha": records[0]["source_sha"],
         "Kmax": 10,
         "Mmax": 64,
         "K_prefixes": list(REQUESTED_K),
@@ -729,11 +971,18 @@ def main() -> None:
             "truth-neutrino oracle",
             "top-K ceiling",
         ],
-        "records": results,
+        "records": sorted(records, key=lambda record: int(record["seed"])),
         "decision": "review_required",
+        "finalisation": {
+            "seed_record_paths": [
+                str(record.get("seed_record_path", _seed_record_path(output, int(record["seed"]))))
+                for record in sorted(records, key=lambda item: int(item["seed"]))
+            ],
+            "expensive_analysis_reused": True,
+            "test_split_used": False,
+        },
     }
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.with_suffix(".json").write_text(json.dumps(review, indent=2, sort_keys=True) + "\n")
+    _atomic_json(output.with_suffix(".json"), review)
     lines = [
         "# Study 10 — controlled invisible physics/assignment coupling",
         "",
@@ -743,19 +992,108 @@ def main() -> None:
         "| seed | visible | visible-only control | analytic | learned | truth-ν oracle | Rcoupling |",
         "|---:|---:|---:|---:|---:|---:|---:|",
     ]
-    for record in results:
+    for record in review["records"]:
         comparisons = record["comparisons"]
+        coupling = comparisons["coupling_efficiency"].get("Rcoupling")
         lines.append(
             f"| {record['seed']} | {comparisons['visible_baseline']['accuracy']:.6f} | "
             f"{comparisons['matched_visible_only_control']['accuracy']:.6f} | "
             f"{comparisons['analytic_physics']['accuracy']:.6f} | "
             f"{comparisons['learned_physics']['accuracy']:.6f} | "
             f"{comparisons['truth_neutrino_oracle']['accuracy']:.6f} | "
-            f"{comparisons['coupling_efficiency']['Rcoupling'] if comparisons['coupling_efficiency']['Rcoupling'] is not None else '—'} |"
+            f"{coupling if coupling is not None else '—'} |"
         )
-    output.with_suffix(".md").write_text("\n".join(lines) + "\n")
-    print(output.with_suffix(".json"))
-    print(output.with_suffix(".md"))
+    markdown = output.with_suffix(".md")
+    temporary = markdown.with_name(f".{markdown.name}.{os.getpid()}.tmp")
+    temporary.write_text("\n".join(lines) + "\n")
+    temporary.replace(markdown)
+
+
+def _finalize_records(output: Path, seed_records: list[Path], study_manifest_sha256: str, gate_digest: str) -> None:
+    expected_source = _source_sha()
+    if not seed_records:
+        seed_records = [_seed_record_path(output, seed) for seed in (42, 43, 44)]
+    records = [
+        _seed_record_contract(
+            path,
+            expected_seed=seed,
+            expected_source_sha=expected_source,
+            expected_manifest_sha256=study_manifest_sha256,
+            expected_gate_digest=gate_digest,
+        )
+        for seed, path in zip((42, 43, 44), seed_records, strict=True)
+    ]
+    _write_review(output, records, study_manifest_sha256, gate_digest)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--prediction", action="append", default=[])
+    parser.add_argument("--training-prediction", action="append", default=[])
+    parser.add_argument("--experiment", action="append", default=[])
+    parser.add_argument("--checkpoint", action="append", default=[])
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--device", choices=("cpu", "cuda"), default="cuda")
+    parser.add_argument("--chunk-size", type=int, default=256)
+    parser.add_argument("--epochs", type=int, default=32)
+    parser.add_argument("--study-manifest-sha256", required=True)
+    parser.add_argument("--gate-digest", required=True)
+    parser.add_argument("--seed", type=int)
+    parser.add_argument("--seed-record", action="append", type=Path, default=[])
+    parser.add_argument("--finalize", action="store_true")
+    args = parser.parse_args()
+    output = args.output.expanduser().resolve()
+    if args.finalize:
+        if args.prediction or args.training_prediction or args.experiment or args.checkpoint or args.seed is not None:
+            raise ValueError("--finalize cannot be combined with prediction or seed execution arguments")
+        _finalize_records(
+            output,
+            [path.expanduser().resolve() for path in args.seed_record],
+            args.study_manifest_sha256,
+            args.gate_digest,
+        )
+        print(output.with_suffix(".json"))
+        print(output.with_suffix(".md"))
+        return
+    if not args.prediction or not args.experiment or not args.checkpoint:
+        raise ValueError("Seed analysis requires --prediction, --experiment and --checkpoint")
+    if len(args.experiment) != len(args.prediction) or len(args.checkpoint) != len(args.prediction):
+        raise ValueError("Each Study-10 validation prediction needs one experiment and checkpoint")
+    if args.training_prediction and len(args.training_prediction) != len(args.prediction):
+        raise ValueError("--training-prediction must be supplied once per validation prediction")
+    if args.device == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError("Study 10 feature production requested CUDA but no GPU is available")
+    if args.seed is not None and len(args.prediction) != 1:
+        raise ValueError("A single prediction is required for --seed execution")
+    if args.seed_record and len(args.seed_record) != (1 if args.seed is not None else len(args.prediction)):
+        raise ValueError("--seed-record count does not match the selected seed analyses")
+    results = []
+    for index, validation in enumerate(args.prediction):
+        train_prediction = args.training_prediction[index] if args.training_prediction else None
+        seed = args.seed if args.seed is not None else index + 42
+        record_path = (
+            args.seed_record[index].expanduser().resolve()
+            if args.seed_record
+            else _seed_record_path(output, seed)
+        )
+        results.append(_run_one_seed(
+            prediction=Path(validation),
+            training_prediction=None if train_prediction is None else Path(train_prediction),
+            experiment=Path(args.experiment[index]),
+            checkpoint=Path(args.checkpoint[index]),
+            output=output,
+            device=args.device,
+            chunk_size=args.chunk_size,
+            epochs=args.epochs,
+            seed=seed,
+            study_manifest_sha256=args.study_manifest_sha256,
+            gate_digest=args.gate_digest,
+            seed_record=record_path,
+        ))
+    if args.seed is None:
+        _write_review(output, results, args.study_manifest_sha256, args.gate_digest)
+    else:
+        print(record_path)
 
 
 if __name__ == "__main__":

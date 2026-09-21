@@ -18,6 +18,7 @@ if str(ROOT) not in sys.path:
 from joint_event_reconstruction.campaign_controller import (  # noqa: E402
     _controller_dependency,
     _job_group,
+    _reconcile_stage,
     _validate_parent_invisible_backbone_gate,
     campaign_paths,
     continue_campaign,
@@ -95,6 +96,46 @@ def check_scheduler_classification() -> None:
                 raise AssertionError("completed Slurm jobs were not recognised")
         finally:
             controller._job_state = original
+
+
+def check_empty_postprocess_repair() -> None:
+    """An empty repair is complete only when the output contract is complete."""
+    import joint_event_reconstruction.campaign_controller as controller
+
+    with tempfile.TemporaryDirectory(prefix="jer-empty-repair-") as directory:
+        paths = controller.CampaignPaths(Path(directory), Path(directory), Path(directory) / "campaign")
+        base_state = {
+            "state": "STUDY10_REPAIR",
+            "stage": "assignment_coupling",
+            "stages": {"assignment_coupling": {"state": "RUNNING", "repair_attempts": 0}},
+        }
+        original_output = controller._stage_output_complete
+        original_status = controller._stage_job_status
+        original_submit = controller._submit_study
+        original_policy = controller._load_policy
+        try:
+            controller._stage_job_status = lambda _paths, _record: ("REPAIRABLE", "timed out")
+            controller._submit_study = lambda *_args, **_kwargs: (
+                Path(directory) / "empty.json", {"study": "compatibility_reranking"}
+            )
+            controller._load_policy = lambda _paths: {"campaign": {"repair_limit": 1}}
+            output_states = iter(((False, "missing review"), (False, "missing review")))
+            controller._stage_output_complete = lambda *_args: next(output_states)
+            state = json.loads(json.dumps(base_state))
+            _reconcile_stage(paths, state, "assignment_coupling")
+            if state["state"] != "BLOCKED" or state["stages"]["assignment_coupling"]["state"] != "REPAIR":
+                raise AssertionError("incomplete empty repair was not blocked")
+
+            output_states = iter(((False, "missing review"), (True, "complete")))
+            state = json.loads(json.dumps(base_state))
+            _reconcile_stage(paths, state, "assignment_coupling")
+            if state["stages"]["assignment_coupling"]["state"] != "COMPLETE":
+                raise AssertionError("complete empty repair did not advance")
+        finally:
+            controller._stage_output_complete = original_output
+            controller._stage_job_status = original_status
+            controller._submit_study = original_submit
+            controller._load_policy = original_policy
 
 
 def _file_digest(path: Path) -> str:
@@ -206,6 +247,7 @@ def main() -> None:
     check_review_and_failure_paths()
     check_duplicate_dependency_identity()
     check_scheduler_classification()
+    check_empty_postprocess_repair()
     check_study15_aware_continuation()
     print("PASS: deterministic Paper-1 campaign controller transitions")
 

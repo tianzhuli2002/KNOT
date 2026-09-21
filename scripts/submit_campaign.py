@@ -252,6 +252,30 @@ def _validate_prediction_output(path: Path) -> None:
 
 def _outputs_complete(study: StudySpec, record: dict) -> tuple[bool, str]:
     output_root = Path(record["output_root"])
+    analysis_roots = {
+        "encoder_backbone": (
+            output_root / study.name / "pairwise_complementarity.json",
+            output_root / study.name / "pairwise_complementarity.csv",
+            output_root / study.name / "oracle_union_matrix.png",
+            output_root / study.name / "oracle_union_matrix.pdf",
+            output_root / study.name / "disagreement_matrix.png",
+            output_root / study.name / "disagreement_matrix.pdf",
+            output_root / study.name / "study12_human_review.md",
+            output_root / study.name / "study12_human_review.json",
+            output_root / study.name / "analysis14_assignment_sets.json",
+            output_root / study.name / "analysis14_assignment_sets.md",
+        ),
+        "assignment_conditioning": (output_root / study.name / "assignment_conditioning.json",),
+        "data_scaling": (output_root / study.name / "data_scaling_recurrence.json",),
+        "compatibility_reranking": (
+            output_root / study.name / "study10_human_review.json",
+            output_root / study.name / "study10_human_review.md",
+        ),
+    }
+    if study.name in analysis_roots:
+        for required in analysis_roots[study.name]:
+            if not required.is_file() or not required.stat().st_size:
+                return False, f"missing dedicated analysis {required}"
     if study.name == "generator_inference":
         review = output_root / study.name / "study08_human_review.json"
         predictions = list((output_root / study.name).glob("ttbar2L/*/seed_*/predictions/*.h5"))
@@ -286,30 +310,6 @@ def _outputs_complete(study: StudySpec, record: dict) -> tuple[bool, str]:
     summary = output_root / study.name / "summary.json"
     if not summary.is_file() or not summary.stat().st_size:
         return False, f"missing summary {summary}"
-    analysis_roots = {
-        "encoder_backbone": (
-            output_root / study.name / "pairwise_complementarity.json",
-            output_root / study.name / "pairwise_complementarity.csv",
-            output_root / study.name / "oracle_union_matrix.png",
-            output_root / study.name / "oracle_union_matrix.pdf",
-            output_root / study.name / "disagreement_matrix.png",
-            output_root / study.name / "disagreement_matrix.pdf",
-            output_root / study.name / "study12_human_review.md",
-            output_root / study.name / "study12_human_review.json",
-            output_root / study.name / "analysis14_assignment_sets.json",
-            output_root / study.name / "analysis14_assignment_sets.md",
-        ),
-        "assignment_conditioning": (output_root / study.name / "assignment_conditioning.json",),
-        "data_scaling": (output_root / study.name / "data_scaling_recurrence.json",),
-        "compatibility_reranking": (
-            output_root / study.name / "study10_human_review.json",
-            output_root / study.name / "study10_human_review.md",
-        ),
-    }
-    if study.name in analysis_roots:
-        for required in analysis_roots[study.name]:
-            if not required.is_file() or not required.stat().st_size:
-                return False, f"missing dedicated analysis {required}"
     if study.name == "c2_feedback":
         for topology in study.topologies:
             for seed in study.seeds:

@@ -278,6 +278,38 @@ def _run(paths: CampaignPaths, command: list[str], *, check: bool = False) -> su
     )
 
 
+def _run_from_source(
+    paths: CampaignPaths,
+    command: list[str],
+    *,
+    source_root: Path,
+    source_sha: str,
+    check: bool = False,
+) -> subprocess.CompletedProcess[str]:
+    """Run one explicitly source-pinned recovery command."""
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "JER_PROJECT_ROOT": str(paths.project_root),
+            "JER_SOURCE_ROOT": str(source_root),
+            "JER_SOURCE_SHA": source_sha,
+            "PYTHONDONTWRITEBYTECODE": "1",
+        }
+    )
+    pythonpath = f"{source_root / 'src'}:{source_root}"
+    if environment.get("PYTHONPATH"):
+        pythonpath += os.pathsep + environment["PYTHONPATH"]
+    environment["PYTHONPATH"] = pythonpath
+    return subprocess.run(
+        command,
+        cwd=paths.project_root,
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=check,
+    )
+
+
 def _git(paths: CampaignPaths, *arguments: str) -> str:
     result = _run(paths, ["git", *arguments], check=False)
     if result.returncode:
@@ -403,6 +435,8 @@ def _study_job_ids(record: dict) -> list[str]:
         "prediction_job",
         "evaluation_job",
         "plot_job",
+        "analysis_job",
+        "finalize_job",
         "aggregate_job",
         "postprocess_job",
     ):
@@ -420,7 +454,10 @@ def _study_job_groups(record: dict) -> dict[str, list[str]]:
     prediction = [str(record["prediction_job"])] if record.get("prediction_job") else []
     postprocess = [
         str(record[key])
-        for key in ("evaluation_job", "plot_job", "aggregate_job", "postprocess_job")
+        for key in (
+            "evaluation_job", "plot_job", "analysis_job", "finalize_job",
+            "aggregate_job", "postprocess_job",
+        )
         if record.get(key)
     ]
     return {
@@ -982,7 +1019,15 @@ def _controller_dependency(job_ids: list[str]) -> str | None:
     return ":".join(unique) if unique else None
 
 
-def _submit_controller(paths: CampaignPaths, state: dict, event: str, parent_ids: list[str]) -> str:
+def _submit_controller(
+    paths: CampaignPaths,
+    state: dict,
+    event: str,
+    parent_ids: list[str],
+    *,
+    controller_source_root: Path | None = None,
+    controller_source_sha: str | None = None,
+) -> str:
     stage_record = state["stages"].get(event, {}) if event in state.get("stages", {}) else state["smoke"]
     attempts = int(stage_record.get("controller_attempts", 0)) + 1
     if attempts > 3:
@@ -995,13 +1040,14 @@ def _submit_controller(paths: CampaignPaths, state: dict, event: str, parent_ids
     script = paths.controllers / f"{name}.sh"
     log_dir = paths.logs / "controllers"
     log_dir.mkdir(parents=True, exist_ok=True)
-    source_sha = state["source_sha"]
+    source_root = Path(controller_source_root or state["source_root"]).resolve()
+    source_sha = controller_source_sha or state["source_sha"]
     script.write_text(
         "#!/usr/bin/env bash\nset -euo pipefail\n"
         f"export JER_PROJECT_ROOT={shlex.quote(str(paths.project_root))}\n"
-        f"export JER_SOURCE_ROOT={shlex.quote(state['source_root'])}\n"
+        f"export JER_SOURCE_ROOT={shlex.quote(str(source_root))}\n"
         f"export JER_SOURCE_SHA={shlex.quote(source_sha)}\n"
-        f"export PYTHONPATH={shlex.quote(str(Path(state['source_root']) / 'src'))}:{shlex.quote(state['source_root'])}\n"
+        f"export PYTHONPATH={shlex.quote(str(source_root / 'src'))}:{shlex.quote(str(source_root))}\n"
         "export PYTHONDONTWRITEBYTECODE=1\n"
         f"cd {shlex.quote(str(paths.project_root))}\n"
         f"exec {shlex.quote(sys.executable)} -m joint_event_reconstruction.campaign_controller "
@@ -1150,7 +1196,11 @@ def _stage_output_complete(paths: CampaignPaths, stage_record: dict, study_name:
 
 
 def _stage_job_status(paths: CampaignPaths, stage_record: dict) -> tuple[str, str]:
-    record_path = stage_record.get("repair_submission_record") or stage_record.get("submission_record")
+    record_path = (
+        stage_record.get("recovery_submission_record")
+        or stage_record.get("repair_submission_record")
+        or stage_record.get("submission_record")
+    )
     if not record_path:
         return "NONE", "no submission"
     try:
@@ -1935,6 +1985,26 @@ def _reconcile_stage(paths: CampaignPaths, state: dict, stage: str) -> None:
             _set_state(state, f"STUDY{_stage_number(stage)}_REPAIR", reason=f"repairing postprocessing: {job_reason}")
             if stage_record["repair_job_ids"]:
                 _submit_controller(paths, state, stage, stage_record["repair_job_ids"])
+            else:
+                # A postprocess-only submission that created no jobs is not an
+                # active repair.  It is complete only when the full study
+                # output contract already passes; otherwise stop explicitly
+                # instead of leaving the campaign stranded in REPAIR.
+                repaired, repaired_reason = _stage_output_complete(
+                    paths, stage_record, STAGE_STUDIES[stage]
+                )
+                if repaired:
+                    stage_record["state"] = "COMPLETE"
+                    stage_record["completion_reason"] = repaired_reason
+                else:
+                    _set_state(
+                        state,
+                        "BLOCKED",
+                        reason=(
+                            f"Study {STAGE_STUDIES[stage]} postprocessing repair "
+                            f"submitted no jobs and remains incomplete: {repaired_reason}"
+                        ),
+                    )
             return
         _set_state(state, "BLOCKED", reason=f"Study {stage} exceeded automatic postprocessing repair limit: {valid_reason}")
         return
@@ -2414,11 +2484,160 @@ def resume(root: str | Path | None = None) -> dict:
         return state
 
 
+def recover_postprocess(root: str | Path) -> dict:
+    """Attach one source-pinned, resumable postprocessing recovery.
+
+    The campaign's scientific source SHA remains immutable.  The explicitly
+    recorded recovery source is used only for the repaired postprocessing and
+    its controller; no training or prediction jobs are recreated here.
+    """
+    paths = campaign_paths(root)
+    with _campaign_lock(paths):
+        if not paths.state.is_file():
+            raise CampaignError(f"No Paper-1 campaign exists: {paths.root}")
+        state = _read_json(paths.state)
+        stage = "assignment_coupling"
+        stage_record = state.get("stages", {}).get(stage, {})
+        if state.get("stage") != stage:
+            raise CampaignError(f"Campaign current stage is {state.get('stage')!r}, not {stage!r}")
+        if stage_record.get("submission_record") is None:
+            raise CampaignError("Study-10 has no original scientific submission record")
+        original_record = _read_json(Path(stage_record["submission_record"]))
+        review_root = Path(original_record["output_root"]) / "compatibility_reranking"
+        review_missing = [
+            path for path in (
+                review_root / "study10_human_review.json",
+                review_root / "study10_human_review.md",
+            )
+            if not path.is_file() or path.stat().st_size <= 0
+        ]
+        output_complete = not review_missing and _stage_output_complete(paths, stage_record, STAGE_STUDIES[stage])[0]
+        if output_complete:
+            _advance_locked(paths, state, event="recovery")
+            _save_state(paths, state)
+            return state
+
+        existing_record = stage_record.get("recovery_submission_record")
+        if existing_record:
+            record = _read_json(Path(existing_record))
+            ids = _study_job_ids(record)
+            job_state, _ = _job_group(paths, ids)
+            if job_state in {"PENDING", "RUNNING", "COMPLETE"}:
+                return state
+            raise CampaignError(
+                f"Study-10 recovery already exists but is not reusable: "
+                f"{existing_record} ({job_state})"
+            )
+
+        current_sha = _git(paths, "rev-parse", "HEAD")
+        if _git(paths, "status", "--porcelain"):
+            raise CampaignError("Postprocessing recovery requires a clean committed checkout")
+        if current_sha == state.get("source_sha"):
+            raise CampaignError(
+                "Postprocessing recovery must use a distinct committed maintenance source; "
+                "the historical campaign source is unchanged"
+            )
+        source = _source_metadata(paths, current_sha)
+        source_root = Path(source["source_root"])
+        original = original_record
+        original_ids = _study_job_ids(original)
+        original_state, original_reason = _job_group(paths, original_ids)
+        if original_state in {"PENDING", "RUNNING"}:
+            raise CampaignError(f"Original Study-10 scientific jobs are still active: {original_reason}")
+
+        manifest = source_root / "configs/studies/10_compatibility_reranking.yaml"
+        if not manifest.is_file():
+            raise CampaignError(f"Maintenance source is missing the Study-10 manifest: {manifest}")
+        attempt = int(stage_record.get("recovery_attempts", 0)) + 1
+        campaign_id = f"paper1-assignment_coupling-recovery{attempt}"
+        identity = _json_digest({
+            "campaign": state["campaign_id"],
+            "stage": stage,
+            "source_sha": current_sha,
+            "parent_source_sha": state["source_sha"],
+            "manifest_sha256": _sha256_file(manifest),
+            "gates_sha256": _sha256_file(paths.gates),
+            "mode": "postprocess_only",
+            "recovery_attempt": attempt,
+        })
+        command = [
+            sys.executable,
+            str(source_root / "scripts/submit_study_slurm.py"),
+            str(manifest),
+            "--output-root", str(paths.project_root / "results/studies"),
+            "--gates-path", str(paths.gates),
+            "--campaign-id", campaign_id,
+            "--submission-identity", identity,
+            "--postprocess-only",
+        ]
+        result = _run_from_source(
+            paths, command, source_root=source_root, source_sha=current_sha, check=False
+        )
+        if result.returncode:
+            detail = result.stderr.strip() or result.stdout.strip()
+            raise CampaignError(f"Study-10 recovery submission failed: {detail}")
+        record_path = (
+            paths.project_root / "results/studies/compatibility_reranking/_slurm"
+            / campaign_id / "submission.json"
+        )
+        if not record_path.is_file():
+            raise CampaignError(f"Study-10 recovery produced no submission record: {record_path}")
+        record = _read_json(record_path)
+        if (
+            record.get("source_sha") != current_sha
+            or record.get("study") != "compatibility_reranking"
+            or record.get("submission_mode") != "postprocess_only"
+        ):
+            raise CampaignError("Study-10 recovery submission has invalid source or mode provenance")
+        job_ids = _study_job_ids(record)
+        if not job_ids:
+            raise CampaignError(
+                "Study-10 recovery produced no jobs while the dedicated analysis is incomplete"
+            )
+        stage_record.update({
+            "recovery_attempts": attempt,
+            "recovery_source_sha": current_sha,
+            "recovery_source_root": str(source_root),
+            "recovery_submission_record": str(record_path),
+            "recovery_job_ids": job_ids,
+            "historical_job_ids": list(stage_record.get("job_ids", [])),
+            "job_ids": job_ids,
+            "repair_submission_record": str(record_path),
+            "repair_job_ids": job_ids,
+            "state": "REPAIR",
+        })
+        state["recovery_source_sha"] = current_sha
+        state["recovery_source_root"] = str(source_root)
+        _set_state(
+            state,
+            "STUDY10_REPAIR",
+            reason=(
+                f"source-pinned Study-10 postprocessing recovery submitted; "
+                f"maintenance source {current_sha}"
+            ),
+        )
+        _submit_controller(
+            paths,
+            state,
+            stage,
+            job_ids,
+            controller_source_root=source_root,
+            controller_source_sha=current_sha,
+        )
+        _save_state(paths, state)
+        return state
+
+
 def controller_step(root: str | Path, event: str) -> dict:
     paths = campaign_paths(root)
     with _campaign_lock(paths):
         state = _read_json(paths.state)
-        if state.get("source_sha") != os.environ.get("JER_SOURCE_SHA", state.get("source_sha")):
+        observed_source = os.environ.get("JER_SOURCE_SHA", state.get("source_sha"))
+        allowed_sources = {
+            state.get("source_sha"),
+            state.get("recovery_source_sha"),
+        }
+        if observed_source not in allowed_sources:
             raise CampaignError("Controller source SHA does not match campaign source SHA")
         _advance_locked(paths, state, event=event)
         _save_state(paths, state)
