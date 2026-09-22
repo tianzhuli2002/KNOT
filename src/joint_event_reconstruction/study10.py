@@ -191,6 +191,8 @@ class TrainedScorers:
 
 
 def _truth_loss(score: torch.Tensor, truth: torch.Tensor, valid: torch.Tensor) -> torch.Tensor:
+    if score.ndim != 2 or truth.shape != score.shape or valid.shape != score.shape:
+        raise ValueError("Study-10 truth loss expects score, truth and valid arrays with shape [B,K]")
     target = truth & valid
     if not target.any(dim=1).all():
         raise ValueError("Study-10 training feature artifact has an event without a valid truth hypothesis")
@@ -210,10 +212,72 @@ def train_scorers(
     epochs: int = 32,
     learning_rate: float = 1.0e-3,
 ) -> TrainedScorers:
-    if physics_features.shape != visible_only_features.shape:
-        raise ValueError("Matched Study-10 scorer inputs must have identical shapes")
-    if physics_features.ndim != 3:
-        raise ValueError("Study-10 scorer features must have shape [B,K,F]")
+    tensors = {
+        "visible_log_score": visible_log_score,
+        "visible_probability": visible_probability,
+        "physics_features": physics_features,
+        "visible_only_features": visible_only_features,
+        "truth": truth,
+        "valid": valid,
+    }
+    if truth.dtype is not torch.bool or valid.dtype is not torch.bool:
+        raise ValueError("Study-10 truth and valid masks must have dtype torch.bool")
+    if truth.ndim != 2 or valid.shape != truth.shape:
+        raise ValueError("Study-10 truth and valid masks must have shape [B,K]")
+    if visible_log_score.ndim != 2 or visible_probability.shape != visible_log_score.shape:
+        raise ValueError("Study-10 visible scores and probabilities must have shape [B,K]")
+    if physics_features.ndim != 3 or visible_only_features.shape != physics_features.shape:
+        raise ValueError("Matched Study-10 scorer inputs must have identical shape [B,K,F]")
+    batch, candidates = truth.shape
+    if batch <= 0:
+        raise ValueError("Study-10 scorer training cannot run with zero events")
+    if candidates <= 0:
+        raise ValueError("Study-10 scorer training cannot run with zero candidates")
+    if physics_features.shape[:2] != (batch, candidates):
+        raise ValueError("Study-10 scorer features disagree with truth/valid shape")
+    for name, tensor in tensors.items():
+        if tensor.shape[0] != batch:
+            raise ValueError(
+                f"Study-10 {name} has event dimension {tensor.shape[0]}, expected {batch}"
+            )
+    if (truth & ~valid).any():
+        raise ValueError("Study-10 truth is marked on an invalid candidate")
+    if (~valid).all(dim=1).any():
+        raise ValueError("Study-10 training feature artifact has an event without a valid candidate")
+    support = (truth & valid).any(dim=1)
+    if not support.any():
+        raise ValueError("Study-10 scorer training has zero truth-supported events")
+
+    valid_supported = valid & support[:, None]
+    valid_features = valid_supported.unsqueeze(-1)
+    for name, tensor in (
+        ("visible_log_score", visible_log_score),
+        ("visible_probability", visible_probability),
+        ("physics_features", physics_features),
+        ("visible_only_features", visible_only_features),
+    ):
+        finite_mask = valid_supported if tensor.ndim == 2 else valid_features
+        if not torch.isfinite(tensor.masked_select(finite_mask)).all():
+            raise FloatingPointError(
+                f"Study-10 {name} has non-finite values for a valid candidate"
+            )
+
+    # The two scorers are fitted on precisely the same supported events.  Any
+    # invalid-candidate sentinels are replaced before a neural-network layer
+    # sees them; they remain masked by _truth_loss for the candidate sum.
+    visible_log_score = visible_log_score[support]
+    visible_probability = visible_probability[support]
+    physics_features = physics_features[support]
+    visible_only_features = visible_only_features[support]
+    truth = truth[support]
+    valid = valid[support]
+    valid_features = valid.unsqueeze(-1)
+    visible_log_score = torch.where(valid, visible_log_score, torch.zeros_like(visible_log_score))
+    visible_probability = torch.where(valid, visible_probability, torch.zeros_like(visible_probability))
+    physics_features = torch.where(valid_features, physics_features, torch.zeros_like(physics_features))
+    visible_only_features = torch.where(
+        valid_features, visible_only_features, torch.zeros_like(visible_only_features)
+    )
     if epochs <= 0 or hidden <= 0:
         raise ValueError("Study-10 scorer epochs and hidden width must be positive")
     physics = LearnedHypothesisScorer(physics_features.shape[-1], hidden=hidden)
@@ -226,6 +290,8 @@ def train_scorers(
         physics_score = visible_log_score + physics(physics_features)
         visible_score = visible_log_score + visible(visible_only_features)
         loss = _truth_loss(physics_score, truth, valid) + _truth_loss(visible_score, truth, valid)
+        if not torch.isfinite(loss):
+            raise FloatingPointError("Study-10 scorer training produced a non-finite loss")
         loss.backward()
         gradients = [parameter.grad for parameter in (*physics.parameters(), *visible.parameters())]
         if not all(gradient is not None and torch.isfinite(gradient).all() for gradient in gradients):

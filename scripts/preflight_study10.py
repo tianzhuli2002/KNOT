@@ -126,7 +126,14 @@ def run(*, output_dir: Path, device: str, gates_path: Path, expected_source_sha:
         raise RuntimeError("Study-10 feature artifacts have an invalid split/test contract")
     if set(train_feature_ids.tolist()) & set(validation_feature_ids.tolist()):
         raise RuntimeError("Study-10 feature artifacts overlap between scorer train and validation")
-    analysis = _analyse_seed(train_features, validation_features, output_dir, epochs=1, seed=42)
+    analysis = _analyse_seed(
+        train_features,
+        validation_features,
+        output_dir,
+        epochs=1,
+        seed=42,
+        experiment=experiment,
+    )
     with h5py.File(validation_features, "r") as source:
         nested = source["PHYSICS/nested_analytic_scores"][:]
         valid_hypotheses = source["valid_hypotheses"][:].astype(bool, copy=False)
@@ -179,6 +186,8 @@ def run(*, output_dir: Path, device: str, gates_path: Path, expected_source_sha:
         "status": "PASS",
         "software_integration_evidence_only": True,
         "source_sha": expected_source_sha,
+        "analysis_source_sha": expected_source_sha,
+        "feature_producer_source_sha": train_features_payload["feature_producer_source_sha"],
         "campaign_id": campaign_id,
         "study": "compatibility_reranking",
         "study_manifest_sha256": _sha256(STUDY_PATH),

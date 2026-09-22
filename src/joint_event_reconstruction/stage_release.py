@@ -20,6 +20,10 @@ class StageReleaseError(RuntimeError):
     """A stage release artifact does not satisfy its declared contract."""
 
 
+class StageReleaseReviewRequired(StageReleaseError):
+    """The executed evidence exposes a scientific choice requiring review."""
+
+
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -306,6 +310,11 @@ def _validate_study10_evidence(
     }:
         raise StageReleaseError("Study-10 shared-posterior evidence is incomplete or misleading")
     split = _require_mapping(report.get("scorer_split_contract"), "Study-10 scorer split contract")
+    feature_producer_source_sha = str(
+        report.get("feature_producer_source_sha") or expected_source_sha
+    )
+    if report.get("analysis_source_sha", report.get("source_sha")) != expected_source_sha:
+        raise StageReleaseError("Study-10 analysis source identity is not the release SHA")
     if split.get("scaler_fit_source_split") != "train" or split.get("scorer_fit_source_split") != "train" or split.get("alpha_selection_source_split") != "train":
         raise StageReleaseError("Study-10 scorer/scaler fit source is not the training split")
     if not split.get("scaler_identity_sha256"):
@@ -327,7 +336,7 @@ def _validate_study10_evidence(
             expected_split = "train" if key == "training_feature_artifact" else "validation"
             if split_name != expected_split:
                 raise StageReleaseError(f"Study-10 feature artifact split is wrong: {feature_path}")
-            if str(source.attrs.get("source_sha", "")) != expected_source_sha or str(source.attrs.get("resolved_gate_digest", "")) != str(report.get("resolved_gate_digest")):
+            if str(source.attrs.get("source_sha", "")) != feature_producer_source_sha or str(source.attrs.get("resolved_gate_digest", "")) != str(report.get("resolved_gate_digest")):
                 raise StageReleaseError(f"Study-10 feature artifact source/gate identity is wrong: {feature_path}")
             if str(source.attrs.get("checkpoint_sha256", "")) != digest:
                 raise StageReleaseError(f"Study-10 feature artifact checkpoint identity is wrong: {feature_path}")
@@ -376,6 +385,23 @@ def _validate_study03_evidence(
     anti = _require_mapping(report.get("anti_leakage"), "Study-03 anti-leakage evidence")
     if anti.get("refined_conditioning") != "hypothesis" or anti.get("truth_assignment_in_production_path") is not False or anti.get("truth_oracle_mode") is not False:
         raise StageReleaseError("Study-03 truth-assignment leakage contract is incomplete")
+    semantics = _require_mapping(
+        report.get("conditioning_semantics"), "Study-03 conditioning semantics"
+    )
+    if semantics.get("deployable_inference_assignment_source") != "decoded_predicted_assignment":
+        raise StageReleaseError("Study-03 deployable inference does not use decoded predicted assignments")
+    if semantics.get("truth_assignment_in_deployable_inference") is not False:
+        raise StageReleaseError("Study-03 deployable inference exposes the truth assignment")
+    if (
+        semantics.get("training_truth_teacher_forcing") is True
+        or semantics.get("training_assignment_source") == "structured.pools[*].truth_index"
+        or semantics.get("incorrect_predicted_assignments_in_training") is not True
+        or semantics.get("scientific_review_required") is True
+    ):
+        raise StageReleaseReviewRequired(
+            "Study-03 requires scientific review: refined training is truth-teacher-forced "
+            "and does not expose realistic incorrect predicted assignments"
+        )
     context = _require_mapping(report.get("conditioning_context"), "Study-03 conditioning context evidence")
     for key in ("distinct_predicted_hypotheses", "context_changes_with_predicted_assignment", "context_independent_of_truth_assignment"):
         _require_true(context.get(key), f"Study-03 conditioning context.{key}")

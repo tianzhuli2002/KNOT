@@ -520,6 +520,7 @@ def _study10_analysis_worker_script(
     project_root: Path,
     expected_manifest_sha256: str,
     expected_gate_digest: str,
+    feature_producer_source_sha: str,
 ) -> None:
     """Write the GPU worker for one-seed, resumable Study-10 analysis."""
     command = [
@@ -534,6 +535,7 @@ def _study10_analysis_worker_script(
         "--seed-record", '"$seed_record"',
         "--study-manifest-sha256", expected_manifest_sha256,
         "--gate-digest", expected_gate_digest,
+        "--feature-producer-source-sha", feature_producer_source_sha,
     ]
     rendered = " ".join(
         token if token.startswith('"$') else shlex.quote(token) for token in command
@@ -579,6 +581,7 @@ def _study10_seed_tasks(
     expected_source_sha: str,
     expected_manifest_sha256: str,
     expected_gate_digest: str,
+    expected_feature_producer_sha: str,
 ) -> tuple[list[tuple[int, Path, Path, str, Path, str, Path]], list[int]]:
     from scripts.run_study import _prediction_checkpoint, _prediction_path, _run_dir
     from scripts.run_study10_controls import _seed_record_contract
@@ -608,6 +611,7 @@ def _study10_seed_tasks(
                 expected_source_sha=expected_source_sha,
                 expected_manifest_sha256=expected_manifest_sha256,
                 expected_gate_digest=expected_gate_digest,
+                expected_feature_producer_sha=expected_feature_producer_sha,
                 expected_checkpoint=checkpoint,
                 expected_checkpoint_sha256=_sha256_file(checkpoint),
             )
@@ -769,6 +773,15 @@ def main() -> None:
         help="Submit only missing prediction-level evaluation/plot tasks and aggregation.",
     )
     parser.add_argument(
+        "--analysis-only",
+        action="store_true",
+        help="For Study-10 postprocessing, submit only scorer-analysis tasks without finalisation.",
+    )
+    parser.add_argument(
+        "--feature-producer-source-sha",
+        help="Source SHA that produced reusable Study-10 feature artifacts.",
+    )
+    parser.add_argument(
         "--dependency-afterok",
         help="External job ID that must succeed before the first training layer starts.",
     )
@@ -785,6 +798,8 @@ def main() -> None:
 
     if args.prediction_only and args.postprocess_only:
         raise ValueError("--prediction-only and --postprocess-only cannot be combined")
+    if args.analysis_only and not args.postprocess_only:
+        raise ValueError("--analysis-only requires --postprocess-only")
 
     study_path_arg = args.study.expanduser()
     if not study_path_arg.is_absolute():
@@ -794,6 +809,8 @@ def main() -> None:
         gates_path = PROJECT_ROOT / gates_path
     gates_path = gates_path.resolve() if gates_path is not None else None
     study = resolve_study(study_path_arg.resolve(), gates_path)
+    if args.analysis_only and study.name != "compatibility_reranking":
+        raise ValueError("--analysis-only is maintained only for Study-10 compatibility reranking")
     topologies = _selected(args.topologies, study.topologies, "topologies")
     variant_names = tuple(variant.name for variant in study.variants)
     requested_names = _selected(args.variants, variant_names, "variants")
@@ -857,6 +874,11 @@ def main() -> None:
     gpu_extra = tuple(args.extra_gpu_sbatch)
     cpu_extra = tuple(args.extra_cpu_sbatch)
     git_commit, git_dirty = _git_state()
+    feature_producer_source_sha = args.feature_producer_source_sha or git_commit
+    if not re.fullmatch(r"[0-9a-f]{40}", feature_producer_source_sha):
+        raise ValueError(
+            f"Invalid Study-10 feature producer source SHA: {feature_producer_source_sha}"
+        )
     if git_dirty and not args.dry_run and not os.environ.get("JER_SOURCE_SHA"):
         raise RuntimeError("Study submission requires a clean committed checkout")
     source_root = ensure_source_snapshot(git_commit, project_root=PROJECT_ROOT)
@@ -969,10 +991,12 @@ def main() -> None:
         },
         "train_levels": [],
         "submission_mode": (
-            "postprocess_only" if args.postprocess_only
+            "analysis_only" if args.analysis_only
+            else "postprocess_only" if args.postprocess_only
             else "prediction_only" if args.prediction_only
             else "normal"
         ),
+        "feature_producer_source_sha": feature_producer_source_sha,
     }
     submission_path = slurm_root / "submission.json"
     _save_submission(submission_path, submitted)
@@ -995,6 +1019,10 @@ def main() -> None:
             list(task) for task in skipped_evaluation
         ]
         submitted["skipped_complete_plot_tasks"] = [list(task) for task in skipped_plot]
+        if args.analysis_only and (evaluation_tasks or plot_tasks):
+            raise ValueError(
+                "--analysis-only cannot regenerate missing evaluation or plotting products"
+            )
         fake_id = 0
         evaluation_job = None
         plot_job = None
@@ -1107,6 +1135,7 @@ def main() -> None:
                 expected_source_sha=git_commit,
                 expected_manifest_sha256=manifest_sha256,
                 expected_gate_digest=study.gates_digest or "",
+                expected_feature_producer_sha=feature_producer_source_sha,
             )
             submitted["skipped_complete_analysis_seeds"] = skipped_analysis_seeds
             submitted["analysis_tasks"] = len(analysis_tasks)
@@ -1124,6 +1153,7 @@ def main() -> None:
                     project_root=PROJECT_ROOT,
                     expected_manifest_sha256=manifest_sha256,
                     expected_gate_digest=study.gates_digest or "",
+                    feature_producer_source_sha=feature_producer_source_sha,
                 )
                 analysis_dependency = ":".join(analysis_dependencies) if analysis_dependencies else args.dependency_afterok
                 analysis_job = _submit(
@@ -1157,6 +1187,15 @@ def main() -> None:
             submitted["analysis_tasks"] = 0
             submitted["analysis_job"] = None
             submitted["skipped_complete_analysis_seeds"] = []
+
+        if args.analysis_only:
+            submitted["aggregate_job"] = None
+            submitted["aggregate_depends_on"] = []
+            _save_submission(submission_path, submitted)
+            slurm_base.mkdir(parents=True, exist_ok=True)
+            (slurm_base / "latest.txt").write_text(str(slurm_root) + "\n")
+            print(json.dumps(submitted, indent=2, sort_keys=True))
+            return
 
         aggregate_commands: list[list[str]] = []
         summary_root = output_root / study.name

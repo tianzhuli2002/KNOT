@@ -19,6 +19,7 @@ import json
 import os
 from pathlib import Path
 import random
+import re
 import shlex
 import shutil
 import subprocess
@@ -42,6 +43,7 @@ from joint_event_reconstruction.studies import (
 )
 from joint_event_reconstruction.stage_release import (
     StageReleaseError,
+    StageReleaseReviewRequired,
     gate_checkpoint_hashes,
     sha256_file,
     validate_release_payload,
@@ -1851,6 +1853,11 @@ def _stage_release_ready(paths: CampaignPaths, state: dict, stage: str) -> tuple
             scheduler, detail = _scheduler_terminal(paths, payload.get("slurm_job_id"))
             if scheduler != "COMPLETED":
                 raise StageReleaseError(f"release Slurm job is not complete: {scheduler} {detail}")
+    except StageReleaseReviewRequired as error:
+        release["status"] = "REVIEW_REQUIRED"
+        release["reason"] = str(error)
+        release["review_required"] = True
+        return False, release["reason"]
     except (CampaignError, StageReleaseError, FileNotFoundError, ScientificGatePending, ScientificGateNotApplicable, ValueError, StopIteration) as error:
         release["status"] = "FAILED"
         release["reason"] = str(error)
@@ -2051,7 +2058,15 @@ def _advance_locked(paths: CampaignPaths, state: dict, *, event: str | None = No
                         return
                 ready, reason = _stage_release_ready(paths, state, stage)
                 if not ready:
-                    if release.get("preflight_job_id"):
+                    if release.get("status") == "REVIEW_REQUIRED":
+                        state["pending_review"] = {
+                            "gate": STAGE_GATES.get(stage),
+                            "stage": stage,
+                            "decision_artifact": str(paths.decisions / f"{STAGE_GATES.get(stage)}.json"),
+                            "reason": reason,
+                        }
+                        _set_state(state, f"STUDY{_stage_number(stage)}_REVIEW", reason=reason)
+                    elif release.get("preflight_job_id"):
                         _set_state(state, "BLOCKED", reason=reason)
                     else:
                         _set_stage_preflight_required(paths, state, stage, reason)
@@ -2405,6 +2420,8 @@ def preflight(root: str | Path, stage: str) -> dict:
         if ready:
             _save_state(paths, state)
             return state
+        if state.get("stage_releases", {}).get(stage, {}).get("status") == "REVIEW_REQUIRED":
+            raise CampaignError(f"{stage} is waiting for explicit scientific review: {reason}")
         if state.get("stage_releases", {}).get(stage, {}).get("status") == "FAILED":
             raise CampaignError(reason)
         _submit_stage_preflight(paths, state, stage)
@@ -2518,16 +2535,64 @@ def recover_postprocess(root: str | Path) -> dict:
             return state
 
         existing_record = stage_record.get("recovery_submission_record")
+        stale_recovery_reconciled = False
         if existing_record:
             record = _read_json(Path(existing_record))
             ids = _study_job_ids(record)
+            controller_id = stage_record.get("controller_job")
+            observations = {
+                job_id: _scheduler_observation(paths, job_id)
+                for job_id in (*ids, str(controller_id) if controller_id else "")
+                if job_id
+            }
+            aggregate_id = str(record.get("aggregate_job") or record.get("finalize_job") or "")
+            aggregate_observation = observations.get(aggregate_id, {})
+            controller_observation = observations.get(str(controller_id), {})
+            stale_targets = []
+            if (
+                aggregate_id
+                and aggregate_observation.get("state") == "PENDING"
+                and "DEPENDENCYNEVERSATISFIED" in str(aggregate_observation.get("reason", "")).upper()
+            ):
+                stale_targets.append(aggregate_id)
+            if (
+                controller_id
+                and controller_observation.get("state") == "PENDING"
+                and "DEPENDENCY" in str(controller_observation.get("reason", "")).upper()
+            ):
+                stale_targets.append(str(controller_id))
+            if stale_targets:
+                cancelled = _run(paths, ["scancel", *stale_targets], check=False)
+                if cancelled.returncode:
+                    raise CampaignError(
+                        "Could not cancel stale Study-10 recovery dependency chain: "
+                        f"{cancelled.stderr.strip() or cancelled.stdout.strip()}"
+                    )
+                reconciliation = {
+                    "submission_record": str(existing_record),
+                    "observations_before_cancel": observations,
+                    "cancelled_job_ids": stale_targets,
+                    "reconciled_at": _now(),
+                    "reason": "failed analysis left finaliser and controller permanently pending",
+                }
+                stage_record.setdefault("superseded_recovery_submissions", []).append(
+                    reconciliation
+                )
+                stage_record["recovery_submission_record"] = None
+                stage_record["stale_recovery_job_ids"] = stale_targets
+                stage_record["controller_attempts"] = 0
+                state.setdefault("recovery_reconciliations", []).append(reconciliation)
+                stale_recovery_reconciled = True
             job_state, _ = _job_group(paths, ids)
+            if stale_recovery_reconciled:
+                job_state = "FAILED"
             if job_state in {"PENDING", "RUNNING", "COMPLETE"}:
                 return state
-            raise CampaignError(
-                f"Study-10 recovery already exists but is not reusable: "
-                f"{existing_record} ({job_state})"
-            )
+            if not stale_recovery_reconciled:
+                raise CampaignError(
+                    f"Study-10 recovery already exists but is not reusable: "
+                    f"{existing_record} ({job_state})"
+                )
 
         current_sha = _git(paths, "rev-parse", "HEAD")
         if _git(paths, "status", "--porcelain"):
@@ -2550,6 +2615,19 @@ def recover_postprocess(root: str | Path) -> dict:
             raise CampaignError(f"Maintenance source is missing the Study-10 manifest: {manifest}")
         attempt = int(stage_record.get("recovery_attempts", 0)) + 1
         campaign_id = f"paper1-assignment_coupling-recovery{attempt}"
+        feature_producer_source_sha = (
+            record.get("feature_producer_source_sha")
+            if existing_record
+            else stage_record.get("feature_producer_source_sha")
+        ) or stage_record.get("recovery_source_sha")
+        if existing_record and not feature_producer_source_sha:
+            feature_producer_source_sha = record.get("source_sha")
+        if not isinstance(feature_producer_source_sha, str) or not re.fullmatch(
+            r"[0-9a-f]{40}", feature_producer_source_sha
+        ):
+            raise CampaignError(
+                "Study-10 recovery cannot identify the feature-producer source SHA"
+            )
         identity = _json_digest({
             "campaign": state["campaign_id"],
             "stage": stage,
@@ -2558,6 +2636,7 @@ def recover_postprocess(root: str | Path) -> dict:
             "manifest_sha256": _sha256_file(manifest),
             "gates_sha256": _sha256_file(paths.gates),
             "mode": "postprocess_only",
+            "feature_producer_source_sha": feature_producer_source_sha,
             "recovery_attempt": attempt,
         })
         command = [
@@ -2569,6 +2648,7 @@ def recover_postprocess(root: str | Path) -> dict:
             "--campaign-id", campaign_id,
             "--submission-identity", identity,
             "--postprocess-only",
+            "--feature-producer-source-sha", feature_producer_source_sha,
         ]
         result = _run_from_source(
             paths, command, source_root=source_root, source_sha=current_sha, check=False
@@ -2587,6 +2667,7 @@ def recover_postprocess(root: str | Path) -> dict:
             record.get("source_sha") != current_sha
             or record.get("study") != "compatibility_reranking"
             or record.get("submission_mode") != "postprocess_only"
+            or record.get("feature_producer_source_sha") != feature_producer_source_sha
         ):
             raise CampaignError("Study-10 recovery submission has invalid source or mode provenance")
         job_ids = _study_job_ids(record)
@@ -2597,6 +2678,7 @@ def recover_postprocess(root: str | Path) -> dict:
         stage_record.update({
             "recovery_attempts": attempt,
             "recovery_source_sha": current_sha,
+            "feature_producer_source_sha": feature_producer_source_sha,
             "recovery_source_root": str(source_root),
             "recovery_submission_record": str(record_path),
             "recovery_job_ids": job_ids,

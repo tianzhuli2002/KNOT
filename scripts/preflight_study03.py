@@ -135,6 +135,21 @@ def run(*, output_dir: Path, device: str, gates_path: Path, expected_source_sha:
     if bool(resolved.model.invisible.conditioning.allow_truth_oracle):
         raise RuntimeError("Study-03 refined branch enables truth-oracle conditioning")
     context_probe = _conditioning_context_probe(resolved, device=device)
+    conditioning_semantics = {
+        "training_assignment_source": "structured.pools[*].truth_index",
+        "training_truth_teacher_forcing": True,
+        "training_excludes_unreconstructable_events": True,
+        "incorrect_predicted_assignments_in_training": False,
+        "deployable_inference_assignment_source": "decoded_predicted_assignment",
+        "truth_assignment_in_deployable_inference": False,
+        "exposure_bias": "truth_teacher_forcing_vs_predicted_assignment_inference",
+        "scientific_review_required": True,
+        "review_reason": (
+            "The current refined branch is trained with correct truth assignments but "
+            "evaluated with decoded assignments. A robust predicted-assignment training "
+            "definition (for example out-of-fold assignments) has not been established."
+        ),
+    }
 
     old_overrides = p13.SMALL_OVERRIDES
     p13.SMALL_OVERRIDES = SMALL_OVERRIDES
@@ -188,6 +203,7 @@ def run(*, output_dir: Path, device: str, gates_path: Path, expected_source_sha:
             "truth_assignment_in_production_path": False,
             "truth_oracle_mode": False,
         },
+        "conditioning_semantics": conditioning_semantics,
         "conditioning_context": context_probe,
         "branches": {
             "none": {"prediction": none_report, "evaluation": p13._evaluation_contract(none_prediction, none_evaluation), "checkpoint_from_gate": "invisible_backbone"},

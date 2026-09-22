@@ -51,6 +51,7 @@ from joint_event_reconstruction.topology import (
     TopologyKinematics,
     load_topology,
 )
+from joint_event_reconstruction.topology.truth import compile_truth
 from joint_event_reconstruction.topology.physics import LearnedHypothesisScorer
 
 
@@ -409,6 +410,72 @@ def _write_feature_artifact(
     temporary.replace(path)
 
 
+def _attribute_text(value: object) -> str:
+    return value.decode() if isinstance(value, bytes) else str(value)
+
+
+def _validate_feature_tensors(features: dict, path: Path) -> None:
+    event_id = features["event_id"]
+    truth = features["truth"]
+    valid = features["valid"]
+    if event_id.ndim != 1 or truth.ndim != 2 or valid.shape != truth.shape:
+        raise ValueError(f"Study-10 feature tensors have invalid event/mask shape: {path}")
+    if truth.dtype is not torch.bool or valid.dtype is not torch.bool:
+        raise ValueError(f"Study-10 feature tensors have non-boolean masks: {path}")
+    batch, candidates = truth.shape
+    if batch <= 0 or candidates != 10:
+        raise ValueError(f"Study-10 feature tensors require [B,10] masks: {path}")
+    if len(torch.unique(event_id)) != batch:
+        raise ValueError(f"Study-10 feature tensors contain duplicate EVENT_IDs: {path}")
+    if (truth & ~valid).any():
+        raise ValueError(f"Study-10 feature tensors mark truth on invalid candidates: {path}")
+    if truth.sum(dim=1).gt(1).any():
+        raise ValueError(f"Study-10 feature tensors contain multiple truth candidates: {path}")
+    if (~valid).all(dim=1).any():
+        raise ValueError(f"Study-10 feature tensors contain an event with no valid candidate: {path}")
+
+    for name in ("visible_log_score", "visible_probability", "analytic", "oracle"):
+        value = features[name]
+        if value.shape != (batch, candidates):
+            raise ValueError(f"Study-10 feature tensor has invalid shape for {name}: {path}")
+        if not torch.isfinite(value[valid]).all():
+            raise FloatingPointError(
+                f"Study-10 feature tensor {name} is non-finite for a valid candidate: {path}"
+            )
+    widths = set()
+    for name in ("physics_mean", "physics_std", "physics_rms"):
+        value = features[name]
+        if value.ndim != 3 or value.shape[:2] != (batch, candidates):
+            raise ValueError(f"Study-10 physics feature tensor has invalid shape for {name}: {path}")
+        widths.add(value.shape[-1])
+        if not torch.isfinite(value[valid]).all():
+            raise FloatingPointError(
+                f"Study-10 physics feature tensor {name} is non-finite for a valid candidate: {path}"
+            )
+    if len(widths) != 1:
+        raise ValueError(f"Study-10 reduced physics feature widths disagree: {path}")
+    for name in ("entropy", "margin"):
+        value = features[name]
+        if value.shape not in {(batch,), (batch, candidates)}:
+            raise ValueError(f"Study-10 feature tensor has invalid shape for {name}: {path}")
+        if not torch.isfinite(value).all():
+            raise FloatingPointError(f"Study-10 feature tensor {name} is non-finite: {path}")
+    ablations = features["ablations"]
+    if ablations.ndim != 3 or ablations.shape[:2] != (batch, candidates):
+        raise ValueError(f"Study-10 ablation feature tensor has an invalid shape: {path}")
+    if not torch.isfinite(ablations[valid]).all():
+        raise FloatingPointError(f"Study-10 ablation scores are non-finite for valid candidates: {path}")
+    nested = features["nested"]
+    if nested.shape != (len(REQUESTED_K), len(REQUESTED_M), batch, candidates):
+        raise ValueError(f"Study-10 nested K/M tensor has an invalid shape: {path}")
+    for k_index, k in enumerate(REQUESTED_K):
+        active = valid[:, :k]
+        for m_index in range(len(REQUESTED_M)):
+            active_values = nested[k_index, m_index, :, :k][active]
+            if not torch.isfinite(active_values).all():
+                raise FloatingPointError(f"Study-10 nested K/M scores are non-finite: {path}")
+
+
 def _load_features(path: Path) -> dict[str, torch.Tensor | list[str] | str]:
     with h5py.File(path, "r") as source:
         if source.attrs.get("schema", "") != "jer_study10_features_v1":
@@ -433,8 +500,8 @@ def _load_features(path: Path) -> dict[str, torch.Tensor | list[str] | str]:
             raise ValueError(
                 f"Study-10 feature artifact is missing provenance {missing_provenance}: {path}"
             )
-        feature_names = json.loads(source["PHYSICS"].attrs["feature_names"] if "feature_names" in source["PHYSICS"].attrs else source.attrs["feature_names"])
-        return {
+        feature_names = json.loads(source.attrs["feature_names"])
+        features = {
             "event_id": torch.from_numpy(source["EVENT_ID"][:]),
             "visible_log_score": torch.from_numpy(source["visible_log_score"][:]),
             "visible_probability": torch.from_numpy(source["visible_probability"][:]),
@@ -450,10 +517,18 @@ def _load_features(path: Path) -> dict[str, torch.Tensor | list[str] | str]:
             "ablations": torch.from_numpy(source["PHYSICS/ablation_scores"][:]),
             "nested": torch.from_numpy(source["PHYSICS/nested_analytic_scores"][:]),
             "feature_names": feature_names,
-            "source_sha": str(source.attrs["source_sha"]),
-            "physics_scaler_sha256": str(source.attrs["physics_scaler_sha256"]),
-            "physics_scaler_fit_split": str(source.attrs["physics_scaler_fit_split"]),
+            "source_sha": _attribute_text(source.attrs["source_sha"]),
+            "feature_producer_source_sha": _attribute_text(source.attrs["source_sha"]),
+            "study_manifest_sha256": _attribute_text(source.attrs["study_manifest_sha256"]),
+            "resolved_gate_digest": _attribute_text(source.attrs["resolved_gate_digest"]),
+            "checkpoint_sha256": _attribute_text(source.attrs["checkpoint_sha256"]),
+            "checkpoint_training_sha": _attribute_text(source.attrs["checkpoint_training_sha"]),
+            "data_subset_identity": _attribute_text(source.attrs["data_subset_identity"]),
+            "physics_scaler_sha256": _attribute_text(source.attrs["physics_scaler_sha256"]),
+            "physics_scaler_fit_split": _attribute_text(source.attrs["physics_scaler_fit_split"]),
         }
+    _validate_feature_tensors(features, path)
+    return features
 
 
 def _atomic_json(path: Path, payload: object) -> None:
@@ -469,6 +544,7 @@ def _feature_artifact_contract(
     *,
     expected_split: str,
     expected_source_sha: str | None = None,
+    expected_feature_producer_sha: str | None = None,
     expected_manifest_sha256: str | None = None,
     expected_gate_digest: str | None = None,
     expected_checkpoint_sha256: str | None = None,
@@ -510,6 +586,16 @@ def _feature_artifact_contract(
         if event_id.ndim != 1 or len(np.unique(event_id)) != len(event_id):
             raise ValueError(f"Study-10 feature artifact has invalid EVENT_IDs: {path}")
         count = len(event_id)
+        truth = source["truth"][:].astype(bool, copy=False)
+        valid = source["valid_hypotheses"][:].astype(bool, copy=False)
+        if truth.shape != valid.shape or truth.shape[0] != count or truth.shape[1] != 10:
+            raise ValueError(f"Study-10 feature artifact has invalid truth/valid shape: {path}")
+        if np.any(truth & ~valid):
+            raise ValueError(f"Study-10 feature artifact marks truth on invalid candidates: {path}")
+        if np.any(valid.sum(axis=1) == 0):
+            raise ValueError(f"Study-10 feature artifact has an event with no valid candidate: {path}")
+        if np.any(truth.sum(axis=1) > 1):
+            raise ValueError(f"Study-10 feature artifact has multiple truth candidates: {path}")
         for name in (
             "visible_log_score", "visible_probability", "truth",
             "valid_hypotheses", "PHYSICS/mean", "PHYSICS/std", "PHYSICS/rms",
@@ -522,17 +608,18 @@ def _feature_artifact_contract(
         if nested.shape != (len(REQUESTED_K), len(REQUESTED_M), count, 10):
             raise ValueError(f"Study-10 feature nested K/M shape is invalid: {path}")
         attrs = {
-            "source_sha": str(source.attrs.get("source_sha", "")),
-            "study_manifest_sha256": str(source.attrs.get("study_manifest_sha256", "")),
-            "resolved_gate_digest": str(source.attrs.get("resolved_gate_digest", "")),
-            "checkpoint_sha256": str(source.attrs.get("checkpoint_sha256", "")),
-            "checkpoint_training_sha": str(source.attrs.get("checkpoint_training_sha", "")),
-            "physics_scaler_sha256": str(source.attrs.get("physics_scaler_sha256", "")),
-            "physics_scaler_fit_split": str(source.attrs.get("physics_scaler_fit_split", "")),
-            "prediction_sha256": str(source.attrs.get("prediction_sha256", "")),
+            "source_sha": _attribute_text(source.attrs.get("source_sha", "")),
+            "study_manifest_sha256": _attribute_text(source.attrs.get("study_manifest_sha256", "")),
+            "resolved_gate_digest": _attribute_text(source.attrs.get("resolved_gate_digest", "")),
+            "checkpoint_sha256": _attribute_text(source.attrs.get("checkpoint_sha256", "")),
+            "checkpoint_training_sha": _attribute_text(source.attrs.get("checkpoint_training_sha", "")),
+            "checkpoint": _attribute_text(source.attrs.get("checkpoint", "")),
+            "physics_scaler_sha256": _attribute_text(source.attrs.get("physics_scaler_sha256", "")),
+            "physics_scaler_fit_split": _attribute_text(source.attrs.get("physics_scaler_fit_split", "")),
+            "prediction_sha256": _attribute_text(source.attrs.get("prediction_sha256", "")),
         }
     expected = {
-        "source_sha": expected_source_sha,
+        "source_sha": expected_feature_producer_sha or expected_source_sha,
         "study_manifest_sha256": expected_manifest_sha256,
         "resolved_gate_digest": expected_gate_digest,
         "checkpoint_sha256": expected_checkpoint_sha256,
@@ -543,9 +630,33 @@ def _feature_artifact_contract(
                 f"Study-10 feature provenance mismatch for {path}: "
                 f"{name}={attrs[name]!r}, expected {value!r}"
             )
+    if not all(
+        attrs[name]
+        for name in (
+            "source_sha",
+            "study_manifest_sha256",
+            "resolved_gate_digest",
+            "checkpoint_sha256",
+            "checkpoint_training_sha",
+            "checkpoint",
+            "physics_scaler_sha256",
+            "prediction_sha256",
+        )
+    ):
+        raise ValueError(f"Study-10 feature artifact has incomplete provenance: {path}")
+    if not re.fullmatch(r"[0-9a-f]{40}", attrs["source_sha"]):
+        raise ValueError(f"Study-10 feature artifact has an invalid producer source SHA: {path}")
     if attrs["physics_scaler_fit_split"] != "train":
         raise ValueError(f"Study-10 physics scaler was not fit on train: {path}")
-    return {"event_ids": event_id, **attrs}
+    supported = (truth & valid).any(axis=1)
+    return {
+        "event_ids": event_id,
+        "events_total": count,
+        "events_supported": int(supported.sum()),
+        "events_unsupported": int((~supported).sum()),
+        "feature_producer_source_sha": attrs["source_sha"],
+        **attrs,
+    }
 
 
 def _seed_record_contract(
@@ -555,6 +666,7 @@ def _seed_record_contract(
     expected_source_sha: str,
     expected_manifest_sha256: str,
     expected_gate_digest: str,
+    expected_feature_producer_sha: str | None = None,
     expected_checkpoint: Path | None = None,
     expected_checkpoint_sha256: str | None = None,
 ) -> dict:
@@ -577,10 +689,32 @@ def _seed_record_contract(
                 f"Study-10 seed record provenance mismatch: {path}: "
                 f"{name}={payload.get(name)!r}, expected {expected!r}"
             )
+    feature_producer_sha = payload.get("feature_producer_source_sha")
+    if not isinstance(feature_producer_sha, str) or not re.fullmatch(r"[0-9a-f]{40}", feature_producer_sha):
+        raise ValueError(f"Study-10 seed record has no feature-producer source SHA: {path}")
+    if expected_feature_producer_sha is not None and feature_producer_sha != expected_feature_producer_sha:
+        raise ValueError(
+            f"Study-10 seed record feature-producer mismatch: {path}: "
+            f"feature_producer_source_sha={feature_producer_sha!r}, "
+            f"expected {expected_feature_producer_sha!r}"
+        )
     if expected_checkpoint is not None and Path(str(payload.get("checkpoint", ""))).resolve() != expected_checkpoint.resolve():
         raise ValueError(f"Study-10 seed record checkpoint path mismatch: {path}")
     if expected_checkpoint_sha256 is not None and payload.get("checkpoint_sha256") != expected_checkpoint_sha256:
         raise ValueError(f"Study-10 seed record checkpoint checksum mismatch: {path}")
+    checkpoint_training_sha = payload.get("checkpoint_training_sha")
+    if not isinstance(checkpoint_training_sha, str) or not re.fullmatch(
+        r"[0-9a-f]{40}", checkpoint_training_sha
+    ):
+        raise ValueError(f"Study-10 seed record has no checkpoint training SHA: {path}")
+    if expected_checkpoint is not None and checkpoint_training_sha != _checkpoint_training_sha(expected_checkpoint):
+        raise ValueError(f"Study-10 seed record checkpoint training identity mismatch: {path}")
+    try:
+        scorer_training_epochs = int(payload["scorer_training_epochs"])
+    except (KeyError, TypeError, ValueError) as error:
+        raise ValueError(f"Study-10 seed record has no scorer-training epoch count: {path}") from error
+    if scorer_training_epochs <= 0:
+        raise ValueError(f"Study-10 seed record has an invalid scorer-training epoch count: {path}")
     comparisons = payload.get("comparisons")
     required_comparisons = {
         "visible_baseline", "matched_visible_only_control", "analytic_physics",
@@ -594,18 +728,39 @@ def _seed_record_contract(
     validation_path = Path(str(payload.get("validation_feature_artifact", "")))
     train = _feature_artifact_contract(
         train_path, expected_split="train", expected_source_sha=expected_source_sha,
+        expected_feature_producer_sha=feature_producer_sha,
         expected_manifest_sha256=expected_manifest_sha256,
         expected_gate_digest=expected_gate_digest,
         expected_checkpoint_sha256=checkpoint_sha256,
     )
     validation = _feature_artifact_contract(
         validation_path, expected_split="validation", expected_source_sha=expected_source_sha,
+        expected_feature_producer_sha=feature_producer_sha,
         expected_manifest_sha256=expected_manifest_sha256,
         expected_gate_digest=expected_gate_digest,
         expected_checkpoint_sha256=checkpoint_sha256,
     )
+    for artifact in (train, validation):
+        if artifact["checkpoint_training_sha"] != checkpoint_training_sha:
+            raise ValueError(f"Study-10 feature artifact checkpoint training identity mismatch: {path}")
+        if Path(artifact["checkpoint"]).resolve() != Path(str(payload.get("checkpoint", ""))).resolve():
+            raise ValueError(f"Study-10 feature artifact checkpoint path mismatch: {path}")
     if set(train["event_ids"].tolist()) & set(validation["event_ids"].tolist()):
         raise ValueError(f"Study-10 seed record train/validation populations overlap: {path}")
+    population_fields = {
+        "training_events_total": train["events_total"],
+        "training_events_supported": train["events_supported"],
+        "training_events_unsupported": train["events_unsupported"],
+        "validation_events_total": validation["events_total"],
+        "validation_events_supported": validation["events_supported"],
+        "validation_events_unsupported": validation["events_unsupported"],
+    }
+    for name, expected in population_fields.items():
+        if int(payload.get(name, -1)) != int(expected):
+            raise ValueError(
+                f"Study-10 seed record population mismatch: {path}: "
+                f"{name}={payload.get(name)!r}, expected {expected!r}"
+            )
     scorer_artifacts = payload.get("scorer_artifacts")
     if not isinstance(scorer_artifacts, dict) or not {"physics", "visible_only"} <= set(scorer_artifacts):
         raise ValueError(f"Study-10 seed record has no scorer identities: {path}")
@@ -624,26 +779,47 @@ def _seed_record_contract(
 
 def _input_tensors(features: dict) -> tuple[torch.Tensor, torch.Tensor]:
     analytic = features["analytic"].float()
-    valid = features["valid"]
-    if not torch.isfinite(analytic[valid]).all():
-        raise FloatingPointError("Study-10 analytic score is non-finite for a valid hypothesis")
-    # Invalid hypotheses are masked before ranking/loss evaluation. Their
-    # stored -inf sentinel must nevertheless be finite while it passes through
-    # the learned scorer, otherwise ordinary linear layers create NaN gradients.
-    analytic_for_scorer = torch.where(
-        torch.isfinite(analytic), analytic, torch.zeros_like(analytic)
-    )
+    valid = features["valid"].bool()
+    candidate_mask = valid.unsqueeze(-1)
+
+    def sanitise(value: torch.Tensor, name: str) -> torch.Tensor:
+        if value.ndim == 1:
+            if not torch.isfinite(value).all():
+                raise FloatingPointError(f"Study-10 {name} is non-finite")
+            return value
+        if value.ndim == 2:
+            mask = valid
+        elif value.ndim == 3 and value.shape[:2] == valid.shape:
+            mask = candidate_mask
+        else:
+            raise ValueError(f"Study-10 scorer input has an invalid shape for {name}")
+        if mask.shape != value.shape:
+            mask = mask.expand_as(value)
+        if not torch.isfinite(value[mask]).all():
+            raise FloatingPointError(
+                f"Study-10 {name} is non-finite for a valid hypothesis"
+            )
+        return torch.where(torch.isfinite(value), value, torch.zeros_like(value))
+
+    analytic_for_scorer = sanitise(analytic, "analytic score")
+    visible_log_score = sanitise(features["visible_log_score"].float(), "visible log score")
+    visible_probability = sanitise(features["visible_probability"].float(), "visible probability")
+    physics_mean = sanitise(features["physics_mean"].float(), "physics mean")
+    physics_std = sanitise(features["physics_std"].float(), "physics std")
+    physics_rms = sanitise(features["physics_rms"].float(), "physics rms")
+    entropy = sanitise(features["entropy"].float(), "assignment entropy")
+    margin = sanitise(features["margin"].float(), "top-1/top-2 margin")
     reduction = torch.cat(
-        (features["physics_mean"], features["physics_std"], features["physics_rms"], analytic_for_scorer.unsqueeze(-1)),
+        (physics_mean, physics_std, physics_rms, analytic_for_scorer.unsqueeze(-1)),
         dim=-1,
     )
     physics = torch.cat(
-        (reduction, features["visible_log_score"].unsqueeze(-1), features["visible_probability"].unsqueeze(-1)),
+        (reduction, visible_log_score.unsqueeze(-1), visible_probability.unsqueeze(-1)),
         dim=-1,
     ).float()
     visible = visible_only_scorer_input(
-        features["visible_log_score"].float(), features["visible_probability"].float(),
-        features["entropy"].float(), features["margin"].float(), target_features=physics.shape[-1],
+        visible_log_score, visible_probability, entropy, margin,
+        target_features=physics.shape[-1],
     )
     return physics, visible
 
@@ -651,10 +827,149 @@ def _input_tensors(features: dict) -> tuple[torch.Tensor, torch.Tensor]:
 def _transitions_for(score: torch.Tensor, features: dict) -> dict:
     baseline = rank_correctness(features["visible_log_score"], features["truth"], features["valid"])
     selected = rank_correctness(score, features["truth"], features["valid"])
+    supported = (features["truth"] & features["valid"]).any(dim=1)
+    supported_accuracy = (
+        float(selected[supported].float().mean()) if supported.any() else None
+    )
     return {
         "accuracy": float(selected.float().mean()),
+        "supported_only_accuracy": supported_accuracy,
         "delta_vs_visible": float(selected.float().mean() - baseline.float().mean()),
         "transitions": transition_counts(baseline, selected),
+    }
+
+
+def _population_counts(features: dict) -> dict[str, int | float]:
+    truth = features["truth"]
+    valid = features["valid"]
+    supported = (truth & valid).any(dim=1)
+    total = int(truth.shape[0])
+    supported_count = int(supported.sum())
+    unsupported_count = total - supported_count
+    return {
+        "events_total": total,
+        "events_supported": supported_count,
+        "events_unsupported": unsupported_count,
+        "supported_fraction": supported_count / total if total else 0.0,
+    }
+
+
+def _population_truth_diagnostics(
+    train: dict,
+    validation: dict,
+    experiment: Path,
+) -> dict:
+    """Classify unsupported top-K events using the canonical truth contract.
+
+    This reads only the raw labels/object masks for the already selected
+    train/validation EVENT_IDs.  It does not rebuild assignment pools or run a
+    model.  ``compile_truth`` is the same topology truth utility used by the
+    structured data boundary, so the diagnostic distinguishes configured-input
+    unavailability from a correct assignment ranked below stored K=10.
+    """
+    config = load_experiment(experiment, ["training.workers=0"])
+    spec = load_topology(
+        config.topology_config,
+        OmegaConf.to_container(config.data.truth_bindings, resolve=True),
+    )
+    sources = tuple(sorted({role.source for role in spec.visible_leaf_roles}))
+    if not sources:
+        raise ValueError("Study-10 population diagnostic found no visible truth sources")
+
+    identities = [json.loads(features["data_subset_identity"]) for features in (train, validation)]
+    source_paths = {
+        str(identity.get("data") or identity.get("source", {}).get("path", ""))
+        for identity in identities
+    }
+    if len(source_paths) != 1 or not next(iter(source_paths)):
+        raise ValueError("Study-10 feature artifacts do not share one canonical data source")
+    source_path = Path(next(iter(source_paths))).expanduser().resolve()
+    if not source_path.is_file():
+        raise FileNotFoundError(f"Study-10 population diagnostic source is missing: {source_path}")
+
+    selected_widths = {
+        source: int(config.input_definition.collections[source].count)
+        for source in sources
+    }
+    with h5py.File(source_path, "r") as source_file:
+        full_widths = {
+            source: int(source_file[f"LABELS/{source}"].shape[1])
+            for source in sources
+        }
+    roots = tuple(spec.roots)
+
+    def classify(features: dict) -> dict:
+        event_ids = features["event_id"].cpu().numpy()
+        supported = ((features["truth"] & features["valid"]).any(dim=1)).cpu().numpy()
+        with h5py.File(source_path, "r") as source_file:
+            raw_event_ids = source_file["EVENT_ID"][:]
+            positions = np.searchsorted(raw_event_ids, event_ids)
+            if np.any(positions >= len(raw_event_ids)) or not np.array_equal(
+                raw_event_ids[positions], event_ids
+            ):
+                raise ValueError(
+                    f"Study-10 population diagnostic EVENT_IDs are absent from {source_path}"
+                )
+            order = np.argsort(positions)
+            sorted_positions = positions[order]
+            labels = {}
+            masks = {}
+            for source_name in sources:
+                label_values = np.asarray(source_file[f"LABELS/{source_name}"][sorted_positions])
+                input_values = source_file[f"INPUTS/{source_name}"][sorted_positions]
+                labels[source_name] = torch.from_numpy(label_values)
+                masks[source_name] = torch.from_numpy(
+                    np.isfinite(input_values["pt"]) & (input_values["pt"] > 0.0)
+                )
+
+        inverse = np.argsort(order)
+        labels = {name: values[inverse] for name, values in labels.items()}
+        masks = {name: values[inverse] for name, values in masks.items()}
+        selected_truth = compile_truth(
+            spec, labels, masks, selected_widths=selected_widths
+        )
+        full_truth = compile_truth(spec, labels, masks, selected_widths=full_widths)
+        selected_complete = torch.stack(
+            [selected_truth.nodes[root].visible_reconstructable for root in roots], dim=1
+        ).all(dim=1).numpy()
+        full_complete = torch.stack(
+            [full_truth.nodes[root].visible_reconstructable for root in roots], dim=1
+        ).all(dim=1).numpy()
+        if np.any(supported & ~selected_complete):
+            raise ValueError(
+                "Study-10 stored truth support disagrees with canonical selected-input truth"
+            )
+        unsupported = ~supported
+        truncation = unsupported & selected_complete
+        outside_width = unsupported & ~selected_complete & full_complete
+        unavailable = unsupported & ~full_complete
+        return {
+            "events_total": int(len(event_ids)),
+            "events_supported_top_k": int(supported.sum()),
+            "events_unsupported_top_k": int(unsupported.sum()),
+            "complete_candidate_supported": int(selected_complete.sum()),
+            "complete_candidate_unsupported": int((~selected_complete).sum()),
+            "stored_top_k_truncation": int(truncation.sum()),
+            "truth_outside_configured_input_width": int(outside_width.sum()),
+            "truth_unavailable_or_undefined": int(unavailable.sum()),
+            "support_vs_complete_candidate_mismatch": int(
+                np.count_nonzero(supported != selected_complete)
+            ),
+        }
+
+    return {
+        "status": "classified_from_canonical_truth",
+        "source_path": str(source_path),
+        "source_sha256": _sha256(source_path),
+        "candidate_definition": {
+            "stored_K": 10,
+            "configured_input_widths": selected_widths,
+            "full_source_widths": full_widths,
+            "truth_matching": "topology.truth.compile_truth",
+            "object_validity": "finite positive pt",
+        },
+        "train": classify(train),
+        "validation": classify(validation),
     }
 
 
@@ -742,9 +1057,25 @@ def _build_one_seed(
     return train_path, validation_path
 
 
-def _analyse_seed(train_path: Path, validation_path: Path, output_dir: Path, epochs: int, seed: int) -> dict:
+def _analyse_seed(
+    train_path: Path,
+    validation_path: Path,
+    output_dir: Path,
+    epochs: int,
+    seed: int,
+    *,
+    experiment: Path | None = None,
+    population_diagnostics: dict | None = None,
+) -> dict:
     train = _load_features(train_path)
     validation = _load_features(validation_path)
+    if population_diagnostics is None and experiment is not None:
+        population_diagnostics = _population_truth_diagnostics(train, validation, experiment)
+    train_population = _population_counts(train)
+    validation_population = _population_counts(validation)
+    train_support = (train["truth"] & train["valid"]).any(dim=1)
+    if not train_support.any():
+        raise ValueError("Study-10 analysis has zero truth-supported training events")
     train_physics, train_visible = _input_tensors(train)
     validation_physics, validation_visible = _input_tensors(validation)
     scorers = train_scorers(
@@ -780,7 +1111,8 @@ def _analyse_seed(train_path: Path, validation_path: Path, output_dir: Path, epo
         ):
             raise RuntimeError("Study-10 learned scorer reload is not deterministic")
     alpha, alpha_scan = select_alpha(
-        train["visible_log_score"], train["analytic"], train["truth"], train["valid"],
+        train["visible_log_score"][train_support], train["analytic"][train_support],
+        train["truth"][train_support], train["valid"][train_support],
         (0.0, 0.25, 0.5, 1.0, 2.0, 4.0),
     )
     with torch.no_grad():
@@ -815,7 +1147,8 @@ def _analyse_seed(train_path: Path, validation_path: Path, output_dir: Path, epo
     ablation_results = {}
     for index, name in enumerate(FEATURE_ABLATIONS):
         ablation_alpha, scan = select_alpha(
-            train["visible_log_score"], train["ablations"][..., index], train["truth"], train["valid"],
+            train["visible_log_score"][train_support], train["ablations"][train_support][..., index],
+            train["truth"][train_support], train["valid"][train_support],
             (0.0, 0.25, 0.5, 1.0, 2.0, 4.0),
         )
         score = validation["visible_log_score"] + ablation_alpha * validation["ablations"][..., index]
@@ -840,6 +1173,7 @@ def _analyse_seed(train_path: Path, validation_path: Path, output_dir: Path, epo
     records["nested_K_M_convergence"] = convergence
     return {
         "seed": int(seed),
+        "scorer_training_epochs": int(epochs),
         "train_feature_artifact": str(train_path),
         "validation_feature_artifact": str(validation_path),
         "physics_input_features": scorers.physics_input_features,
@@ -850,7 +1184,19 @@ def _analyse_seed(train_path: Path, validation_path: Path, output_dir: Path, epo
             "visible_only": {"path": str(visible_path), "sha256": _sha256(visible_path)},
         },
         "comparisons": records,
-        "source_sha": validation["source_sha"],
+        "feature_producer_source_sha": validation["feature_producer_source_sha"],
+        "training_events_total": train_population["events_total"],
+        "training_events_supported": train_population["events_supported"],
+        "training_events_unsupported": train_population["events_unsupported"],
+        "training_supported_fraction": train_population["supported_fraction"],
+        "validation_events_total": validation_population["events_total"],
+        "validation_events_supported": validation_population["events_supported"],
+        "validation_events_unsupported": validation_population["events_unsupported"],
+        "validation_supported_fraction": validation_population["supported_fraction"],
+        "population_diagnostics": population_diagnostics or {
+            "status": "stored_top_k_only",
+            "description": "No valid correct candidate among the stored top ten.",
+        },
     }
 
 
@@ -871,6 +1217,7 @@ def _run_one_seed(
     seed: int,
     study_manifest_sha256: str,
     gate_digest: str,
+    feature_producer_source_sha: str,
     seed_record: Path,
 ) -> dict:
     """Run or reuse one seed without publishing the three-seed review."""
@@ -882,6 +1229,7 @@ def _run_one_seed(
             expected_source_sha=expected_source,
             expected_manifest_sha256=study_manifest_sha256,
             expected_gate_digest=gate_digest,
+            expected_feature_producer_sha=feature_producer_source_sha,
             expected_checkpoint=checkpoint,
             expected_checkpoint_sha256=_sha256(checkpoint),
         )
@@ -891,11 +1239,13 @@ def _run_one_seed(
     feature_dir = output.parent / "feature_artifacts"
     train_path = feature_dir / f"seed_{seed}_train_features.h5"
     validation_path = feature_dir / f"seed_{seed}_validation_features.h5"
+    record_feature_producer = feature_producer_source_sha
     try:
         _feature_artifact_contract(
             train_path,
             expected_split="train",
             expected_source_sha=expected_source,
+            expected_feature_producer_sha=feature_producer_source_sha,
             expected_manifest_sha256=study_manifest_sha256,
             expected_gate_digest=gate_digest,
             expected_checkpoint_sha256=_sha256(checkpoint),
@@ -904,6 +1254,7 @@ def _run_one_seed(
             validation_path,
             expected_split="validation",
             expected_source_sha=expected_source,
+            expected_feature_producer_sha=feature_producer_source_sha,
             expected_manifest_sha256=study_manifest_sha256,
             expected_gate_digest=gate_digest,
             expected_checkpoint_sha256=_sha256(checkpoint),
@@ -922,10 +1273,25 @@ def _run_one_seed(
             study_manifest_sha256,
             gate_digest,
         )
-    analysis = _analyse_seed(train_path, validation_path, output.parent, epochs=epochs, seed=seed)
+        record_feature_producer = expected_source
+    analysis = _analyse_seed(
+        train_path,
+        validation_path,
+        output.parent,
+        epochs=epochs,
+        seed=seed,
+        experiment=experiment,
+    )
+    if analysis["feature_producer_source_sha"] != record_feature_producer:
+        raise ValueError(
+            "Study-10 feature producer changed between contract validation and analysis: "
+            f"{analysis['feature_producer_source_sha']} != {record_feature_producer}"
+        )
     analysis.update({
         "seed": int(seed),
         "source_sha": expected_source,
+        "analysis_source_sha": expected_source,
+        "feature_producer_source_sha": record_feature_producer,
         "study_manifest_sha256": study_manifest_sha256,
         "resolved_gate_digest": gate_digest,
         "checkpoint": str(checkpoint.resolve()),
@@ -940,6 +1306,7 @@ def _run_one_seed(
         expected_source_sha=expected_source,
         expected_manifest_sha256=study_manifest_sha256,
         expected_gate_digest=gate_digest,
+        expected_feature_producer_sha=record_feature_producer,
         expected_checkpoint=checkpoint,
         expected_checkpoint_sha256=_sha256(checkpoint),
     )
@@ -951,6 +1318,12 @@ def _write_review(output: Path, records: list[dict], study_manifest_sha256: str,
     source_values = {record.get("source_sha") for record in records}
     if len(source_values) != 1:
         raise ValueError("Study-10 seed records were produced by different source revisions")
+    analysis_values = {record.get("analysis_source_sha", record.get("source_sha")) for record in records}
+    if len(analysis_values) != 1 or analysis_values != source_values:
+        raise ValueError("Study-10 seed records have inconsistent analysis-source provenance")
+    producer_values = {record.get("feature_producer_source_sha") for record in records}
+    if len(producer_values) != 1 or None in producer_values:
+        raise ValueError("Study-10 seed records have inconsistent feature-producer provenance")
     review = {
         "study": "compatibility_reranking",
         "selection_split": "validation",
@@ -959,6 +1332,8 @@ def _write_review(output: Path, records: list[dict], study_manifest_sha256: str,
         "study_manifest_sha256": study_manifest_sha256,
         "resolved_gate_digest": gate_digest,
         "source_sha": records[0]["source_sha"],
+        "analysis_source_sha": records[0].get("analysis_source_sha", records[0]["source_sha"]),
+        "feature_producer_source_sha": records[0]["feature_producer_source_sha"],
         "Kmax": 10,
         "Mmax": 64,
         "K_prefixes": list(REQUESTED_K),
@@ -972,6 +1347,26 @@ def _write_review(output: Path, records: list[dict], study_manifest_sha256: str,
             "top-K ceiling",
         ],
         "records": sorted(records, key=lambda record: int(record["seed"])),
+        "population": {
+            "training": [
+                {
+                    "seed": record["seed"],
+                    "total": record["training_events_total"],
+                    "supported": record["training_events_supported"],
+                    "unsupported": record["training_events_unsupported"],
+                }
+                for record in sorted(records, key=lambda item: int(item["seed"]))
+            ],
+            "validation": [
+                {
+                    "seed": record["seed"],
+                    "total": record["validation_events_total"],
+                    "supported": record["validation_events_supported"],
+                    "unsupported": record["validation_events_unsupported"],
+                }
+                for record in sorted(records, key=lambda item: int(item["seed"]))
+            ],
+        },
         "decision": "review_required",
         "finalisation": {
             "seed_record_paths": [
@@ -989,14 +1384,18 @@ def _write_review(output: Path, records: list[dict], study_manifest_sha256: str,
         "Scorers are fitted on the training split and evaluated once on validation.",
         "The truth-neutrino row is a non-deployable oracle. Test data are sealed.",
         "",
-        "| seed | visible | visible-only control | analytic | learned | truth-ν oracle | Rcoupling |",
-        "|---:|---:|---:|---:|---:|---:|---:|",
+        "| seed | train supported | train unsupported | validation supported | validation unsupported | visible | visible-only control | analytic | learned | truth-ν oracle | Rcoupling |",
+        "|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for record in review["records"]:
         comparisons = record["comparisons"]
         coupling = comparisons["coupling_efficiency"].get("Rcoupling")
         lines.append(
-            f"| {record['seed']} | {comparisons['visible_baseline']['accuracy']:.6f} | "
+            f"| {record['seed']} | {record['training_events_supported']}/{record['training_events_total']} | "
+            f"{record['training_events_unsupported']} | "
+            f"{record['validation_events_supported']}/{record['validation_events_total']} | "
+            f"{record['validation_events_unsupported']} | "
+            f"{comparisons['visible_baseline']['accuracy']:.6f} | "
             f"{comparisons['matched_visible_only_control']['accuracy']:.6f} | "
             f"{comparisons['analytic_physics']['accuracy']:.6f} | "
             f"{comparisons['learned_physics']['accuracy']:.6f} | "
@@ -1038,6 +1437,10 @@ def main() -> None:
     parser.add_argument("--epochs", type=int, default=32)
     parser.add_argument("--study-manifest-sha256", required=True)
     parser.add_argument("--gate-digest", required=True)
+    parser.add_argument(
+        "--feature-producer-source-sha",
+        help="Source SHA that produced reusable feature artifacts; defaults to this analysis source.",
+    )
     parser.add_argument("--seed", type=int)
     parser.add_argument("--seed-record", action="append", type=Path, default=[])
     parser.add_argument("--finalize", action="store_true")
@@ -1068,6 +1471,11 @@ def main() -> None:
     if args.seed_record and len(args.seed_record) != (1 if args.seed is not None else len(args.prediction)):
         raise ValueError("--seed-record count does not match the selected seed analyses")
     results = []
+    feature_producer_source_sha = args.feature_producer_source_sha or _source_sha()
+    if not re.fullmatch(r"[0-9a-f]{40}", feature_producer_source_sha):
+        raise ValueError(
+            f"Invalid Study-10 feature producer source SHA: {feature_producer_source_sha}"
+        )
     for index, validation in enumerate(args.prediction):
         train_prediction = args.training_prediction[index] if args.training_prediction else None
         seed = args.seed if args.seed is not None else index + 42
@@ -1088,6 +1496,7 @@ def main() -> None:
             seed=seed,
             study_manifest_sha256=args.study_manifest_sha256,
             gate_digest=args.gate_digest,
+            feature_producer_source_sha=feature_producer_source_sha,
             seed_record=record_path,
         ))
     if args.seed is None:

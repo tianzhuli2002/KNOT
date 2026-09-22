@@ -1802,6 +1802,128 @@ def check_study10_control_contract() -> None:
         raise AssertionError("Study-10 Rcoupling calculation is incorrect")
 
 
+def check_study10_population_contract() -> None:
+    """Unsupported top-K events are excluded from fitting, never from validation."""
+    import joint_event_reconstruction.study10 as study10_module
+    from joint_event_reconstruction.study10 import select_alpha
+    from scripts.run_study10_controls import _transitions_for
+
+    torch.manual_seed(123)
+    batch, top_k, feature_count = 3, 4, 6
+    visible_log_score = torch.randn(batch, top_k)
+    visible_probability = torch.rand(batch, top_k)
+    physics = torch.randn(batch, top_k, feature_count)
+    visible_only = torch.randn(batch, top_k, feature_count)
+    # The first feature is an event identity so the spy can verify that both
+    # scorers see the same filtered rows.
+    physics[..., 0] = torch.arange(batch, dtype=torch.float32)[:, None]
+    visible_only[..., 0] = physics[..., 0]
+    truth = torch.zeros(batch, top_k, dtype=torch.bool)
+    truth[0, 1] = True
+    truth[1, 2] = True
+    valid = torch.ones(batch, top_k, dtype=torch.bool)
+    physics[2] = torch.nan
+    visible_only[2] = torch.inf
+
+    original_scorer = study10_module.LearnedHypothesisScorer
+    calls: list[torch.Tensor] = []
+    initial_states: list[dict[str, torch.Tensor]] = []
+
+    class SpyScorer(original_scorer):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            initial_states.append({name: value.detach().clone() for name, value in self.state_dict().items()})
+
+        def forward(self, values):
+            calls.append(values.detach().clone())
+            return super().forward(values)
+
+    study10_module.LearnedHypothesisScorer = SpyScorer
+    try:
+        scorers = study10_module.train_scorers(
+            visible_log_score, visible_probability, physics, visible_only,
+            truth, valid, hidden=8, epochs=1,
+        )
+    finally:
+        study10_module.LearnedHypothesisScorer = original_scorer
+    if not calls or any(call.shape[0] != 2 for call in calls):
+        raise AssertionError("Study-10 scorer training did not filter to the common supported population")
+    expected_ids = torch.tensor([0.0, 1.0])
+    if not all(torch.equal(call[:, 0, 0], expected_ids) for call in calls):
+        raise AssertionError("Study-10 scorers received different or unsupported training events")
+    if not all(
+        any(not torch.equal(initial_states[index][name], value) for name, value in model.state_dict().items())
+        for index, model in enumerate((scorers.physics, scorers.visible_only))
+    ):
+        raise AssertionError("Study-10 scorer training did not update either scorer")
+
+    for bad_truth, bad_valid, message in (
+        (torch.zeros_like(truth), valid, "zero supported events"),
+        (truth.clone().masked_fill(torch.eye(top_k, dtype=torch.bool)[:batch], True), valid.clone().fill_(False), "no valid candidates"),
+    ):
+        try:
+            study10_module.train_scorers(
+                visible_log_score, visible_probability, physics, visible_only,
+                bad_truth, bad_valid, epochs=1,
+            )
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"Study-10 scorer training accepted {message}")
+    invalid_truth = truth.clone()
+    invalid_truth[0, 3] = True
+    invalid_valid = valid.clone()
+    invalid_valid[0, 3] = False
+    try:
+        study10_module.train_scorers(
+            visible_log_score, visible_probability, physics, visible_only,
+            invalid_truth, invalid_valid, epochs=1,
+        )
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("Study-10 scorer training accepted truth on an invalid candidate")
+
+    all_supported = truth.clone()
+    all_supported[2, 0] = True
+    all_valid = valid.clone()
+    study10_module.train_scorers(
+        visible_log_score, visible_probability, torch.randn_like(physics), torch.randn_like(visible_only),
+        all_supported, all_valid, hidden=4, epochs=1,
+    )
+
+    validation = {
+        "visible_log_score": torch.tensor([[2.0, 1.0], [2.0, 1.0]]),
+        "truth": torch.tensor([[True, False], [False, False]]),
+        "valid": torch.ones(2, 2, dtype=torch.bool),
+    }
+    selected = validation["visible_log_score"].clone()
+    result = _transitions_for(selected, validation)
+    if result["accuracy"] != 0.5 or result["supported_only_accuracy"] != 1.0:
+        raise AssertionError("Study-10 validation denominator or supported diagnostic is incorrect")
+    analytic = torch.tensor([[0.0, 1.0], [100.0, -100.0]])
+    alpha_all, scan_all = select_alpha(
+        validation["visible_log_score"], analytic, validation["truth"], validation["valid"], (0.0, 1.0)
+    )
+    support = validation["truth"].any(dim=1)
+    alpha_supported, _scan_supported = select_alpha(
+        validation["visible_log_score"][support], analytic[support],
+        validation["truth"][support], validation["valid"][support], (0.0, 1.0)
+    )
+    if alpha_all != alpha_supported:
+        raise AssertionError("Unsupported training events changed the train-only alpha scan")
+    changed_validation_truth = torch.tensor([[False, True], [True, False]])
+    alpha_with_other_validation_labels, scan_with_other_validation_labels = select_alpha(
+        validation["visible_log_score"], analytic, validation["truth"], validation["valid"], (0.0, 1.0)
+    )
+    if (
+        alpha_with_other_validation_labels != alpha_all
+        or scan_with_other_validation_labels != scan_all
+        or torch.equal(changed_validation_truth, validation["truth"])
+    ):
+        raise AssertionError("Validation labels affected the train-only alpha selection contract")
+
+
 def check_study10_event_alignment_contract() -> None:
     """Loader event reordering must carry every event-dependent tensor with it."""
     from scripts.run_study10_controls import _collect_split
@@ -2381,6 +2503,7 @@ def main() -> None:
     check_partial_checkpoint_contract()
     check_nested_subsets()
     check_study10_control_contract()
+    check_study10_population_contract()
     check_study10_event_alignment_contract()
     check_stage_preflight_interface_contract()
     check_assignment_conditioning_context_contract()
@@ -2409,7 +2532,7 @@ def main() -> None:
     check_paper1_controller_contract()
     print(
         "PASS: architecture, training-identity, partial-checkpoint, split-seed, "
-        "nested-subset, coordinate, truth-oracle, exchange, permutation, "
+        "nested-subset, Study-10 population, coordinate, truth-oracle, exchange, permutation, "
         "freeze, public-input, same-flavour-role, scorer-padding, campaign-gate, stage-preflight-interface, "
         "assignment-conditioning-context, Slurm-option, "
         "campaign-identity, release-source-snapshot, campaign-scheduler, Paper-1-controller, prediction-writer, mass-shell, Conditional-L-GATr "

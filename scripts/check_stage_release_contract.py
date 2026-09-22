@@ -12,7 +12,12 @@ import subprocess
 import tempfile
 
 from joint_event_reconstruction import campaign_controller as controller
-from joint_event_reconstruction.stage_release import StageReleaseError, validate_release_payload
+from joint_event_reconstruction.stage_release import (
+    StageReleaseError,
+    StageReleaseReviewRequired,
+    _validate_study03_evidence,
+    validate_release_payload,
+)
 
 
 PROJECT = Path(__file__).resolve().parents[1]
@@ -282,6 +287,36 @@ def check_terminal_preflight_reporting() -> None:
         raise AssertionError(f"Scheduler terminal evidence was not read exactly: {observation}")
 
 
+def check_study03_teacher_forcing_review_gate() -> None:
+    report = {
+        "schema": "jer_study03_integration_v1",
+        "selected_coupling": "analytic",
+        "anti_leakage": {
+            "refined_conditioning": "hypothesis",
+            "truth_assignment_in_production_path": False,
+            "truth_oracle_mode": False,
+        },
+        "conditioning_semantics": {
+            "training_assignment_source": "structured.pools[*].truth_index",
+            "training_truth_teacher_forcing": True,
+            "incorrect_predicted_assignments_in_training": False,
+            "deployable_inference_assignment_source": "decoded_predicted_assignment",
+            "truth_assignment_in_deployable_inference": False,
+            "scientific_review_required": True,
+        },
+    }
+    try:
+        _validate_study03_evidence(
+            report,
+            expected_source_sha="a" * 40,
+            expected_checkpoint_hashes={},
+            validation_root=Path("/tmp"),
+        )
+    except StageReleaseReviewRequired:
+        return
+    raise AssertionError("Study-03 truth-teacher-forced training was released without review")
+
+
 def check_continuation() -> None:
     if not PARENT.is_dir():
         raise AssertionError(f"completed parent campaign is missing: {PARENT}")
@@ -355,6 +390,7 @@ def check_continuation() -> None:
 def main() -> None:
     check_release_payload()
     check_terminal_preflight_reporting()
+    check_study03_teacher_forcing_review_gate()
     check_continuation()
     print("PASS: deterministic continuation and stage-release contract checks")
 
