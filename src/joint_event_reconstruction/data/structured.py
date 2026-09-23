@@ -17,6 +17,7 @@ from joint_event_reconstruction.data.invisible import (
     InvisibleTruthStore,
     ParentTruthStore,
 )
+from joint_event_reconstruction.data.partonic import PartonicScaler, PartonicTruthStore
 from joint_event_reconstruction.data.subsets import deterministic_subset_positions
 from joint_event_reconstruction.m0.data.module import TransformerDataModule, _collate_transformer
 from joint_event_reconstruction.models.invisible.coordinates import (
@@ -60,6 +61,8 @@ class StructuredCollator:
         self.invisible_scaler = None
         self.point_scaler = None
         self.parent_store = None
+        self.partonic_store = None
+        self.partonic_scaler = None
         self.invisible_coordinates = None
 
     @property
@@ -198,6 +201,11 @@ class StructuredCollator:
             )
         if self.parent_store is not None:
             batch["parent_truth"] = self.parent_store.lookup(batch["event_index"])
+        if self.partonic_store is not None:
+            values, support = self.partonic_store.lookup(batch["event_index"])
+            batch["partonic_truth"] = values
+            batch["partonic_support"] = support
+            batch["partonic_truth_scaled"] = self.partonic_scaler.transform(values)
         return batch
 
     def _build_templates(
@@ -314,6 +322,9 @@ class StructuredDataModule(TransformerDataModule):
         point_enabled: bool = False,
         parent_path: str | Path | None = None,
         parent_roles: tuple[str, ...] = (),
+        partonic_path: str | Path | None = None,
+        partonic_roles: tuple[str, ...] = (),
+        partonic_truth_bindings: dict[str, str] | None = None,
         allow_synthetic: bool = False,
         max_events: dict | None = None,
         subset_seed: int = 42,
@@ -339,6 +350,15 @@ class StructuredDataModule(TransformerDataModule):
         self.parent_roles = tuple(str(role) for role in parent_roles)
         if self.parent_path is not None and not self.parent_roles:
             raise ValueError("Parent truth loading requires configured parent roles")
+        self.partonic_path = partonic_path
+        self.partonic_roles = tuple(str(role) for role in partonic_roles)
+        self.partonic_truth_bindings = (
+            None
+            if partonic_truth_bindings is None
+            else {str(key): str(value) for key, value in partonic_truth_bindings.items()}
+        )
+        if self.partonic_path is not None and not self.partonic_roles:
+            raise ValueError("Partonic truth loading requires configured partonic roles")
         self.allow_synthetic = allow_synthetic
         self.max_events = max_events
         self.subset_seed = subset_seed
@@ -510,6 +530,30 @@ class StructuredDataModule(TransformerDataModule):
             parent_store = ParentTruthStore(self.parent_path, self.parent_roles)
         self.parent_store = parent_store
         self.structured_collator.parent_store = parent_store
+
+        partonic_store = None
+        if self.partonic_path is not None:
+            partonic_store = PartonicTruthStore(
+                self.partonic_path,
+                self.partonic_roles,
+                self.partonic_truth_bindings,
+            )
+            if partonic_store.synthetic:
+                scaler_ids = self._selected_ids("train", selected_positions["train"])
+            else:
+                full_train = np.arange(len(self.split_indices["train"]), dtype=np.int64)
+                scaler_ids = self._selected_ids("train", full_train)
+            train_values, train_support = partonic_store.lookup(scaler_ids)
+            self.partonic_scaler = PartonicScaler.fit(
+                train_values,
+                train_support,
+                self.partonic_roles,
+            )
+        else:
+            self.partonic_scaler = None
+        self.partonic_store = partonic_store
+        self.structured_collator.partonic_store = partonic_store
+        self.structured_collator.partonic_scaler = self.partonic_scaler
 
         if self.invisible_path is None:
             self.point_scaler = None

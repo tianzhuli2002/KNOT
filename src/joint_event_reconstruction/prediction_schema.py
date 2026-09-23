@@ -617,6 +617,37 @@ def validate_prediction(path: str | Path, *, deep: bool = True) -> None:
             _require_finite_dataset(parent, "PARENTS/direct_four_vectors", deep=deep)
             if deep and (parent[:, :, 0] < 0).any():
                 raise ValueError("PARENTS/direct_four_vectors contains negative energy")
+        if "PARTONIC" in source:
+            partonic = source["PARTONIC"].get("direct_four_vectors")
+            if partonic is None or partonic.shape[0] != count or partonic.ndim != 3 or partonic.shape[2] != 4:
+                raise ValueError("Prediction output has invalid direct partonic four-vectors")
+            _require_finite_dataset(partonic, "PARTONIC/direct_four_vectors", deep=deep)
+            if deep and (partonic[:, :, 0] < 0).any():
+                raise ValueError("PARTONIC/direct_four_vectors contains negative energy")
+            raw_roles = source["PARTONIC"].attrs.get("roles")
+            if isinstance(raw_roles, bytes):
+                raw_roles = raw_roles.decode("utf-8")
+            try:
+                roles = json.loads(str(raw_roles))
+            except (TypeError, ValueError, json.JSONDecodeError) as error:
+                raise ValueError("PARTONIC has invalid roles metadata") from error
+            if not isinstance(roles, list) or len(roles) != partonic.shape[1] or not all(
+                isinstance(role, str) and role for role in roles
+            ):
+                raise ValueError("PARTONIC roles metadata does not match direct outputs")
+            support = source.get("TRUTH/PARTONIC_SUPPORT")
+            truth = source.get("TRUTH/PARTONIC_FOUR_VECTORS")
+            if (support is None) != (truth is None):
+                raise ValueError("Partonic truth output requires both vectors and support")
+            if support is not None:
+                support_values = support[:]
+                if support_values.shape != (count, len(roles)) or support_values.dtype != np.bool_:
+                    raise ValueError("TRUTH/PARTONIC_SUPPORT has invalid shape or dtype")
+                if truth.shape != (count, len(roles), 4):
+                    raise ValueError("TRUTH/PARTONIC_FOUR_VECTORS has invalid shape")
+                _require_finite_dataset(truth, "TRUTH/PARTONIC_FOUR_VECTORS", deep=deep)
+                if deep and (truth[:, :, 0] < 0).any():
+                    raise ValueError("TRUTH/PARTONIC_FOUR_VECTORS contains negative energy")
         if "OBSERVED/MET" in source:
             met = source["OBSERVED/MET"][:]
             if met.shape != (count, 4):

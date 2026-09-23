@@ -457,6 +457,12 @@ def predict_hdf5(
                     module.hparams.visible_encoder_config
                 ),
                 "invisible_role_count": int(module.hparams.invisible_role_count),
+                "topology_query_roles": json.dumps(
+                    list(getattr(module.event_model, "query_names", ()))
+                ),
+                "partonic_roles": json.dumps(
+                    list(getattr(module.event_model, "partonic_roles", ()))
+                ),
                 "scaler": (
                     json.dumps(scaler.as_dict()) if scaler is not None else "null"
                 ),
@@ -524,6 +530,7 @@ def predict_hdf5(
             physical_samples = physical_mean = physical_std = truth_physical = None
             point_momenta = point_four_vectors = None
             parent_four_vectors = output.get("parent_four_vectors")
+            partonic_four_vectors = output.get("partonic_four_vectors")
             projection = None
             composites = truth_composites = observed_met = None
             nfe = 0
@@ -564,7 +571,12 @@ def predict_hdf5(
                 physical_mean = physical_four_vectors_from_momenta(
                     module.event_model.invisible.coordinates, mean_tensor
                 ).cpu().numpy().astype(np.float32)
-                physical_std = physical_samples.std(dim=2).cpu().numpy().astype(np.float32)
+                # A one-draw posterior is a supported point-estimator mode;
+                # its empirical spread is defined as zero rather than the
+                # undefined unbiased estimator with one observation.
+                physical_std = physical_samples.std(
+                    dim=2, unbiased=False
+                ).cpu().numpy().astype(np.float32)
                 if point_estimator != "none":
                     medoid_scale = None
                     if point_estimator == "cfm_joint_medoid":
@@ -832,6 +844,31 @@ def predict_hdf5(
                     )
                     parent_group.attrs["roles"] = json.dumps(list(module.event_model.parent_roles))
                     parent_group.attrs["output_rule"] = "direct_parent_head"
+                if partonic_four_vectors is not None:
+                    partonic_group = destination.create_group("PARTONIC")
+                    datasets["partonic_four_vectors"] = create_prediction_dataset(
+                        partonic_group,
+                        "direct_four_vectors",
+                        partonic_four_vectors.shape[1:],
+                        "<f4",
+                    )
+                    partonic_group.attrs["roles"] = json.dumps(
+                        list(module.event_model.partonic_roles)
+                    )
+                    partonic_group.attrs["output_rule"] = "direct_partonic_query_head"
+                    if "partonic_truth" in batch:
+                        datasets["partonic_truth"] = create_prediction_dataset(
+                            truth_group,
+                            "PARTONIC_FOUR_VECTORS",
+                            tuple(batch["partonic_truth"].shape[1:]),
+                            "<f4",
+                        )
+                        datasets["partonic_support"] = create_prediction_dataset(
+                            truth_group,
+                            "PARTONIC_SUPPORT",
+                            tuple(batch["partonic_support"].shape[1:]),
+                            "?",
+                        )
                 if compatibility is not None:
                     datasets["compatibility"] = create_prediction_dataset(
                         joint_group, "compatibility_logit", (top_k,), "<f4"
@@ -978,6 +1015,20 @@ def predict_hdf5(
                     datasets["parent_four_vectors"],
                     parent_four_vectors.cpu().numpy().astype(np.float32),
                 )
+            if partonic_four_vectors is not None:
+                _append(
+                    datasets["partonic_four_vectors"],
+                    partonic_four_vectors.cpu().numpy().astype(np.float32),
+                )
+                if "partonic_truth" in batch:
+                    _append(
+                        datasets["partonic_truth"],
+                        batch["partonic_truth"].cpu().numpy().astype(np.float32),
+                    )
+                    _append(
+                        datasets["partonic_support"],
+                        batch["partonic_support"].cpu().numpy(),
+                    )
             if compatibility is not None:
                 _append(datasets["compatibility"], compatibility)
                 _append(datasets["final_score"], final_score)

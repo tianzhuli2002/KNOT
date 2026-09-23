@@ -18,7 +18,10 @@ DEFAULTS_PATH = REPO_ROOT / "configs/defaults.yaml"
 PUBLIC_TOP_KEYS = {
     "experiment", "topology", "data", "inputs", "model", "inference", "training"
 }
-TRAINABLE_COMPONENTS = {"visible", "assignment", "invisible", "point", "parent", "c2", "compatibility"}
+TRAINABLE_COMPONENTS = {
+    "visible", "assignment", "invisible", "point", "parent", "partonic",
+    "queries", "c2", "compatibility",
+}
 
 
 def _path(value: object, *, data_path: bool = False) -> Path:
@@ -629,11 +632,18 @@ def _resolve_optional_heads(public) -> dict:
     result = {
         "point_invisible": {"enabled": False},
         "parent_four_vector": {"enabled": False, "roles": [], "target_path": None},
+        "partonic": {
+            "enabled": False,
+            "roles": [],
+            "target_path": None,
+            "truth_bindings": {},
+            "targets": [],
+        },
     }
     if public is None:
         return result
     _mapping(public, "model.heads")
-    _unknown(public, {"point_invisible", "parent_four_vector"}, "model.heads")
+    _unknown(public, {"point_invisible", "parent_four_vector", "partonic"}, "model.heads")
     point = public.get("point_invisible")
     if point is not None:
         _mapping(point, "model.heads.point_invisible")
@@ -655,17 +665,129 @@ def _resolve_optional_heads(public) -> dict:
             "roles": roles,
             "target_path": None if target_path is None else str(target_path),
         }
+    partonic = public.get("partonic")
+    if partonic is not None:
+        _mapping(partonic, "model.heads.partonic")
+        _unknown(
+            partonic,
+            {"enabled", "targets", "target_path"},
+            "model.heads.partonic",
+        )
+        enabled = bool(partonic.get("enabled", False))
+        targets = partonic.get("targets", [])
+        if OmegaConf.is_config(targets):
+            targets = OmegaConf.to_container(targets, resolve=True)
+        if not isinstance(targets, (list, tuple)) or not targets:
+            if enabled:
+                raise ValueError("model.heads.partonic requires non-empty targets when enabled")
+            targets = []
+        normalised = []
+        roles = []
+        bindings = {}
+        for target in targets:
+            _mapping(target, "model.heads.partonic.targets[]")
+            _unknown(target, {"role", "truth_binding"}, "model.heads.partonic.targets[]")
+            role = str(target.get("role", "")).strip()
+            binding = str(target.get("truth_binding", "")).strip()
+            if not role or not binding:
+                raise ValueError("Every partonic target requires role and truth_binding")
+            if role in roles:
+                raise ValueError(f"Duplicate partonic target role {role!r}")
+            roles.append(role)
+            bindings[role] = binding
+            normalised.append({"role": role, "truth_binding": binding})
+        target_path = partonic.get("target_path")
+        if enabled and target_path is None:
+            raise ValueError("Enabled model.heads.partonic requires target_path")
+        result["partonic"] = {
+            "enabled": enabled,
+            "roles": roles,
+            "target_path": None if target_path is None else str(target_path),
+            "truth_bindings": bindings,
+            "targets": normalised,
+        }
     if result["point_invisible"]["enabled"] and result["parent_four_vector"]["enabled"]:
         # Both are allowed; their losses remain independently weighted.
         pass
     return result
 
 
+def _resolve_topology_queries(public, latent: dict) -> dict:
+    """Resolve role metadata without introducing a second topology grammar."""
+    result = {
+        "enabled": False,
+        "interaction": "full",
+        "layers": 1,
+        "n_heads": int(latent["n_heads"]),
+        "dropout": 0.0,
+        "roles": [],
+        "relation_edges": [],
+    }
+    if public is None:
+        return result
+    _mapping(public, "model.topology_queries")
+    _unknown(
+        public,
+        {"enabled", "roles", "interaction", "layers", "n_heads", "dropout", "relations"},
+        "model.topology_queries",
+    )
+    enabled = bool(public.get("enabled", False))
+    raw_roles = public.get("roles", [])
+    if OmegaConf.is_config(raw_roles):
+        raw_roles = OmegaConf.to_container(raw_roles, resolve=True)
+    if enabled and not raw_roles:
+        raise ValueError("Enabled model.topology_queries requires non-empty roles")
+    roles = []
+    names = []
+    for raw in raw_roles:
+        _mapping(raw, "model.topology_queries.roles[]")
+        _unknown(raw, {"name", "node", "kind", "related"}, "model.topology_queries.roles[]")
+        name = str(raw.get("name", "")).strip()
+        if not name or name in names:
+            raise ValueError("Topology query names must be non-empty and unique")
+        names.append(name)
+        roles.append({
+            "name": name,
+            "node": None if raw.get("node") is None else str(raw.get("node")),
+            "kind": str(raw.get("kind", "role")),
+            "related": [str(value) for value in raw.get("related", [])],
+        })
+    interaction = str(public.get("interaction", "full"))
+    if interaction not in {"full", "topology", "topology_plus_global"}:
+        raise ValueError("model.topology_queries.interaction is invalid")
+    relation_edges = []
+    raw_relations = public.get("relations", [])
+    if OmegaConf.is_config(raw_relations):
+        raw_relations = OmegaConf.to_container(raw_relations, resolve=True)
+    for relation in raw_relations:
+        if not isinstance(relation, (list, tuple)) or len(relation) != 2:
+            raise ValueError("model.topology_queries.relations entries must be [role_a, role_b]")
+        left, right = str(relation[0]), str(relation[1])
+        if left not in names or right not in names:
+            raise ValueError(f"Topology-query relation refers to an undeclared role: {relation}")
+        relation_edges.append([names.index(left), names.index(right)])
+    width = int(public.get("n_heads", latent["n_heads"]))
+    if int(latent["d_model"]) % width:
+        raise ValueError("model.topology_queries.n_heads must divide model.latent.d_model")
+    dropout = float(public.get("dropout", 0.0))
+    if not 0.0 <= dropout < 1.0:
+        raise ValueError("model.topology_queries.dropout must lie in [0,1)")
+    return {
+        "enabled": enabled,
+        "interaction": interaction,
+        "layers": int(public.get("layers", 1)),
+        "n_heads": width,
+        "dropout": dropout,
+        "roles": roles,
+        "relation_edges": relation_edges,
+    }
+
+
 def _resolve_model(public, defaults) -> dict:
     _mapping(public, "model")
     allowed = {
         "mode", "latent", "encoder", "assignment", "invisible", "joint",
-        "feedback", "compatibility", "heads",
+        "feedback", "compatibility", "heads", "topology_queries",
     }
     _unknown(public, allowed, "model")
     for obsolete, replacement in {
@@ -682,6 +804,7 @@ def _resolve_model(public, defaults) -> dict:
     latent = _plain(public.latent)
     encoder = _resolve_visible(public.encoder, latent, defaults)
     heads = _resolve_optional_heads(public.get("heads"))
+    topology_queries = _resolve_topology_queries(public.get("topology_queries"), latent)
 
     mode = str(public.mode)
     if mode not in {"factorized", "joint"}:
@@ -775,6 +898,7 @@ def _resolve_model(public, defaults) -> dict:
                 "include_invisible": bool(defaults.compatibility.include_invisible),
             },
             "heads": heads,
+            "topology_queries": topology_queries,
         }
 
     if joint_public is not None:
@@ -913,6 +1037,7 @@ def _resolve_model(public, defaults) -> dict:
             "include_invisible": bool(compatibility["include_invisible"]),
         },
         "heads": heads,
+        "topology_queries": topology_queries,
     }
 
 
@@ -932,7 +1057,7 @@ def resolve_public_experiment(public: DictConfig, *, source_path: str | Path | N
     _mapping(data_public, "data")
     data_keys = {
         "input", "cache", "events", "subset_seed", "max_assignment_states",
-        "test_size", "split",
+        "test_size", "split", "allow_synthetic",
     }
     _unknown(data_public, data_keys, "data")
     _required(data_public, {"input", "cache"}, "data")
@@ -982,6 +1107,16 @@ def resolve_public_experiment(public: DictConfig, *, source_path: str | Path | N
                 f"truth sidecar: {parent_path}"
             )
         parent_head["target_path"] = str(parent_path)
+    partonic_head = model["heads"]["partonic"]
+    partonic_path = None
+    if partonic_head["enabled"]:
+        partonic_path = _path(partonic_head["target_path"], data_path=True)
+        if not partonic_path.is_file():
+            raise FileNotFoundError(
+                "Enabled partonic head requires an explicit partonic-truth sidecar: "
+                f"{partonic_path}"
+            )
+        partonic_head["target_path"] = str(partonic_path)
     kinematic_names = {"e", "pt", "eta", "phi", "sin_phi", "cos_phi"}
     object_features = []
     for source, spec in data_config.collections.items():
@@ -1043,6 +1178,7 @@ def resolve_public_experiment(public: DictConfig, *, source_path: str | Path | N
         "batch_size", "workers", "optimizer", "learning_rate", "weight_decay", "epochs", "precision", "gradient_clip",
         "accumulate_grad_batches", "trainable", "loss_weights", "scheduler",
         "early_stopping", "runtime", "output", "shared_encoder_gradients",
+        "partonic_shared_encoder_gradients",
     }
     _unknown(training_public, training_keys, "training")
     training = _merge(defaults.training, training_public)
@@ -1069,6 +1205,10 @@ def resolve_public_experiment(public: DictConfig, *, source_path: str | Path | N
             trainable.append("point")
         if model["heads"]["parent_four_vector"]["enabled"]:
             trainable.append("parent")
+        if model["topology_queries"]["enabled"]:
+            trainable.append("queries")
+        if model["heads"]["partonic"]["enabled"]:
+            trainable.append("partonic")
     else:
         trainable = [str(value) for value in training_public.trainable]
     if not trainable or len(set(trainable)) != len(trainable):
@@ -1082,6 +1222,19 @@ def resolve_public_experiment(public: DictConfig, *, source_path: str | Path | N
         raise ValueError("training.trainable=point requires an enabled point_invisible head")
     if "parent" in trainable and not model["heads"]["parent_four_vector"]["enabled"]:
         raise ValueError("training.trainable=parent requires an enabled parent_four_vector head")
+    if "queries" in trainable and not model["topology_queries"]["enabled"]:
+        raise ValueError("training.trainable=queries requires enabled topology_queries")
+    if "partonic" in trainable and not model["heads"]["partonic"]["enabled"]:
+        raise ValueError("training.trainable=partonic requires an enabled partonic head")
+    if model["heads"]["partonic"]["enabled"] and not model["topology_queries"]["enabled"]:
+        raise ValueError("model.heads.partonic requires enabled model.topology_queries")
+    partonic_gradient_policy = str(
+        training_public.get("partonic_shared_encoder_gradients", "both")
+    )
+    if partonic_gradient_policy not in {"both", "assignment_only"}:
+        raise ValueError(
+            "training.partonic_shared_encoder_gradients must be both or assignment_only"
+        )
     if model["mode"] == "joint_flow" and (("assignment" in trainable) != ("invisible" in trainable)):
         raise ValueError("joint_flow assignment and invisible dynamics must be trainable/frozen together")
 
@@ -1091,6 +1244,7 @@ def resolve_public_experiment(public: DictConfig, *, source_path: str | Path | N
         "compatibility": 1.0 if "compatibility" in trainable else 0.0,
         "point": 1.0 if "point" in trainable else 0.0,
         "parent": 1.0 if "parent" in trainable else 0.0,
+        "partonic": 1.0 if "partonic" in trainable else 0.0,
     }
     if training_public.get("loss_weights") is not None:
         _mapping(training_public.loss_weights, "training.loss_weights")
@@ -1126,11 +1280,16 @@ def resolve_public_experiment(public: DictConfig, *, source_path: str | Path | N
                 "max_assignment_states": int(data_public.get("max_assignment_states", 100000)),
                 "invisible": {
                     "path": str(input_path),
-                    "allow_synthetic": False,
+                    "allow_synthetic": bool(data_public.get("allow_synthetic", False)),
                 },
                 "parent": {
                     "path": None if parent_path is None else str(parent_path),
                     "roles": list(parent_head["roles"]),
+                },
+                "partonic": {
+                    "path": None if partonic_path is None else str(partonic_path),
+                    "roles": list(partonic_head["roles"]),
+                    "truth_bindings": dict(partonic_head["truth_bindings"]),
                 },
             },
             "model": model,
@@ -1174,6 +1333,7 @@ def resolve_public_experiment(public: DictConfig, *, source_path: str | Path | N
                 "shared_encoder_gradients": str(
                     training_public.get("shared_encoder_gradients", "both")
                 ),
+                "partonic_shared_encoder_gradients": partonic_gradient_policy,
                 "scheduler": _plain(training.scheduler),
                 "early_stopping": _plain(training.early_stopping),
                 "output": str(output_path),

@@ -29,6 +29,8 @@ _COMPONENT_PREFIXES = {
     "compatibility": ("event_model.compatibility.",),
     "point": ("event_model.point_head.",),
     "parent": ("event_model.parent_head.",),
+    "queries": ("event_model.topology_queries.",),
+    "partonic": ("event_model.partonic_head.",),
 }
 
 
@@ -71,6 +73,21 @@ def build_data(config, visible):
             tuple(str(role) for role in config.model.heads.parent_four_vector.roles)
             if config.model.heads.parent_four_vector.enabled
             else ()
+        ),
+        partonic_path=(
+            config.data.partonic.path
+            if config.model.heads.partonic.enabled
+            else None
+        ),
+        partonic_roles=(
+            tuple(str(role) for role in config.model.heads.partonic.roles)
+            if config.model.heads.partonic.enabled
+            else ()
+        ),
+        partonic_truth_bindings=(
+            OmegaConf.to_container(config.model.heads.partonic.truth_bindings, resolve=True)
+            if config.model.heads.partonic.enabled
+            else None
         ),
         allow_synthetic=bool(invisible.allow_synthetic),
         max_events=OmegaConf.to_container(config.data.max_events, resolve=True),
@@ -204,8 +221,12 @@ def train(
         synthetic_data=(
             bool(data.structured_collator.invisible_store.synthetic)
             if data.structured_collator.invisible_store is not None
-            else False
+            else bool(
+                data.structured_collator.partonic_store is not None
+                and data.structured_collator.partonic_store.synthetic
+            )
         ),
+        partonic_scaler=data.partonic_scaler,
     )
     output_dir = Path(config.training.output).expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -223,8 +244,26 @@ def train(
     )
     git_sha = runtime_paths().source_sha
     module.hparams["git_sha"] = git_sha
-    cache_manifest_path = Path(config.data.tensor_cache).with_suffix(".json")
-    cache_metadata = json.loads(cache_manifest_path.read_text())
+    if config.data.tensor_cache is None:
+        # Small synthetic and contract fixtures deliberately run without a
+        # materialised tensor cache.  Preserve the same provenance fields as
+        # cached runs, using the immutable input file and resolved split
+        # metadata as the dataset identity instead of pretending a cache
+        # exists.
+        source_path = Path(config.data.input).expanduser().resolve()
+        source_stat = source_path.stat()
+        cache_metadata = {
+            "cache_key": None,
+            "source_identity": {
+                "path": str(source_path),
+                "size_bytes": int(source_stat.st_size),
+                "mtime_ns": int(source_stat.st_mtime_ns),
+            },
+            "cache_kind": "uncached_hdf5",
+        }
+    else:
+        cache_manifest_path = Path(config.data.tensor_cache).with_suffix(".json")
+        cache_metadata = json.loads(cache_manifest_path.read_text())
     module.hparams["cache_metadata"] = cache_metadata
     module.hparams["dataset_identity"] = cache_metadata.get("source_identity")
     module.hparams["split_identity"] = data.split_metadata
@@ -311,15 +350,28 @@ def load_trained(config, visible, data, checkpoint_path: str) -> JointEventModul
     else:
         point_scaler = data.point_scaler
 
+    from joint_event_reconstruction.data.partonic import PartonicScaler
+    checkpoint_partonic_scaler = checkpoint.get("partonic_scaler")
+    if checkpoint_partonic_scaler is not None:
+        partonic_scaler = PartonicScaler.from_dict(checkpoint_partonic_scaler)
+        data.partonic_scaler = partonic_scaler
+        data.structured_collator.partonic_scaler = partonic_scaler
+    else:
+        partonic_scaler = data.partonic_scaler
+
     module = JointEventModule(
         config,
         visible,
         invisible_scaler=scaler,
         point_scaler=point_scaler,
+        partonic_scaler=partonic_scaler,
         synthetic_data=(
             bool(data.structured_collator.invisible_store.synthetic)
             if data.structured_collator.invisible_store is not None
-            else False
+            else bool(
+                data.structured_collator.partonic_store is not None
+                and data.structured_collator.partonic_store.synthetic
+            )
         ),
     )
     module.validate_checkpoint_metadata(checkpoint)

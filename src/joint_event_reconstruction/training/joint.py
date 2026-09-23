@@ -85,12 +85,22 @@ def active_architecture(model) -> dict:
             payload["coupling"] = _resolved(model.coupling)
         if bool(model.compatibility.enabled):
             payload["compatibility"] = _resolved(model.compatibility)
+    topology_queries = getattr(model, "topology_queries", None)
+    if topology_queries is not None and bool(topology_queries.enabled):
+        payload["topology_queries"] = _resolved(topology_queries)
     heads = getattr(model, "heads", None)
     if heads is not None and any(
         bool(getattr(heads, name).enabled)
-        for name in ("point_invisible", "parent_four_vector")
+        for name in ("point_invisible", "parent_four_vector", "partonic")
     ):
-        payload["heads"] = _resolved(heads)
+        head_payload = _resolved(heads)
+        # ``partonic`` was added after the existing point/parent checkpoint
+        # family.  Keep a disabled new head out of the historical active
+        # identity so loading those checkpoints remains byte-for-byte
+        # compatible; enabled partonic heads remain fully identified.
+        if not bool(getattr(heads.partonic, "enabled", False)):
+            head_payload.pop("partonic", None)
+        payload["heads"] = head_payload
     return payload
 
 
@@ -132,6 +142,17 @@ def architecture_component_signatures(model) -> dict[str, str]:
             "latent_width": architecture["latent"]["d_model"],
             "head": heads["parent_four_vector"],
         }
+    if heads.get("partonic", {}).get("enabled", False):
+        payloads["partonic"] = {
+            "latent_width": architecture["latent"]["d_model"],
+            "head": heads["partonic"],
+            "topology_queries": architecture.get("topology_queries"),
+        }
+    if architecture.get("topology_queries") is not None:
+        payloads["queries"] = {
+            "latent_width": architecture["latent"]["d_model"],
+            "topology_queries": architecture["topology_queries"],
+        }
     return {
         component: hashlib.sha256(
             json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
@@ -149,6 +170,8 @@ def _apply_trainable_components(event_model, mode: str, components: set[str]) ->
     """Freeze the complement of the positive, user-facing training component list."""
     if "visible" not in components:
         _freeze(event_model.visible)
+    if "queries" not in components:
+        _freeze(event_model.topology_queries)
 
     if mode == "joint_flow":
         # Joint-flow topology state is shared by the discrete and continuous dynamics.
@@ -177,6 +200,8 @@ def _apply_trainable_components(event_model, mode: str, components: set[str]) ->
         _freeze(event_model.point_head)
     if "parent" not in components:
         _freeze(event_model.parent_head)
+    if "partonic" not in components:
+        _freeze(event_model.partonic_head)
 
 
 class JointEventModule(L.LightningModule):
@@ -187,6 +212,7 @@ class JointEventModule(L.LightningModule):
         *,
         invisible_scaler=None,
         point_scaler=None,
+        partonic_scaler=None,
         synthetic_data: bool = False,
     ):
         super().__init__()
@@ -238,6 +264,17 @@ class JointEventModule(L.LightningModule):
             point_loss_weight=float(experiment.training.loss_weights.point),
             parent_loss_weight=float(experiment.training.loss_weights.parent),
             shared_encoder_gradients=str(experiment.training.shared_encoder_gradients),
+            topology_queries_config=(
+                model.topology_queries if bool(model.topology_queries.enabled) else None
+            ),
+            partonic_config=(
+                model.heads.partonic if bool(model.heads.partonic.enabled) else None
+            ),
+            partonic_scaler=partonic_scaler,
+            partonic_loss_weight=float(experiment.training.loss_weights.partonic),
+            partonic_shared_encoder_gradients=str(
+                experiment.training.partonic_shared_encoder_gradients
+            ),
         )
 
         trainable_components = {str(value) for value in experiment.training.trainable}
@@ -257,6 +294,11 @@ class JointEventModule(L.LightningModule):
             None
             if self.event_model.point_head is None or point_scaler is None
             else point_scaler.as_dict()
+        )
+        self.partonic_scaler_metadata = (
+            None
+            if self.event_model.partonic_head is None or partonic_scaler is None
+            else partonic_scaler.as_dict()
         )
         if invisible_config is not None:
             if invisible_scaler is None:
@@ -342,7 +384,10 @@ class JointEventModule(L.LightningModule):
                 "invisible_role_count": len(self.spec.invisible_roles),
                 "optional_heads": (
                     _resolved(model.heads)
-                    if any(bool(getattr(model.heads, name).enabled) for name in ("point_invisible", "parent_four_vector"))
+                    if any(
+                        bool(getattr(model.heads, name).enabled)
+                        for name in ("point_invisible", "parent_four_vector", "partonic")
+                    )
                     else None
                 ),
                 "flow_coupling": (
@@ -359,6 +404,13 @@ class JointEventModule(L.LightningModule):
                 "synthetic_data": bool(synthetic_data),
                 "trainable_components": sorted(trainable_components),
                 "shared_encoder_gradients": str(experiment.training.shared_encoder_gradients),
+                "partonic_shared_encoder_gradients": str(
+                    experiment.training.partonic_shared_encoder_gradients
+                ),
+                "partonic_roles": list(self.event_model.partonic_roles),
+                "partonic_target_representation": (
+                    partonic_scaler.representation if partonic_scaler is not None else None
+                ),
                 "experiment_seed": int(experiment.experiment.seed),
                 "data_subset_seed": int(experiment.data.subset_seed),
                 "precision": str(experiment.training.precision),
@@ -420,6 +472,11 @@ class JointEventModule(L.LightningModule):
                 f"{stage}_parent_loss", output["parent_loss"], on_step=False,
                 on_epoch=True, batch_size=batch_size,
             )
+        if "partonic_loss" in output:
+            self.log(
+                f"{stage}_partonic_loss", output["partonic_loss"], on_step=False,
+                on_epoch=True, batch_size=batch_size,
+            )
         return output["loss"]
 
     def training_step(self, batch, batch_idx):
@@ -457,6 +514,7 @@ class JointEventModule(L.LightningModule):
     def on_save_checkpoint(self, checkpoint: dict) -> None:
         checkpoint["invisible_scaler"] = self.scaler_metadata
         checkpoint["point_scaler"] = self.point_scaler_metadata
+        checkpoint["partonic_scaler"] = self.partonic_scaler_metadata
 
     def validate_checkpoint_metadata(self, checkpoint: dict) -> None:
         saved = checkpoint.get("hyper_parameters", {})
@@ -502,3 +560,5 @@ class JointEventModule(L.LightningModule):
             raise ValueError("Incompatible invisible target scaling metadata")
         if checkpoint.get("point_scaler") != self.point_scaler_metadata:
             raise ValueError("Incompatible direct point target scaling metadata")
+        if checkpoint.get("partonic_scaler") != self.partonic_scaler_metadata:
+            raise ValueError("Incompatible partonic target scaling metadata")

@@ -500,6 +500,51 @@ def evaluate_predictions(path: str | Path) -> dict:
                     "fraction": float(oracle_support.mean()),
                 }
 
+        if "PARTONIC/direct_four_vectors" in source:
+            prediction = source["PARTONIC/direct_four_vectors"][:].astype(np.float64)
+            roles_raw = source["PARTONIC"].attrs.get("roles")
+            if isinstance(roles_raw, bytes):
+                roles_raw = roles_raw.decode("utf-8")
+            roles = json.loads(str(roles_raw))
+            partonic_result = {"roles": roles}
+            truth = source.get("TRUTH/PARTONIC_FOUR_VECTORS")
+            partonic_support_dataset = source.get("TRUTH/PARTONIC_SUPPORT")
+            if truth is not None and partonic_support_dataset is not None:
+                truth_values = truth[:].astype(np.float64)
+                support_values = partonic_support_dataset[:].astype(bool)
+                per_role = {}
+                for index, role in enumerate(roles):
+                    valid = support_values[:, index]
+                    if not valid.any():
+                        per_role[role] = {"supported": 0}
+                        continue
+                    residual = prediction[valid, index] - truth_values[valid, index]
+                    pred_mass = np.sqrt(
+                        np.maximum(
+                            prediction[valid, index, 0] ** 2
+                            - np.square(prediction[valid, index, 1:]).sum(axis=1),
+                            0.0,
+                        )
+                    )
+                    truth_mass = np.sqrt(
+                        np.maximum(
+                            truth_values[valid, index, 0] ** 2
+                            - np.square(truth_values[valid, index, 1:]).sum(axis=1),
+                            0.0,
+                        )
+                    )
+                    per_role[role] = {
+                        "supported": int(valid.sum()),
+                        "component_mae_E_px_py_pz": residual.__abs__().mean(axis=0).tolist(),
+                        "component_rmse_E_px_py_pz": np.sqrt(np.square(residual).mean(axis=0)).tolist(),
+                        "invariant_mass_mae": float(np.abs(pred_mass - truth_mass).mean()),
+                        "invariant_mass_rmse": float(np.sqrt(np.square(pred_mass - truth_mass).mean())),
+                    }
+                partonic_result["per_role"] = per_role
+            else:
+                partonic_result["truth"] = "not_written"
+            result["partonic"] = partonic_result
+
         nodes = source["VISIBLE/nodes"]
         for name in nodes:
             node = nodes[name]

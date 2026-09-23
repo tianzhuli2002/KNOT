@@ -13,6 +13,8 @@ from joint_event_reconstruction.models.invisible.heads import (
     DirectInvisiblePointHead,
     DirectParentFourVectorHead,
 )
+from joint_event_reconstruction.models.partonic import PartonicFourVectorHead
+from joint_event_reconstruction.models.topology_queries import TopologyQueryBlock
 from joint_event_reconstruction.models.joint_flow import JointFlow
 from joint_event_reconstruction.models.recurrent import RecurrentReasoner
 from joint_event_reconstruction.models.reconstruction.discrete_flow import (
@@ -60,6 +62,11 @@ class JointEventModel(nn.Module):
         point_loss_weight: float = 0.0,
         parent_loss_weight: float = 0.0,
         shared_encoder_gradients: str = "both",
+        topology_queries_config=None,
+        partonic_config=None,
+        partonic_scaler=None,
+        partonic_loss_weight: float = 0.0,
+        partonic_shared_encoder_gradients: str = "both",
     ):
         super().__init__()
         if model_mode not in {"factorized", "joint_flow"}:
@@ -88,6 +95,32 @@ class JointEventModel(nn.Module):
             n_features=n_features,
             n_object_types=n_object_types,
         )
+        self.topology_queries = None
+        self.query_names = tuple()
+        if topology_queries_config is not None and bool(topology_queries_config.get("enabled", False)):
+            raw_roles = topology_queries_config.get("roles", ())
+            query_roles = []
+            for role in raw_roles:
+                item = {str(key): value for key, value in dict(role).items()}
+                node = item.get("node")
+                if node is not None and str(node) not in spec.nodes:
+                    raise ValueError(
+                        f"Topology query {item.get('name')!r} refers to unknown compiled node {node!r}"
+                    )
+                query_roles.append(item)
+            self.topology_queries = TopologyQueryBlock(
+                d_model,
+                int(topology_queries_config.get("n_heads", n_heads)),
+                query_roles=query_roles,
+                interaction=str(topology_queries_config.get("interaction", "full")),
+                layers=int(topology_queries_config.get("layers", 1)),
+                dropout=float(topology_queries_config.get("dropout", dropout)),
+                relation_edges=tuple(
+                    (int(edge[0]), int(edge[1]))
+                    for edge in topology_queries_config.get("relation_edges", ())
+                ),
+            )
+            self.query_names = self.topology_queries.query_names
         # The implementation still reconstructs hierarchical topology candidates;
         # the public scientific quantity it scores is their assignment.
         self.reconstruction = StructuredReconstruction(spec, d_model, dropout)
@@ -165,6 +198,29 @@ class JointEventModel(nn.Module):
             if not self.parent_roles:
                 raise ValueError("The parent four-vector head requires non-empty configured roles")
             self.parent_head = DirectParentFourVectorHead(d_model, len(self.parent_roles))
+
+        self.partonic_head = None
+        self.partonic_roles = tuple()
+        self.partonic_scaler = partonic_scaler
+        self.partonic_loss_weight = float(partonic_loss_weight)
+        if partonic_config is not None and bool(partonic_config.get("enabled", False)):
+            if self.topology_queries is None:
+                raise ValueError("The partonic head requires enabled topology queries")
+            targets = tuple(
+                str(target["role"])
+                for target in partonic_config.get("targets", ())
+            )
+            if not targets:
+                raise ValueError("Enabled partonic head requires non-empty targets")
+            if partonic_scaler is None:
+                raise ValueError("Enabled partonic head requires a train-fitted partonic scaler")
+            self.partonic_roles = targets
+            self.partonic_head = PartonicFourVectorHead(d_model, targets)
+        if partonic_shared_encoder_gradients not in {"both", "assignment_only"}:
+            raise ValueError(
+                "partonic_shared_encoder_gradients must be both or assignment_only"
+            )
+        self.partonic_shared_encoder_gradients = str(partonic_shared_encoder_gradients)
 
         self.assignment_flow = None
         if model_mode == "factorized" and assignment_formulation == "flow_matching":
@@ -508,6 +564,18 @@ class JointEventModel(nn.Module):
 
     def encode_visible(self, batch: dict) -> dict:
         encoded = self.visible(batch)
+        if self.topology_queries is not None:
+            query = self.topology_queries(
+                encoded["pooled"], encoded["tokens"], encoded["padding_mask"]
+            )
+            encoded["query_states"] = query["states"]
+            encoded["query_summary"] = query["summary"]
+            encoded["query_context"] = query["context"]
+            # Assignment, CFM conditioning and the legacy optional heads keep
+            # their established interfaces.  The query summary contributes
+            # through the same shared event context rather than a duplicate
+            # encoder or a second assignment/CFM path.
+            encoded["pooled"] = query["context"]
         # Keep physical conditioning alongside the learned visible embedding.
         # Conventional invisible backbones ignore these optional fields; the
         # Conditional L-GATr backbone consumes the p4 and MET channels.
@@ -724,6 +792,51 @@ class JointEventModel(nn.Module):
                 loss = (prediction - target).square().mean()
                 result["parent_loss"] = loss
                 result["loss"] = result["loss"] + self.parent_loss_weight * loss
+
+        if self.partonic_head is not None:
+            if "query_states" not in visible:
+                raise RuntimeError("Partonic head has no topology-query states")
+            query_states = visible["query_states"]
+            if self.partonic_shared_encoder_gradients == "assignment_only":
+                query_states = query_states.detach()
+            scaled_prediction = self.partonic_head(query_states, self.query_names)
+            if self.partonic_scaler is None:
+                raise RuntimeError("Partonic head has no target scaler")
+            prediction = self.partonic_scaler.inverse(scaled_prediction)
+            result["partonic_features_scaled"] = scaled_prediction
+            result["partonic_four_vectors"] = prediction
+            target = batch.get("partonic_truth_scaled")
+            if target is None:
+                if self.training:
+                    raise ValueError(
+                        "Partonic-head training requires partonic_truth_scaled"
+                    )
+            else:
+                if target.shape != scaled_prediction.shape or not torch.isfinite(target).all():
+                    raise ValueError(
+                        "Partonic target must be finite and match [B,P,4]: "
+                        f"prediction={tuple(scaled_prediction.shape)}, target={tuple(target.shape)}"
+                    )
+                support = batch.get("partonic_support")
+                if support is None or support.shape != target.shape[:2] or support.dtype != torch.bool:
+                    raise ValueError("partonic_support must be boolean [B,P]")
+                if support.any():
+                    loss = (
+                        scaled_prediction - target
+                    ).square().masked_select(
+                        support.unsqueeze(-1).expand_as(target)
+                    ).mean()
+                else:
+                    # A minibatch may contain only unsupported targets.  Keep
+                    # the batch in the loader and contribute a finite zero
+                    # loss rather than silently treating the placeholders as
+                    # supervision or aborting an otherwise valid epoch.
+                    loss = scaled_prediction.sum() * 0.0
+                result["partonic_loss"] = loss
+                result["partonic_training_support_fraction"] = support.to(
+                    scaled_prediction.dtype
+                ).mean()
+                result["loss"] = result["loss"] + self.partonic_loss_weight * loss
         return result
 
 
