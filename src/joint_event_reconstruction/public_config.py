@@ -697,8 +697,6 @@ def _resolve_optional_heads(public) -> dict:
             bindings[role] = binding
             normalised.append({"role": role, "truth_binding": binding})
         target_path = partonic.get("target_path")
-        if enabled and target_path is None:
-            raise ValueError("Enabled model.heads.partonic requires target_path")
         result["partonic"] = {
             "enabled": enabled,
             "roles": roles,
@@ -1109,7 +1107,7 @@ def resolve_public_experiment(public: DictConfig, *, source_path: str | Path | N
         parent_head["target_path"] = str(parent_path)
     partonic_head = model["heads"]["partonic"]
     partonic_path = None
-    if partonic_head["enabled"]:
+    if partonic_head["enabled"] and partonic_head["target_path"] is not None:
         partonic_path = _path(partonic_head["target_path"], data_path=True)
         if not partonic_path.is_file():
             raise FileNotFoundError(
@@ -1251,6 +1249,14 @@ def resolve_public_experiment(public: DictConfig, *, source_path: str | Path | N
         _unknown(training_public.loss_weights, set(loss_weights), "training.loss_weights")
         loss_weights.update(
             {key: float(value) for key, value in training_public.loss_weights.items()}
+        )
+    if model["heads"]["partonic"]["enabled"] and (
+        "partonic" in trainable or loss_weights["partonic"] > 0.0
+    ) and partonic_path is None:
+        raise ValueError(
+            "Partonic-head training requires model.heads.partonic.target_path "
+            "with an explicit truth sidecar; omit partonic from training.trainable "
+            "and set its loss weight to zero for truth-free inference."
         )
 
     output_value = training_public.get("output", f"results/{public.experiment.name}")

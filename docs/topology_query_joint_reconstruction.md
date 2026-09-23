@@ -52,3 +52,21 @@ development fixture and resolved paths.  Disable both `model.topology_queries`
 and `model.heads.partonic` to recover the existing architecture; disabled
 partonic identity fields are omitted so old point/parent checkpoints retain
 their historical architecture signatures.
+
+For deployment, keep the partonic query head enabled but remove its training
+sidecar and loss from the resolved public configuration. The checkpoint
+restores the fitted target scaler; no target tensor is required by the model
+input or prediction path:
+
+```bash
+python -m joint_event_reconstruction.cli.run predict \
+  --experiment configs/experiments/topology_query_synthetic_full.public.yaml \
+  --checkpoint <partonic-checkpoint> --output <prediction.h5> \
+  --set model.heads.partonic.target_path=null \
+  --set 'training.trainable=[visible,assignment,invisible,queries]' \
+  --set training.loss_weights.partonic=0
+```
+
+The partonic role names and truth-binding semantics remain in the checkpoint
+identity; the sidecar filesystem path does not. Training with the partonic
+loss still fails early when the explicit sidecar is absent.

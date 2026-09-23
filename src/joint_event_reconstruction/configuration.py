@@ -478,12 +478,13 @@ def validate_experiment(config: DictConfig) -> None:
     if model.heads.partonic.enabled:
         if not model.topology_queries.enabled:
             raise ValueError("Enabled partonic head requires topology queries")
-        if not model.heads.partonic.roles or data.partonic.path is None:
-            raise ValueError("Enabled partonic head requires an explicit target sidecar and roles")
-        if list(data.partonic.roles) != list(model.heads.partonic.roles):
-            raise ValueError("Partonic head roles must match data.partonic roles")
-        if dict(data.partonic.truth_bindings) != dict(model.heads.partonic.truth_bindings):
-            raise ValueError("Partonic truth-binding metadata must match the head declaration")
+        if not model.heads.partonic.roles:
+            raise ValueError("Enabled partonic head requires non-empty roles")
+        if data.partonic.path is not None:
+            if list(data.partonic.roles) != list(model.heads.partonic.roles):
+                raise ValueError("Partonic head roles must match data.partonic roles")
+            if dict(data.partonic.truth_bindings) != dict(model.heads.partonic.truth_bindings):
+                raise ValueError("Partonic truth-binding metadata must match the head declaration")
     elif data.partonic.path is not None:
         raise ValueError("data.partonic must be disabled when the partonic head is disabled")
 
@@ -607,6 +608,13 @@ def validate_experiment(config: DictConfig) -> None:
     _exact_keys(training.loss_weights, {"assignment", "invisible", "compatibility", "point", "parent", "partonic"}, "training.loss_weights")
     for key in training.loss_weights:
         _nonnegative(training.loss_weights[key], f"training.loss_weights.{key}")
+    if model.heads.partonic.enabled and (
+        "partonic" in trainable or float(training.loss_weights.partonic) > 0.0
+    ) and data.partonic.path is None:
+        raise ValueError(
+            "Partonic-head training requires data.partonic truth; "
+            "truth-free inference may leave data.partonic unset."
+        )
     _exact_keys(training.scheduler, {"enabled", "factor", "patience", "min_lr"}, "training.scheduler")
     if training.scheduler.enabled:
         factor = float(training.scheduler.factor)

@@ -100,6 +100,11 @@ def active_architecture(model) -> dict:
         # compatible; enabled partonic heads remain fully identified.
         if not bool(getattr(heads.partonic, "enabled", False)):
             head_payload.pop("partonic", None)
+        else:
+            # The sidecar is a training/evaluation input, not learned model
+            # structure.  Keep role and truth-binding semantics in the
+            # checkpoint identity but do not make reload depend on a path.
+            head_payload["partonic"].pop("target_path", None)
         payload["heads"] = head_payload
     return payload
 
