@@ -81,6 +81,32 @@ if [[ $vyper_train_status -ne 0 ]]; then
     exit "$vyper_train_status"
 fi
 
+# PyTorch 2.11 rejects the trusted Lightning checkpoint's defaultdict when
+# the pinned upstream prediction entry point passes weights_only=True.  Keep
+# the pinned upstream architecture and sampler unchanged; apply a scoped
+# loader-only compatibility patch for this smoke and restore the source on
+# every exit path.
+vyper_predict_source="$vyper_root/VyPER/predict.py"
+vyper_predict_backup="$gpu_root/VyPER_predict.py.before_compatibility_patch"
+cp "$vyper_predict_source" "$vyper_predict_backup"
+restore_vyper_predict() {
+    cp "$vyper_predict_backup" "$vyper_predict_source"
+}
+trap restore_vyper_predict EXIT
+"$python_bin" - "$vyper_predict_source" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text()
+old = "weights_only = True # Required since PyTorch 2.9."
+new = "weights_only = False # Trusted local checkpoint; PyTorch 2.11 compatibility."
+if text.count(old) != 1:
+    raise SystemExit(f"expected one pinned weights_only loader line in {path}")
+path.write_text(text.replace(old, new))
+PY
+printf '%s\n' "temporary VyPER predict.py weights_only=False compatibility patch; restored by EXIT trap" > "$gpu_root/vyper_loader_compatibility.txt"
+
 set +e
 /usr/bin/time -v "$vyper_python" -m VyPER.predict \
     --config-name=matched_30_4_tiny_actual \
