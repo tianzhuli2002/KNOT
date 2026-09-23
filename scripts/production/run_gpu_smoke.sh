@@ -71,7 +71,7 @@ set +e
     device.accelerator=gpu \
     device.num_workers=1 \
     training.save_directory="$vyper_output" \
-    predicting.model_directory="$vyper_output" \
+    predicting.model_directory="$vyper_output/version_0" \
     predicting.save_as="$vyper_prediction" \
     > "$gpu_root/vyper_train.log" 2>&1
 vyper_train_status=$?
@@ -86,7 +86,7 @@ set +e
     --config-name=matched_30_4_tiny_actual \
     device.accelerator=gpu \
     device.num_workers=1 \
-    predicting.model_directory="$vyper_output" \
+    predicting.model_directory="$vyper_output/version_0" \
     predicting.save_as="$vyper_prediction" \
     > "$gpu_root/vyper_predict.log" 2>&1
 vyper_predict_status=$?
