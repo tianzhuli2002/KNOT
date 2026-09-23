@@ -15,19 +15,19 @@ if [[ ! -s "$visible_checkpoint" ]]; then
 fi
 
 common_overrides=(
-    data.input="$tiny_input"
-    data.cache=null
-    data.split.indices_path=null
-    data.split.require_existing=false
-    data.events.train=32
-    data.events.validation=16
+    --set data.input="$tiny_input"
+    --set data.cache=null
+    --set data.split.indices_path=null
+    --set data.split.require_existing=false
+    --set data.events.train=32
+    --set data.events.validation=16
     # One even-source development event is sufficient for the expensive
     # L-GATr reload/prediction contract; production uses the frozen 50k split.
-    data.events.test=1
-    training.batch_size=8
-    training.workers=0
-    training.epochs=1
-    training.precision=32-true
+    --set data.events.test=1
+    --set training.batch_size=8
+    --set training.workers=0
+    --set training.epochs=1
+    --set training.precision=32-true
 )
 
 run_cycle() {
@@ -54,7 +54,7 @@ run_cycle jer_joint_both_heads.public.yaml jer_tiny_lgatr_both_final
 "$python_bin" "$repo_root/scripts/validation/validate_joint_gradients.py" \
     --config "$experiment_root/configs/jer_tiny_real.public.yaml" \
     --parent-target "$parent_target" \
-    --output "$validation_root/gradient_and_optional_head_validation_final.json"
+    --output "$validation_root/gradient_and_optional_head_validation_final_lgatr.json"
 
 for output in \
     jer_tiny_lgatr_factorized_final \
@@ -68,5 +68,5 @@ for output in \
     test -s "$validation_root/$output/evaluation.json"
     test -s "$validation_root/$output/e2e.json"
 done
-test -s "$validation_root/gradient_and_optional_head_validation_final.json"
+test -s "$validation_root/gradient_and_optional_head_validation_final_lgatr.json"
 printf '%s\n' "Final CPU release suite passed: $experiment_root"

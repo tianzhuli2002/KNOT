@@ -127,15 +127,26 @@ def main() -> None:
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--parent-target", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument(
+        "--encoder",
+        choices=("configured", "transformer"),
+        default="configured",
+        help="Use the configured production encoder by default; transformer is a diagnostic opt-in.",
+    )
     args = parser.parse_args()
     torch.manual_seed(20260923)
     base = load_experiment(args.config.expanduser().resolve())
-    # The diagnostic encoder keeps this gate fast; production configs remain L-GATr.
-    base.model.visible.type = "transformer"
-    base.model.visible.layers = 2
-    base.model.visible.d_feedforward = 384
+    if args.encoder == "transformer":
+        base.model.visible.type = "transformer"
+        base.model.visible.layers = 2
+        base.model.visible.d_feedforward = 384
     report = {
-        "data": {"config": str(args.config.resolve()), "real_data": True, "batch_size": int(base.training.batch_size)},
+        "data": {
+            "config": str(args.config.resolve()),
+            "real_data": True,
+            "batch_size": int(base.training.batch_size),
+            "encoder": str(args.encoder),
+        },
         "gradient_policy": {policy: _policy_report(base, policy) for policy in ("both", "assignment_only")},
         "optional_heads": {
             "point": _optional_report(base, "point", args.parent_target.resolve()),
