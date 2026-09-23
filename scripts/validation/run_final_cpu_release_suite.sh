@@ -21,7 +21,9 @@ common_overrides=(
     data.split.require_existing=false
     data.events.train=32
     data.events.validation=16
-    data.events.test=16
+    # One even-source development event is sufficient for the expensive
+    # L-GATr reload/prediction contract; production uses the frozen 50k split.
+    data.events.test=1
     training.batch_size=8
     training.workers=0
     training.epochs=1
