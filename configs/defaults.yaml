@@ -75,6 +75,7 @@ model:
 
 inference:
   seed: 12345
+  point_estimator: none
   top_k: 1
   samples: 1
   steps: 8

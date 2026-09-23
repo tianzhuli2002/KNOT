@@ -14,6 +14,80 @@ import torch
 REQUIRED_COMPONENTS = ("px", "py", "pz")
 
 
+class ParentTruthStore:
+    """Strict event-ID join for an explicit generator-parent truth sidecar.
+
+    The sidecar contract is intentionally separate from the canonical event
+    file: ``EVENT_ID`` plus ``PARENTS/<role>`` float32 datasets of shape
+    ``[N,4]`` in ``E_px_py_pz_GeV`` order, with a JSON ``parent_roles`` attr.
+    No reconstructed or model-derived composite is accepted as this target.
+    """
+
+    def __init__(self, path: str | Path, role_names: tuple[str, ...]):
+        self.path = Path(path).expanduser().resolve()
+        self.role_names = tuple(str(name) for name in role_names)
+        if not self.role_names:
+            raise ValueError("Parent truth store requires at least one role")
+        if not self.path.is_file():
+            raise FileNotFoundError(f"Parent truth sidecar does not exist: {self.path}")
+        with h5py.File(self.path, "r") as source:
+            if "EVENT_ID" not in source or "PARENTS" not in source:
+                raise KeyError(
+                    f"{self.path} must contain EVENT_ID and PARENTS/<role> datasets"
+                )
+            raw_roles = source.attrs.get("parent_roles")
+            if isinstance(raw_roles, bytes):
+                raw_roles = raw_roles.decode()
+            try:
+                observed_roles = tuple(str(role) for role in json.loads(str(raw_roles)))
+            except (TypeError, ValueError, json.JSONDecodeError) as error:
+                raise ValueError(f"{self.path}: parent_roles must be a JSON list") from error
+            if observed_roles != self.role_names:
+                raise ValueError(
+                    f"{self.path}: parent role order mismatch; expected={self.role_names}, observed={observed_roles}"
+                )
+            event_ids = np.asarray(source["EVENT_ID"][:])
+            if event_ids.ndim != 1 or not np.issubdtype(event_ids.dtype, np.integer):
+                raise TypeError(f"{self.path}: EVENT_ID must be one-dimensional integer")
+            values = []
+            for role in self.role_names:
+                name = f"PARENTS/{role}"
+                if name not in source:
+                    raise KeyError(f"{self.path}: missing {name}")
+                array = np.asarray(source[name][:])
+                if array.shape != (len(event_ids), 4) or array.dtype != np.float32:
+                    raise TypeError(f"{self.path}:{name} must be float32 [{len(event_ids)},4]")
+                values.append(array)
+        if len(np.unique(event_ids)) != len(event_ids):
+            raise ValueError(f"{self.path}: EVENT_ID contains duplicates")
+        dense = np.stack(values, axis=1)
+        spatial_norm = np.sqrt(np.square(dense[..., 1:]).sum(axis=-1))
+        if (
+            not np.isfinite(dense).all()
+            or (dense[..., 0] < 0).any()
+            or (dense[..., 0] + 1.0e-5 < spatial_norm).any()
+        ):
+            raise ValueError(f"{self.path}: parent truth contains invalid four-vectors")
+        order = np.argsort(event_ids)
+        self.event_ids = event_ids[order].astype(np.int64, copy=False)
+        self.values = dense[order].astype(np.float32, copy=False)
+
+    def lookup(self, event_ids: torch.Tensor | np.ndarray) -> torch.Tensor:
+        requested = np.asarray(
+            event_ids.cpu() if torch.is_tensor(event_ids) else event_ids,
+            dtype=np.int64,
+        )
+        positions = np.searchsorted(self.event_ids, requested)
+        valid = positions < len(self.event_ids)
+        valid &= self.event_ids[np.minimum(positions, len(self.event_ids) - 1)] == requested
+        if not valid.all():
+            raise KeyError(
+                f"Parent truth sidecar {self.path} is missing EVENT_ID values "
+                f"{requested[~valid][:10].tolist()}"
+            )
+        return torch.from_numpy(self.values[positions].copy())
+
+
 class InvisibleTruthStore:
     def __init__(
         self,
@@ -185,7 +259,7 @@ class InvisibleScaler:
         if values is None:
             raise ValueError("Invisible scaler metadata is null")
         representation = str(values.get("representation", ""))
-        if representation != "cartesian_px_py_pz_v1" and not representation.startswith(
+        if representation not in {"cartesian_px_py_pz_v1", "direct_point_cartesian_v1"} and not representation.startswith(
             "invisible_coordinate_state_"
         ):
             raise ValueError(

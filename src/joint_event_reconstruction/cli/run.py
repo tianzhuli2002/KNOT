@@ -27,6 +27,8 @@ _COMPONENT_PREFIXES = {
     "invisible": ("event_model.invisible.",),
     "c2": ("event_model.posterior_feedback.",),
     "compatibility": ("event_model.compatibility.",),
+    "point": ("event_model.point_head.",),
+    "parent": ("event_model.parent_head.",),
 }
 
 
@@ -59,6 +61,17 @@ def build_data(config, visible):
         truth_bindings=OmegaConf.to_container(config.data.truth_bindings, resolve=True),
         tensor_cache=config.data.tensor_cache,
         invisible_path=invisible.path if config.model.invisible.enabled else None,
+        point_enabled=bool(config.model.heads.point_invisible.enabled),
+        parent_path=(
+            config.data.parent.path
+            if config.model.heads.parent_four_vector.enabled
+            else None
+        ),
+        parent_roles=(
+            tuple(str(role) for role in config.model.heads.parent_four_vector.roles)
+            if config.model.heads.parent_four_vector.enabled
+            else ()
+        ),
         allow_synthetic=bool(invisible.allow_synthetic),
         max_events=OmegaConf.to_container(config.data.max_events, resolve=True),
         subset_seed=int(config.data.subset_seed),
@@ -187,6 +200,7 @@ def train(
         config,
         visible,
         invisible_scaler=data.invisible_scaler,
+        point_scaler=data.point_scaler,
         synthetic_data=(
             bool(data.structured_collator.invisible_store.synthetic)
             if data.structured_collator.invisible_store is not None
@@ -289,11 +303,19 @@ def load_trained(config, visible, data, checkpoint_path: str) -> JointEventModul
         data.structured_collator.invisible_scaler = scaler
     else:
         scaler = data.invisible_scaler
+    checkpoint_point_scaler = checkpoint.get("point_scaler")
+    if checkpoint_point_scaler is not None:
+        point_scaler = InvisibleScaler.from_dict(checkpoint_point_scaler)
+        data.point_scaler = point_scaler
+        data.structured_collator.point_scaler = point_scaler
+    else:
+        point_scaler = data.point_scaler
 
     module = JointEventModule(
         config,
         visible,
         invisible_scaler=scaler,
+        point_scaler=point_scaler,
         synthetic_data=(
             bool(data.structured_collator.invisible_store.synthetic)
             if data.structured_collator.invisible_store is not None
@@ -372,6 +394,7 @@ def predict(config, args) -> None:
             prediction_seed=prediction_seed,
             checkpoint_path=args.checkpoint,
             compatibility_weight=float(config.inference.compatibility_weight),
+            point_estimator=str(config.inference.invisible.point_estimator),
         )
 
     with h5py.File(Path(args.output).expanduser().resolve(), "r+") as output:

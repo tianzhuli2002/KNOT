@@ -18,7 +18,7 @@ DEFAULTS_PATH = REPO_ROOT / "configs/defaults.yaml"
 PUBLIC_TOP_KEYS = {
     "experiment", "topology", "data", "inputs", "model", "inference", "training"
 }
-TRAINABLE_COMPONENTS = {"visible", "assignment", "invisible", "c2", "compatibility"}
+TRAINABLE_COMPONENTS = {"visible", "assignment", "invisible", "point", "parent", "c2", "compatibility"}
 
 
 def _path(value: object, *, data_path: bool = False) -> Path:
@@ -210,9 +210,12 @@ def build_visible_loader_config(experiment: DictConfig) -> DictConfig:
         "max_jets": int(counts.get("JET", 0)),
         "max_leptons": max(lepton_counts, default=0),
         "include_met": "MET" in counts,
-        "test_size": 0.2,
+        "test_size": float(experiment.data.test_size),
         "limit_events": None,
-        "split": {"indices_path": None, "require_existing": False},
+        "split": {
+            "indices_path": experiment.data.split.indices_path,
+            "require_existing": bool(experiment.data.split.require_existing),
+        },
         "padding_value": 0.0,
         "train_batch_size": int(experiment.training.batch_size),
         "val_batch_size": int(experiment.training.batch_size),
@@ -621,11 +624,48 @@ def _resolve_visible(public, latent: dict, defaults) -> dict:
     return result
 
 
+def _resolve_optional_heads(public) -> dict:
+    """Resolve optional heads without creating topology-specific output names."""
+    result = {
+        "point_invisible": {"enabled": False},
+        "parent_four_vector": {"enabled": False, "roles": [], "target_path": None},
+    }
+    if public is None:
+        return result
+    _mapping(public, "model.heads")
+    _unknown(public, {"point_invisible", "parent_four_vector"}, "model.heads")
+    point = public.get("point_invisible")
+    if point is not None:
+        _mapping(point, "model.heads.point_invisible")
+        _unknown(point, {"enabled"}, "model.heads.point_invisible")
+        result["point_invisible"]["enabled"] = bool(point.get("enabled", False))
+    parent = public.get("parent_four_vector")
+    if parent is not None:
+        _mapping(parent, "model.heads.parent_four_vector")
+        _unknown(parent, {"enabled", "roles", "target_path"}, "model.heads.parent_four_vector")
+        enabled = bool(parent.get("enabled", False))
+        roles = [str(role) for role in parent.get("roles", [])]
+        target_path = parent.get("target_path")
+        if enabled and (not roles or target_path is None):
+            raise ValueError(
+                "model.heads.parent_four_vector requires roles and target_path when enabled"
+            )
+        result["parent_four_vector"] = {
+            "enabled": enabled,
+            "roles": roles,
+            "target_path": None if target_path is None else str(target_path),
+        }
+    if result["point_invisible"]["enabled"] and result["parent_four_vector"]["enabled"]:
+        # Both are allowed; their losses remain independently weighted.
+        pass
+    return result
+
+
 def _resolve_model(public, defaults) -> dict:
     _mapping(public, "model")
     allowed = {
         "mode", "latent", "encoder", "assignment", "invisible", "joint",
-        "feedback", "compatibility",
+        "feedback", "compatibility", "heads",
     }
     _unknown(public, allowed, "model")
     for obsolete, replacement in {
@@ -641,12 +681,15 @@ def _resolve_model(public, defaults) -> dict:
     _required(public.latent, latent_keys, "model.latent")
     latent = _plain(public.latent)
     encoder = _resolve_visible(public.encoder, latent, defaults)
+    heads = _resolve_optional_heads(public.get("heads"))
 
     mode = str(public.mode)
     if mode not in {"factorized", "joint"}:
         raise ValueError("model.mode must be factorized or joint")
     joint_public = public.get("joint")
     if mode == "joint":
+        if any(value["enabled"] for value in heads.values()):
+            raise ValueError("Optional point/parent heads currently require model.mode=factorized")
         if joint_public is None:
             raise ValueError("model.mode=joint requires model.joint")
         for name in ("assignment", "invisible", "feedback", "compatibility"):
@@ -731,6 +774,7 @@ def _resolve_model(public, defaults) -> dict:
                 "enabled": False,
                 "include_invisible": bool(defaults.compatibility.include_invisible),
             },
+            "heads": heads,
         }
 
     if joint_public is not None:
@@ -762,6 +806,10 @@ def _resolve_model(public, defaults) -> dict:
     )
     if method == "discrete_flow" and invisible["enabled"]:
         raise ValueError("Factorized DFM is assignment-only; omit model.invisible or use joint_flow")
+    if heads["point_invisible"]["enabled"] and not invisible["enabled"]:
+        raise ValueError("model.heads.point_invisible requires an active invisible generator")
+    if heads["parent_four_vector"]["enabled"] and not invisible["enabled"]:
+        raise ValueError("model.heads.parent_four_vector requires an active invisible generator")
 
     feedback_public = public.get("feedback")
     if feedback_public is not None:
@@ -864,6 +912,7 @@ def _resolve_model(public, defaults) -> dict:
             "enabled": compatibility_enabled,
             "include_invisible": bool(compatibility["include_invisible"]),
         },
+        "heads": heads,
     }
 
 
@@ -881,9 +930,27 @@ def resolve_public_experiment(public: DictConfig, *, source_path: str | Path | N
         raise FileNotFoundError(f"Topology config does not exist: {topology_path}")
     data_public = public.data
     _mapping(data_public, "data")
-    data_keys = {"input", "cache", "events", "subset_seed", "max_assignment_states"}
+    data_keys = {
+        "input", "cache", "events", "subset_seed", "max_assignment_states",
+        "test_size", "split",
+    }
     _unknown(data_public, data_keys, "data")
     _required(data_public, {"input", "cache"}, "data")
+    test_size = float(data_public.get("test_size", 0.2))
+    if not 0.0 < test_size < 1.0:
+        raise ValueError("data.test_size must lie strictly between zero and one")
+    split_public = data_public.get(
+        "split", {"indices_path": None, "require_existing": False}
+    )
+    _mapping(split_public, "data.split")
+    _unknown(split_public, {"indices_path", "require_existing"}, "data.split")
+    split_path = split_public.get("indices_path")
+    if split_path is not None:
+        split_path = str(_path(split_path, data_path=True))
+    if not isinstance(split_public.get("require_existing", False), bool):
+        raise ValueError("data.split.require_existing must be boolean")
+    if bool(split_public.get("require_existing", False)) and split_path is None:
+        raise ValueError("data.split.require_existing=true requires data.split.indices_path")
     events = data_public.get("events", {"train": None, "validation": None, "test": None})
     _unknown(events, {"train", "validation", "test"}, "data.events")
     _required(events, {"train", "validation", "test"}, "data.events")
@@ -905,6 +972,16 @@ def resolve_public_experiment(public: DictConfig, *, source_path: str | Path | N
 
     defaults = OmegaConf.load(DEFAULTS_PATH)
     model = _resolve_model(public.model, defaults.model)
+    parent_head = model["heads"]["parent_four_vector"]
+    parent_path = None
+    if parent_head["enabled"]:
+        parent_path = _path(parent_head["target_path"], data_path=True)
+        if not parent_path.is_file():
+            raise FileNotFoundError(
+                "Enabled parent four-vector head requires an existing explicit "
+                f"truth sidecar: {parent_path}"
+            )
+        parent_head["target_path"] = str(parent_path)
     kinematic_names = {"e", "pt", "eta", "phi", "sin_phi", "cos_phi"}
     object_features = []
     for source, spec in data_config.collections.items():
@@ -930,7 +1007,7 @@ def resolve_public_experiment(public: DictConfig, *, source_path: str | Path | N
     invisible_inference = inference_public.get("invisible", {})
     compatibility_inference = inference_public.get("compatibility", {})
     _unknown(assignment_inference, {"top_k"}, "inference.assignment")
-    _unknown(invisible_inference, {"samples_per_assignment", "flow", "edm", "ddim"}, "inference.invisible")
+    _unknown(invisible_inference, {"samples_per_assignment", "flow", "edm", "ddim", "point_estimator"}, "inference.invisible")
     _unknown(compatibility_inference, {"weight"}, "inference.compatibility")
     flow_inference = invisible_inference.get("flow", {})
     edm_inference = invisible_inference.get("edm", {})
@@ -952,7 +1029,12 @@ def resolve_public_experiment(public: DictConfig, *, source_path: str | Path | N
         "rho": edm_inference.get("rho", defaults_inference.rho),
         "standard_steps": ddim_inference.get("steps", defaults_inference.standard_steps),
         "compatibility_weight": compatibility_inference.get("weight", defaults_inference.compatibility_weight),
+        "point_estimator": str(invisible_inference.get("point_estimator", getattr(defaults_inference, "point_estimator", "none"))),
     }
+    if prediction["point_estimator"] not in {
+        "none", "cfm_single_draw", "cfm_cartesian_mean", "cfm_joint_medoid", "direct_point_head"
+    }:
+        raise ValueError("inference.invisible.point_estimator is invalid")
     standard_steps = int(prediction["standard_steps"])
 
     training_public = public.training
@@ -960,7 +1042,7 @@ def resolve_public_experiment(public: DictConfig, *, source_path: str | Path | N
     training_keys = {
         "batch_size", "workers", "optimizer", "learning_rate", "weight_decay", "epochs", "precision", "gradient_clip",
         "accumulate_grad_batches", "trainable", "loss_weights", "scheduler",
-        "early_stopping", "runtime", "output",
+        "early_stopping", "runtime", "output", "shared_encoder_gradients",
     }
     _unknown(training_public, training_keys, "training")
     training = _merge(defaults.training, training_public)
@@ -983,6 +1065,10 @@ def resolve_public_experiment(public: DictConfig, *, source_path: str | Path | N
             trainable.append("c2")
         if model["compatibility"]["enabled"]:
             trainable.append("compatibility")
+        if model["heads"]["point_invisible"]["enabled"]:
+            trainable.append("point")
+        if model["heads"]["parent_four_vector"]["enabled"]:
+            trainable.append("parent")
     else:
         trainable = [str(value) for value in training_public.trainable]
     if not trainable or len(set(trainable)) != len(trainable):
@@ -992,6 +1078,10 @@ def resolve_public_experiment(public: DictConfig, *, source_path: str | Path | N
         raise ValueError(f"Unknown training.trainable components: {unknown_trainable}")
     if "c2" in trainable and "assignment" not in trainable:
         raise ValueError("training.trainable=c2 requires assignment to be trainable")
+    if "point" in trainable and not model["heads"]["point_invisible"]["enabled"]:
+        raise ValueError("training.trainable=point requires an enabled point_invisible head")
+    if "parent" in trainable and not model["heads"]["parent_four_vector"]["enabled"]:
+        raise ValueError("training.trainable=parent requires an enabled parent_four_vector head")
     if model["mode"] == "joint_flow" and (("assignment" in trainable) != ("invisible" in trainable)):
         raise ValueError("joint_flow assignment and invisible dynamics must be trainable/frozen together")
 
@@ -999,6 +1089,8 @@ def resolve_public_experiment(public: DictConfig, *, source_path: str | Path | N
         "assignment": 1.0 if "assignment" in trainable else 0.0,
         "invisible": 1.0 if "invisible" in trainable else 0.0,
         "compatibility": 1.0 if "compatibility" in trainable else 0.0,
+        "point": 1.0 if "point" in trainable else 0.0,
+        "parent": 1.0 if "parent" in trainable else 0.0,
     }
     if training_public.get("loss_weights") is not None:
         _mapping(training_public.loss_weights, "training.loss_weights")
@@ -1020,6 +1112,11 @@ def resolve_public_experiment(public: DictConfig, *, source_path: str | Path | N
                 "tensor_cache": None if cache_path is None else str(cache_path),
                 "force_rebuild_cache": False,
                 "subset_seed": int(data_public.get("subset_seed", public.experiment.seed)),
+                "test_size": test_size,
+                "split": {
+                    "indices_path": split_path,
+                    "require_existing": bool(split_public.get("require_existing", False)),
+                },
                 "truth_bindings": _truth_bindings(topology_path),
                 "max_events": {
                     "train": events.train,
@@ -1031,6 +1128,10 @@ def resolve_public_experiment(public: DictConfig, *, source_path: str | Path | N
                     "path": str(input_path),
                     "allow_synthetic": False,
                 },
+                "parent": {
+                    "path": None if parent_path is None else str(parent_path),
+                    "roles": list(parent_head["roles"]),
+                },
             },
             "model": model,
             "inference": {
@@ -1038,6 +1139,7 @@ def resolve_public_experiment(public: DictConfig, *, source_path: str | Path | N
                 "top_k_assignments": int(prediction["top_k"]),
                 "posterior_samples": int(prediction["samples"]),
                 "invisible": {
+                    "point_estimator": str(prediction["point_estimator"]),
                     "standard": {"steps": standard_steps},
                     "edm": {
                         "sigma_min": float(prediction["sigma_min"]),
@@ -1069,6 +1171,9 @@ def resolve_public_experiment(public: DictConfig, *, source_path: str | Path | N
                 "runtime": _plain(training.runtime),
                 "trainable": trainable,
                 "loss_weights": loss_weights,
+                "shared_encoder_gradients": str(
+                    training_public.get("shared_encoder_gradients", "both")
+                ),
                 "scheduler": _plain(training.scheduler),
                 "early_stopping": _plain(training.early_stopping),
                 "output": str(output_path),

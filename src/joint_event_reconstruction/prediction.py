@@ -20,6 +20,11 @@ from joint_event_reconstruction.prediction_schema import (
     PREDICTION_SCHEMA,
     validate_prediction,
 )
+from joint_event_reconstruction.prediction_reductions import (
+    POINT_ESTIMATORS,
+    physical_four_vectors_from_momenta,
+    reduce_joint_posterior,
+)
 from joint_event_reconstruction.topology.candidates import CandidateRecord
 from joint_event_reconstruction.topology.decoder import ScoredCandidate, decode_complete
 
@@ -360,6 +365,7 @@ def predict_hdf5(
     prediction_seed: int,
     checkpoint_path: str = "",
     compatibility_weight: float = 1.0,
+    point_estimator: str = "none",
 ) -> None:
     if split not in {"train", "validation", "test"}:
         raise ValueError(
@@ -367,6 +373,10 @@ def predict_hdf5(
         )
     if top_k <= 0 or posterior_samples <= 0:
         raise ValueError("Prediction K and M must be positive")
+    if point_estimator not in {"none", *POINT_ESTIMATORS, "direct_point_head"}:
+        raise ValueError(f"Unknown point estimator {point_estimator!r}")
+    if point_estimator == "direct_point_head" and module.event_model.point_head is None:
+        raise ValueError("direct_point_head inference requires an enabled point head")
     loader = {
         "train": data.train_dataloader,
         "validation": data.val_dataloader,
@@ -389,6 +399,9 @@ def predict_hdf5(
             module.event_model.invisible.assignment_mode
             if module.event_model.invisible is not None
             else "disabled"
+        )
+        stored_posterior_samples = (
+            1 if point_estimator == "direct_point_head" else posterior_samples
         )
         destination.attrs.update(
             {
@@ -416,7 +429,8 @@ def predict_hdf5(
                     assignment_mode == "hypothesis"
                 ),
                 "K": top_k,
-                "M": posterior_samples,
+                "M": stored_posterior_samples,
+                "point_estimator": str(point_estimator),
                 "invisible_roles": json.dumps(
                     [role.key for role in module.spec.invisible_roles]
                 ),
@@ -455,7 +469,14 @@ def predict_hdf5(
 
         for batch in iterator:
             batch = to_device(batch, device)
-            output = module(batch, recurrent_steps=recurrent_steps)
+            model_batch = batch
+            if point_estimator == "direct_point_head":
+                # Direct-head latency must not include an unnecessary CFM loss
+                # evaluation.  Truth remains in ``batch`` for evaluation.
+                model_batch = dict(batch)
+                model_batch.pop("invisible_truth_scaled", None)
+                model_batch.pop("invisible_truth_point_scaled", None)
+            output = module(model_batch, recurrent_steps=recurrent_steps)
             decoded = decode_batch(module.spec, batch, output, top_k)
             assignments = [item.assignments for item in decoded]
             roots = module.spec.roots
@@ -501,12 +522,18 @@ def predict_hdf5(
 
             samples = mean = std = None
             physical_samples = physical_mean = physical_std = truth_physical = None
+            point_momenta = point_four_vectors = None
+            parent_four_vectors = output.get("parent_four_vectors")
             projection = None
             composites = truth_composites = observed_met = None
             nfe = 0
             unique_branches = 0
             compatibility = final_score = final_rank = None
-            if module.event_model.invisible is not None:
+            should_generate_cfm = (
+                module.event_model.invisible is not None
+                and point_estimator != "direct_point_head"
+            )
+            if should_generate_cfm:
                 scaled, nfe, unique_branches = _generate_invisible(
                     module,
                     batch,
@@ -531,8 +558,29 @@ def predict_hdf5(
                 samples = samples_tensor.cpu().numpy().astype(np.float32)
                 mean = samples.mean(axis=2)
                 std = samples.std(axis=2)
-                physical_mean = physical_samples.mean(dim=2).cpu().numpy().astype(np.float32)
+                mean_tensor = reduce_joint_posterior(
+                    samples_tensor, "cfm_cartesian_mean"
+                )
+                physical_mean = physical_four_vectors_from_momenta(
+                    module.event_model.invisible.coordinates, mean_tensor
+                ).cpu().numpy().astype(np.float32)
                 physical_std = physical_samples.std(dim=2).cpu().numpy().astype(np.float32)
+                if point_estimator != "none":
+                    medoid_scale = None
+                    if point_estimator == "cfm_joint_medoid":
+                        point_scaler = module.event_model.point_scaler
+                        if point_scaler is not None:
+                            medoid_scale = samples_tensor.new_tensor(point_scaler.std)
+                        elif scaler is not None:
+                            medoid_scale = samples_tensor.new_tensor(
+                                scaler.std[: len(module.spec.invisible_roles)]
+                            )
+                    point_momenta = reduce_joint_posterior(
+                        samples_tensor, point_estimator, scale=medoid_scale
+                    )
+                    point_four_vectors = physical_four_vectors_from_momenta(
+                        module.event_model.invisible.coordinates, point_momenta
+                    )
                 projection = _met_exact_truth_projection(module, batch)
                 composites, truth_composites, observed_met = compose_physics(
                     module,
@@ -584,6 +632,31 @@ def predict_hdf5(
                     final_rank = np.argsort(
                         -final_score, axis=1, kind="stable"
                     ).astype(np.int32)
+            elif point_estimator == "direct_point_head":
+                point_scaler = module.event_model.point_scaler
+                if point_scaler is None or "point_momenta_scaled" not in output:
+                    raise RuntimeError("Direct point-head prediction has no scaler/output")
+                direct = point_scaler.inverse(output["point_momenta_scaled"])
+                point_momenta = direct.unsqueeze(1).expand(-1, top_k, -1, -1)
+                point_four_vectors = physical_four_vectors_from_momenta(
+                    module.event_model.invisible.coordinates, point_momenta
+                )
+                truth_state = module.event_model.invisible.coordinates.encode(
+                    batch["invisible_truth"], batch["met_xy"]
+                )
+                truth_physical = module.event_model.invisible.coordinates.decode_physical(
+                    truth_state, batch["met_xy"]
+                )["four_vector"]
+                direct_samples = point_momenta.unsqueeze(2)
+                composites, truth_composites, observed_met = compose_physics(
+                    module,
+                    batch,
+                    assignments,
+                    direct_samples,
+                    physical_samples=point_four_vectors.unsqueeze(2),
+                    truth_physical=truth_physical,
+                    truth_assignment=assignment_mode == "truth",
+                )
 
             if datasets is None:
                 visible_group = destination.create_group("VISIBLE")
@@ -721,6 +794,44 @@ def predict_hdf5(
                         datasets["observed_met"] = create_prediction_dataset(
                             observed_group, "MET", (4,), "<f4"
                         )
+                if samples is None:
+                    if composites is not None:
+                        composite_group = destination.create_group("COMPOSITES")
+                        truth_composite_group = truth_group.create_group("COMPOSITES")
+                        for node, values in composites.items():
+                            datasets[f"composite/{node}"] = create_prediction_dataset(
+                                composite_group, node, values.shape[1:], "<f4"
+                            )
+                            datasets[f"truth_composite/{node}"] = create_prediction_dataset(
+                                truth_composite_group, node, (4,), "<f4"
+                            )
+                    if observed_met is not None:
+                        datasets["observed_met"] = create_prediction_dataset(
+                            observed_group, "MET", (4,), "<f4"
+                        )
+                if point_momenta is not None:
+                    datasets["point_momenta"] = create_prediction_dataset(
+                        invisible_group, "point_momenta", point_momenta.shape[1:], "<f4"
+                    )
+                    datasets["point_four_vectors"] = create_prediction_dataset(
+                        invisible_group, "point_four_vectors", point_four_vectors.shape[1:], "<f4"
+                    )
+                    invisible_group.attrs["point_estimator"] = str(point_estimator)
+                    invisible_group.attrs["point_output_rule"] = str(point_estimator)
+                    if samples is None:
+                        datasets["nu_truth"] = create_prediction_dataset(
+                            truth_group, "NEUTRINO", tuple(batch["invisible_truth"].shape[1:]), "<f4"
+                        )
+                        datasets["truth_four_vector"] = create_prediction_dataset(
+                            truth_group, "INVISIBLE_FOUR_VECTOR", tuple(truth_physical.shape[1:]), "<f4"
+                        )
+                if parent_four_vectors is not None:
+                    parent_group = destination.create_group("PARENTS")
+                    datasets["parent_four_vectors"] = create_prediction_dataset(
+                        parent_group, "direct_four_vectors", parent_four_vectors.shape[1:], "<f4"
+                    )
+                    parent_group.attrs["roles"] = json.dumps(list(module.event_model.parent_roles))
+                    parent_group.attrs["output_rule"] = "direct_parent_head"
                 if compatibility is not None:
                     datasets["compatibility"] = create_prediction_dataset(
                         joint_group, "compatibility_logit", (top_k,), "<f4"
@@ -834,6 +945,39 @@ def predict_hdf5(
                         )
                 if observed_met is not None:
                     _append(datasets["observed_met"], observed_met)
+            if point_momenta is not None:
+                if samples is None:
+                    if composites is not None:
+                        for node, values in composites.items():
+                            _append(datasets[f"composite/{node}"], values)
+                            _append(
+                                datasets[f"truth_composite/{node}"],
+                                truth_composites[node],
+                            )
+                    if observed_met is not None:
+                        _append(datasets["observed_met"], observed_met)
+                _append(
+                    datasets["point_momenta"],
+                    point_momenta.cpu().numpy().astype(np.float32),
+                )
+                _append(
+                    datasets["point_four_vectors"],
+                    point_four_vectors.cpu().numpy().astype(np.float32),
+                )
+                if samples is None:
+                    _append(
+                        datasets["nu_truth"],
+                        batch["invisible_truth"].cpu().numpy().astype(np.float32),
+                    )
+                    _append(
+                        datasets["truth_four_vector"],
+                        truth_physical.cpu().numpy().astype(np.float32),
+                    )
+            if parent_four_vectors is not None:
+                _append(
+                    datasets["parent_four_vectors"],
+                    parent_four_vectors.cpu().numpy().astype(np.float32),
+                )
             if compatibility is not None:
                 _append(datasets["compatibility"], compatibility)
                 _append(datasets["final_score"], final_score)

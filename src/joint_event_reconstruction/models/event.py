@@ -9,6 +9,10 @@ from joint_event_reconstruction.models.compatibility import CompatibilityHead
 from joint_event_reconstruction.models.feedback import SoftReconstructionFeedback
 from joint_event_reconstruction.models.invisible.feedback import InvisiblePosteriorFeedback
 from joint_event_reconstruction.models.invisible.generator import InvisibleGenerator
+from joint_event_reconstruction.models.invisible.heads import (
+    DirectInvisiblePointHead,
+    DirectParentFourVectorHead,
+)
 from joint_event_reconstruction.models.joint_flow import JointFlow
 from joint_event_reconstruction.models.recurrent import RecurrentReasoner
 from joint_event_reconstruction.models.reconstruction.discrete_flow import (
@@ -51,6 +55,11 @@ class JointEventModel(nn.Module):
         compatibility_loss_weight: float = 1.0,
         assignment_loss_weight: float = 1.0,
         joint_flow_config=None,
+        heads_config=None,
+        point_scaler=None,
+        point_loss_weight: float = 0.0,
+        parent_loss_weight: float = 0.0,
+        shared_encoder_gradients: str = "both",
     ):
         super().__init__()
         if model_mode not in {"factorized", "joint_flow"}:
@@ -90,6 +99,12 @@ class JointEventModel(nn.Module):
         self.assignment_loss_weight = assignment_loss_weight
         self.invisible_loss_weight = invisible_loss_weight
         self.compatibility_loss_weight = compatibility_loss_weight
+        self.point_loss_weight = float(point_loss_weight)
+        self.parent_loss_weight = float(parent_loss_weight)
+        if shared_encoder_gradients not in {"both", "assignment_only"}:
+            raise ValueError("shared_encoder_gradients must be both or assignment_only")
+        self.shared_encoder_gradients = str(shared_encoder_gradients)
+        self.point_scaler = point_scaler
 
         self.reasoner = None
         self.feedback = None
@@ -119,6 +134,37 @@ class JointEventModel(nn.Module):
                 invisible_inference_config,
                 scaler=invisible_scaler,
             )
+
+        heads_config = heads_config or {}
+        point_config = heads_config.get("point_invisible") if isinstance(heads_config, dict) else getattr(heads_config, "point_invisible", None)
+        parent_config = heads_config.get("parent_four_vector") if isinstance(heads_config, dict) else getattr(heads_config, "parent_four_vector", None)
+        point_enabled = bool(point_config.get("enabled", False) if isinstance(point_config, dict) else getattr(point_config, "enabled", False))
+        parent_enabled = bool(parent_config.get("enabled", False) if isinstance(parent_config, dict) else getattr(parent_config, "enabled", False))
+        self.point_head = None
+        if point_enabled:
+            if self.invisible is None:
+                raise ValueError("The direct invisible point head requires an active invisible model")
+            if point_scaler is None:
+                raise ValueError("The direct invisible point head requires a train-fitted Cartesian scaler")
+            unsupported_masses = {
+                role: shell.mode
+                for role, shell in self.invisible.coordinates.mass_shells.items()
+                if shell.mode != "fixed"
+            }
+            if unsupported_masses:
+                raise ValueError(
+                    "The direct point head currently requires fixed declared masses "
+                    f"for every invisible role; unsupported={unsupported_masses}"
+                )
+            self.point_head = DirectInvisiblePointHead(d_model, len(spec.invisible_roles))
+        self.parent_head = None
+        self.parent_roles = tuple()
+        if parent_enabled:
+            raw_roles = parent_config.get("roles", ()) if isinstance(parent_config, dict) else getattr(parent_config, "roles", ())
+            self.parent_roles = tuple(str(role) for role in raw_roles)
+            if not self.parent_roles:
+                raise ValueError("The parent four-vector head requires non-empty configured roles")
+            self.parent_head = DirectParentFourVectorHead(d_model, len(self.parent_roles))
 
         self.assignment_flow = None
         if model_mode == "factorized" and assignment_formulation == "flow_matching":
@@ -533,15 +579,35 @@ class JointEventModel(nn.Module):
         node_context: dict[str, torch.Tensor] | None,
     ) -> dict:
         if self.invisible is None:
-            return result
+            return self._optional_head_result(result, batch, visible)
+        invisible_visible = visible
+        invisible_result = result
+        if self.shared_encoder_gradients == "assignment_only":
+            invisible_visible = {
+                key: value.detach() if torch.is_tensor(value) else value
+                for key, value in visible.items()
+            }
+            invisible_result = dict(result)
+            for key in ("candidate_embeddings", "assignment_probabilities", "assignment_logits"):
+                value = result.get(key)
+                if isinstance(value, dict):
+                    invisible_result[key] = {
+                        name: tensor.detach() if torch.is_tensor(tensor) else tensor
+                        for name, tensor in value.items()
+                    }
+            if isinstance(result.get("node_context"), dict):
+                invisible_result["node_context"] = {
+                    name: tensor.detach() if torch.is_tensor(tensor) else tensor
+                    for name, tensor in result["node_context"].items()
+                }
         role_parent = self.invisible.role_parent_context(
-            result,
+            invisible_result,
             batch["structured"],
-            visible["pooled"],
-            node_context,
+            invisible_visible["pooled"],
+            invisible_result.get("node_context", node_context),
         )
         parent = self.invisible.coordinates.parent_context(
-            role_parent, visible["pooled"]
+            role_parent, invisible_visible["pooled"]
         )
         result["invisible_parent_context"] = parent
         event_mask = None
@@ -552,11 +618,11 @@ class JointEventModel(nn.Module):
                 visible["tokens"].dtype
             ).mean()
         if "invisible_truth_scaled" not in batch:
-            return result
+            return self._optional_head_result(result, batch, visible)
 
         invisible = self.invisible.loss(
             batch["invisible_truth_scaled"],
-            visible,
+            invisible_visible,
             parent,
             role_context=role_parent,
             event_mask=event_mask,
@@ -565,7 +631,7 @@ class JointEventModel(nn.Module):
         result["invisible_training"] = invisible
         result["loss"] = result["loss"] + self.invisible_loss_weight * invisible["loss"]
         if self.compatibility is None:
-            return result
+            return self._optional_head_result(result, batch, visible)
 
         valid, truth_assignment, wrong_assignment = (
             self._compatibility_assignment_summaries(batch, result)
@@ -599,6 +665,65 @@ class JointEventModel(nn.Module):
             result["loss"]
             + self.compatibility_loss_weight * compatibility["loss"]
         )
+        return self._optional_head_result(result, batch, visible)
+
+    def _optional_head_result(self, result: dict, batch: dict, visible: dict) -> dict:
+        """Attach optional deployable point outputs and supervised losses."""
+        if self.point_head is not None:
+            scaled = self.point_head(visible["pooled"])
+            result["point_momenta_scaled"] = scaled
+            target = batch.get("invisible_truth_point_scaled")
+            if target is None:
+                if self.training:
+                    raise ValueError(
+                        "Direct point-head training requires invisible_truth_point_scaled"
+                    )
+            else:
+                if target.shape != scaled.shape or not torch.isfinite(target).all():
+                    raise ValueError(
+                        "Direct point-head target must be finite and match [B,R,3]: "
+                        f"prediction={tuple(scaled.shape)}, target={tuple(target.shape)}"
+                    )
+                support = batch.get("invisible_point_support")
+                if support is None:
+                    raise ValueError(
+                        "Direct point-head training requires invisible_point_support"
+                    )
+                if support.shape != scaled.shape[:2] or support.dtype != torch.bool:
+                    raise ValueError(
+                        "invisible_point_support must be boolean [B,R], found "
+                        f"{tuple(support.shape)} {support.dtype}"
+                    )
+                supported = support.unsqueeze(-1).expand_as(scaled)
+                if not support.any():
+                    raise RuntimeError(
+                        "Direct point-head training batch has no supported invisible targets"
+                    )
+                loss = (scaled - target).square().masked_select(supported).mean()
+                result["point_loss"] = loss
+                result["point_training_support_fraction"] = support.to(
+                    scaled.dtype
+                ).mean()
+                result["loss"] = result["loss"] + self.point_loss_weight * loss
+
+        if self.parent_head is not None:
+            prediction = self.parent_head(visible["pooled"])
+            result["parent_four_vectors"] = prediction
+            target = batch.get("parent_truth")
+            if target is None:
+                if self.training:
+                    raise ValueError(
+                        "Direct parent-head training requires the configured parent_truth target"
+                    )
+            else:
+                if target.shape != prediction.shape or not torch.isfinite(target).all():
+                    raise ValueError(
+                        "Parent target must be finite and match [B,P,4]: "
+                        f"prediction={tuple(prediction.shape)}, target={tuple(target.shape)}"
+                    )
+                loss = (prediction - target).square().mean()
+                result["parent_loss"] = loss
+                result["loss"] = result["loss"] + self.parent_loss_weight * loss
         return result
 
 

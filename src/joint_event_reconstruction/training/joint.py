@@ -85,6 +85,12 @@ def active_architecture(model) -> dict:
             payload["coupling"] = _resolved(model.coupling)
         if bool(model.compatibility.enabled):
             payload["compatibility"] = _resolved(model.compatibility)
+    heads = getattr(model, "heads", None)
+    if heads is not None and any(
+        bool(getattr(heads, name).enabled)
+        for name in ("point_invisible", "parent_four_vector")
+    ):
+        payload["heads"] = _resolved(heads)
     return payload
 
 
@@ -115,6 +121,17 @@ def architecture_component_signatures(model) -> dict[str, str]:
             "compatibility": architecture.get("compatibility"),
         },
     }
+    heads = architecture.get("heads", {})
+    if heads.get("point_invisible", {}).get("enabled", False):
+        payloads["point"] = {
+            "latent_width": architecture["latent"]["d_model"],
+            "head": heads["point_invisible"],
+        }
+    if heads.get("parent_four_vector", {}).get("enabled", False):
+        payloads["parent"] = {
+            "latent_width": architecture["latent"]["d_model"],
+            "head": heads["parent_four_vector"],
+        }
     return {
         component: hashlib.sha256(
             json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
@@ -156,6 +173,10 @@ def _apply_trainable_components(event_model, mode: str, components: set[str]) ->
         _freeze(event_model.posterior_feedback)
     if "compatibility" not in components:
         _freeze(event_model.compatibility)
+    if "point" not in components:
+        _freeze(event_model.point_head)
+    if "parent" not in components:
+        _freeze(event_model.parent_head)
 
 
 class JointEventModule(L.LightningModule):
@@ -165,6 +186,7 @@ class JointEventModule(L.LightningModule):
         visible_config,
         *,
         invisible_scaler=None,
+        point_scaler=None,
         synthetic_data: bool = False,
     ):
         super().__init__()
@@ -211,6 +233,11 @@ class JointEventModule(L.LightningModule):
             compatibility_config=model.compatibility,
             compatibility_loss_weight=float(experiment.training.loss_weights.compatibility),
             joint_flow_config=model.joint_flow,
+            heads_config=model.heads,
+            point_scaler=point_scaler,
+            point_loss_weight=float(experiment.training.loss_weights.point),
+            parent_loss_weight=float(experiment.training.loss_weights.parent),
+            shared_encoder_gradients=str(experiment.training.shared_encoder_gradients),
         )
 
         trainable_components = {str(value) for value in experiment.training.trainable}
@@ -225,6 +252,11 @@ class JointEventModule(L.LightningModule):
         component_signatures = architecture_component_signatures(model)
         self.scaler_metadata = (
             None if invisible_scaler is None else invisible_scaler.as_dict()
+        )
+        self.point_scaler_metadata = (
+            None
+            if self.event_model.point_head is None or point_scaler is None
+            else point_scaler.as_dict()
         )
         if invisible_config is not None:
             if invisible_scaler is None:
@@ -308,6 +340,11 @@ class JointEventModule(L.LightningModule):
                 ),
                 "invisible_roles": [role.key for role in self.spec.invisible_roles],
                 "invisible_role_count": len(self.spec.invisible_roles),
+                "optional_heads": (
+                    _resolved(model.heads)
+                    if any(bool(getattr(model.heads, name).enabled) for name in ("point_invisible", "parent_four_vector"))
+                    else None
+                ),
                 "flow_coupling": (
                     _resolved(model.invisible.flow_matching.coupling)
                     if model.invisible.enabled
@@ -321,6 +358,7 @@ class JointEventModule(L.LightningModule):
                 ),
                 "synthetic_data": bool(synthetic_data),
                 "trainable_components": sorted(trainable_components),
+                "shared_encoder_gradients": str(experiment.training.shared_encoder_gradients),
                 "experiment_seed": int(experiment.experiment.seed),
                 "data_subset_seed": int(experiment.data.subset_seed),
                 "precision": str(experiment.training.precision),
@@ -372,6 +410,16 @@ class JointEventModule(L.LightningModule):
                 on_epoch=True,
                 batch_size=batch_size,
             )
+        if "point_loss" in output:
+            self.log(
+                f"{stage}_point_loss", output["point_loss"], on_step=False,
+                on_epoch=True, batch_size=batch_size,
+            )
+        if "parent_loss" in output:
+            self.log(
+                f"{stage}_parent_loss", output["parent_loss"], on_step=False,
+                on_epoch=True, batch_size=batch_size,
+            )
         return output["loss"]
 
     def training_step(self, batch, batch_idx):
@@ -408,6 +456,7 @@ class JointEventModule(L.LightningModule):
 
     def on_save_checkpoint(self, checkpoint: dict) -> None:
         checkpoint["invisible_scaler"] = self.scaler_metadata
+        checkpoint["point_scaler"] = self.point_scaler_metadata
 
     def validate_checkpoint_metadata(self, checkpoint: dict) -> None:
         saved = checkpoint.get("hyper_parameters", {})
@@ -422,6 +471,17 @@ class JointEventModule(L.LightningModule):
                     f"Incompatible checkpoint metadata {key}: "
                     f"checkpoint={saved.get(key)!r}, current={self.hparams.get(key)!r}"
                 )
+        saved_policy = saved.get("shared_encoder_gradients")
+        if saved_policy is None and self.event_model.point_head is None and self.event_model.parent_head is None:
+            # Checkpoints written before the configurable joint-gradient policy
+            # predate this metadata field.  Their maintained loss path updated
+            # the shared encoder, which is the current ``both`` semantics.
+            saved_policy = "both"
+        if saved_policy != self.hparams.get("shared_encoder_gradients"):
+            raise ValueError(
+                "Incompatible checkpoint metadata shared_encoder_gradients: "
+                f"checkpoint={saved_policy!r}, current={self.hparams.get('shared_encoder_gradients')!r}"
+            )
         if saved.get("architecture_signature_version") != ARCHITECTURE_SIGNATURE_VERSION:
             raise ValueError(
                 "Incompatible architecture signature version: "
@@ -440,3 +500,5 @@ class JointEventModule(L.LightningModule):
             raise ValueError("Incompatible architecture component signatures")
         if checkpoint.get("invisible_scaler") != self.scaler_metadata:
             raise ValueError("Incompatible invisible target scaling metadata")
+        if checkpoint.get("point_scaler") != self.point_scaler_metadata:
+            raise ValueError("Incompatible direct point target scaling metadata")

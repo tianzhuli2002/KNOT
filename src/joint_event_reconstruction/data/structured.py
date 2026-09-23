@@ -12,7 +12,11 @@ import torch
 from omegaconf import OmegaConf
 from torch.utils.data import DataLoader, Dataset, Subset
 
-from joint_event_reconstruction.data.invisible import InvisibleScaler, InvisibleTruthStore
+from joint_event_reconstruction.data.invisible import (
+    InvisibleScaler,
+    InvisibleTruthStore,
+    ParentTruthStore,
+)
 from joint_event_reconstruction.data.subsets import deterministic_subset_positions
 from joint_event_reconstruction.m0.data.module import TransformerDataModule, _collate_transformer
 from joint_event_reconstruction.models.invisible.coordinates import (
@@ -54,6 +58,8 @@ class StructuredCollator:
         self._type_layout = None
         self.invisible_store = None
         self.invisible_scaler = None
+        self.point_scaler = None
+        self.parent_store = None
         self.invisible_coordinates = None
 
     @property
@@ -181,6 +187,17 @@ class StructuredCollator:
             state = self.invisible_coordinates.encode(invisible, batch["met_xy"])
             batch["invisible_target_state"] = state
             batch["invisible_truth_scaled"] = self.invisible_scaler.transform(state)
+        if self.point_scaler is not None:
+            batch["invisible_truth_point_scaled"] = self.point_scaler.transform(invisible)
+            batch["invisible_point_support"] = torch.stack(
+                [
+                    structured["pools"][role.node]["reconstructable"]
+                    for role in self.spec.invisible_roles
+                ],
+                dim=1,
+            )
+        if self.parent_store is not None:
+            batch["parent_truth"] = self.parent_store.lookup(batch["event_index"])
         return batch
 
     def _build_templates(
@@ -294,6 +311,9 @@ class StructuredDataModule(TransformerDataModule):
         truth_bindings: dict | None = None,
         tensor_cache: str | Path | None = None,
         invisible_path: str | Path | None = None,
+        point_enabled: bool = False,
+        parent_path: str | Path | None = None,
+        parent_roles: tuple[str, ...] = (),
         allow_synthetic: bool = False,
         max_events: dict | None = None,
         subset_seed: int = 42,
@@ -314,10 +334,17 @@ class StructuredDataModule(TransformerDataModule):
             max_assignment_states=max_assignment_states,
         )
         self.invisible_path = invisible_path
+        self.point_enabled = bool(point_enabled)
+        self.parent_path = parent_path
+        self.parent_roles = tuple(str(role) for role in parent_roles)
+        if self.parent_path is not None and not self.parent_roles:
+            raise ValueError("Parent truth loading requires configured parent roles")
         self.allow_synthetic = allow_synthetic
         self.max_events = max_events
         self.subset_seed = subset_seed
         self.invisible_scaler = None
+        self.point_scaler = None
+        self.parent_store = None
         role_names = tuple(
             role.key for role in self.structured_collator.spec.invisible_roles
         )
@@ -478,7 +505,15 @@ class StructuredDataModule(TransformerDataModule):
                 )
             selected_positions[loader_name] = positions
 
+        parent_store = None
+        if self.parent_path is not None:
+            parent_store = ParentTruthStore(self.parent_path, self.parent_roles)
+        self.parent_store = parent_store
+        self.structured_collator.parent_store = parent_store
+
         if self.invisible_path is None:
+            self.point_scaler = None
+            self.structured_collator.point_scaler = None
             return
 
         role_names = tuple(
@@ -494,7 +529,15 @@ class StructuredDataModule(TransformerDataModule):
                 )
             order = np.argsort(cached_ids)
             store = InvisibleTruthStore.__new__(InvisibleTruthStore)
-            store.path = Path(self.tensor_cache)
+            # A caller may provide an already materialised cache payload while
+            # deliberately leaving tensor_cache unset (for example a tiny
+            # real-data validation fixture).  Keep a concrete provenance path
+            # for strict lookup errors instead of constructing Path(None).
+            store.path = (
+                Path(self.tensor_cache)
+                if self.tensor_cache is not None
+                else Path(self.h5_path).expanduser().resolve()
+            )
             store.role_names = role_names
             store.synthetic = False
             store.metadata = {"source": "tensor_cache"}
@@ -530,8 +573,17 @@ class StructuredDataModule(TransformerDataModule):
             ),
             active_mask=self.invisible_coordinates.active_mask,
         )
+        if self.point_enabled:
+            self.point_scaler = InvisibleScaler.fit(
+                train_truth,
+                role_names,
+                representation="direct_point_cartesian_v1",
+            )
+        else:
+            self.point_scaler = None
         self.structured_collator.invisible_store = store
         self.structured_collator.invisible_scaler = self.invisible_scaler
+        self.structured_collator.point_scaler = self.point_scaler
 
     def _met_for_positions(self, dataset, positions) -> torch.Tensor:
         positions = np.asarray(positions, dtype=np.int64)

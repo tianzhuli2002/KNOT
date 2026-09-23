@@ -1,0 +1,83 @@
+experiment:
+  name: vyper_jer_30_4_matched_joint_both_heads
+  seed: 20260923
+
+topology: configs/topology/ttbar2L.yaml
+
+data:
+  input: data/real/ttbar2L_canonical.h5
+  cache: /net/scratch/w00238tl/jer_cache/ttbar2L_canonical.pt
+  subset_seed: 20260923
+  test_size: 0.2
+  split:
+    indices_path: results/experiments/vyper_jer_30_4_matched_20260923/data_contract/jer_split
+    require_existing: true
+  events: {train: null, validation: 50000, test: null}
+  max_assignment_states: 100000
+
+inputs:
+  transforms:
+    e: log
+    eta: [minmax, -2.5, 2.5]
+    phi: sincos
+    pt: log
+    btag: [minmax, 0, 6]
+    charge: [minmax, -1, 1]
+    njet: [minmax, 0, 8]
+    nelectron: [minmax, 0, 2]
+    nmuon: [minmax, 0, 2]
+    nBJets_90: [minmax, 0, 8]
+    nBJets_85: [minmax, 0, 8]
+    nBJets_77: [minmax, 0, 8]
+    nBJets_70: [minmax, 0, 8]
+    nBJets_65: [minmax, 0, 8]
+  JET: {count: 8, features: [e, eta, phi, pt, btag, charge]}
+  ELECTRON: {count: 1, features: [e, eta, phi, pt, charge]}
+  MUON: {count: 1, features: [e, eta, phi, pt, charge]}
+  MET: {count: 1, features: [phi, pt]}
+  GLOBAL:
+    features: [njet, nelectron, nmuon, nBJets_90, nBJets_85, nBJets_77, nBJets_70, nBJets_65]
+
+model:
+  latent: {d_model: 128, n_heads: 4, d_feedforward: 384, dropout: 0.05}
+  encoder:
+    type: lgatr
+    layers: 4
+    n_heads: 4
+    hidden: {multivector_channels: 8, scalar_channels: 64}
+    symmetry_breaking: {beam: xyplane, time: true}
+  assignment:
+    formulation: discriminative
+  mode: factorized
+  invisible:
+    conditioning: {assignment: none}
+    coordinates: {type: met_residual}
+    generator: {type: cfm}
+    mass_shell:
+      enforcement: exact
+      mass: {mode: fixed, value: 0.0, parameterization: null}
+      roles: {}
+  heads:
+    point_invisible: {enabled: true}
+    parent_four_vector:
+      enabled: true
+      roles: [top_e, top_mu]
+      target_path: results/experiments/vyper_jer_30_4_matched_20260923/data_contract/parent_truth/ttbar2L_parent_hybrid_truth.h5
+
+training:
+  batch_size: 512
+  workers: 4
+  learning_rate: 0.000361545
+  weight_decay: 0.00006073529387441413
+  epochs: 20
+  precision: 16-mixed
+  trainable: [visible, assignment, invisible, point, parent]
+  loss_weights: {assignment: 1.0, invisible: 1.0, point: 1.0, parent: 1.0}
+  shared_encoder_gradients: both
+  output: results/experiments/vyper_jer_30_4_matched_20260923/training/jer_joint_both_heads
+
+inference:
+  seed: 20260923
+  invisible:
+    samples_per_assignment: 64
+    flow: {steps: 16, solver: euler}

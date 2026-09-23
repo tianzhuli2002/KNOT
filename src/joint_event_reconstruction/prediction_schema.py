@@ -589,6 +589,34 @@ def validate_prediction(path: str | Path, *, deep: bool = True) -> None:
             if branches not in {1, int(source.attrs["K"])}:
                 raise ValueError("Factorized invisible branch count must be 1 or K")
             _validate_met_exact_projection(source, "Prediction output", count)
+        if "INVISIBLE/point_momenta" in source:
+            point = source["INVISIBLE/point_momenta"]
+            if (
+                point.shape[0] != count
+                or point.ndim != 4
+                or point.shape[1] != top_k
+                or point.shape[3] != 3
+            ):
+                raise ValueError("Prediction output has invalid invisible point momenta")
+            _require_finite_dataset(point, "INVISIBLE/point_momenta", deep=deep)
+            point_four = source.get("INVISIBLE/point_four_vectors")
+            if point_four is None or point_four.shape != (count, top_k, point.shape[2], 4):
+                raise ValueError("Prediction output has invalid invisible point four-vectors")
+            _require_finite_dataset(point_four, "INVISIBLE/point_four_vectors", deep=deep)
+            estimator = source["INVISIBLE"].attrs.get("point_estimator")
+            if isinstance(estimator, bytes):
+                estimator = estimator.decode("utf-8")
+            if str(estimator) not in {
+                "cfm_single_draw", "cfm_cartesian_mean", "cfm_joint_medoid", "direct_point_head"
+            }:
+                raise ValueError("Prediction output has invalid point_estimator metadata")
+        if "PARENTS" in source:
+            parent = source["PARENTS"].get("direct_four_vectors")
+            if parent is None or parent.shape[0] != count or parent.ndim != 3 or parent.shape[2] != 4:
+                raise ValueError("Prediction output has invalid direct parent four-vectors")
+            _require_finite_dataset(parent, "PARENTS/direct_four_vectors", deep=deep)
+            if deep and (parent[:, :, 0] < 0).any():
+                raise ValueError("PARENTS/direct_four_vectors contains negative energy")
         if "OBSERVED/MET" in source:
             met = source["OBSERVED/MET"][:]
             if met.shape != (count, 4):

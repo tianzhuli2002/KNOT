@@ -32,8 +32,9 @@ MODEL_KEYS = {
     "joint_flow",
     "coupling",
     "compatibility",
+    "heads",
 }
-TRAINABLE_COMPONENTS = {"visible", "assignment", "invisible", "c2", "compatibility"}
+TRAINABLE_COMPONENTS = {"visible", "assignment", "invisible", "point", "parent", "c2", "compatibility"}
 
 
 def _exact_keys(section, expected: set[str], name: str) -> None:
@@ -205,14 +206,28 @@ def validate_experiment(config: DictConfig) -> None:
     data = config.data
     _exact_keys(
         data,
-        {"input", "tensor_cache", "force_rebuild_cache", "subset_seed", "truth_bindings", "max_events", "max_assignment_states", "invisible"},
+        {"input", "tensor_cache", "force_rebuild_cache", "subset_seed", "test_size", "split", "truth_bindings", "max_events", "max_assignment_states", "invisible", "parent"},
         "data",
     )
     int(data.subset_seed)
+    test_size = float(data.test_size)
+    if not math.isfinite(test_size) or not 0.0 < test_size < 1.0:
+        raise ValueError("data.test_size must lie strictly between zero and one")
+    _exact_keys(data.split, {"indices_path", "require_existing"}, "data.split")
+    if data.split.indices_path is None and bool(data.split.require_existing):
+        raise ValueError("data.split.require_existing=true requires data.split.indices_path")
+    if not isinstance(data.split.require_existing, bool):
+        raise ValueError("data.split.require_existing must be boolean")
     if not data.truth_bindings:
         raise ValueError("data.truth_bindings must be non-empty")
     _exact_keys(data.max_events, {"train", "val", "test"}, "data.max_events")
     _exact_keys(data.invisible, {"path", "allow_synthetic"}, "data.invisible")
+    _exact_keys(data.parent, {"path", "roles"}, "data.parent")
+    if data.parent.path is not None:
+        if not str(data.parent.path).strip() or not data.parent.roles:
+            raise ValueError("data.parent requires both path and roles")
+        if not Path(str(data.parent.path)).is_file():
+            raise FileNotFoundError(f"Parent truth sidecar does not exist: {data.parent.path}")
     _positive_int(data.max_assignment_states, "data.max_assignment_states")
     for split in ("train", "val", "test"):
         limit = data.max_events[split]
@@ -416,6 +431,23 @@ def validate_experiment(config: DictConfig) -> None:
     elif c2.training_sampler is not None:
         raise ValueError("Inactive C2 must not define a training sampler")
     _exact_keys(model.compatibility, {"enabled", "include_invisible"}, "model.compatibility")
+    _exact_keys(model.heads, {"point_invisible", "parent_four_vector"}, "model.heads")
+    _exact_keys(model.heads.point_invisible, {"enabled"}, "model.heads.point_invisible")
+    _exact_keys(model.heads.parent_four_vector, {"enabled", "roles", "target_path"}, "model.heads.parent_four_vector")
+    if model.heads.parent_four_vector.enabled:
+        if not model.heads.parent_four_vector.roles:
+            raise ValueError("Enabled parent four-vector head requires non-empty roles")
+        if not str(model.heads.parent_four_vector.target_path).strip():
+            raise ValueError("Enabled parent four-vector head requires target_path")
+    if model.heads.point_invisible.enabled and not invisible.enabled:
+        raise ValueError("Enabled point head requires an active invisible model")
+    if model.heads.parent_four_vector.enabled:
+        if not invisible.enabled:
+            raise ValueError("Enabled parent head requires an active invisible model")
+        if data.parent.path is None or list(data.parent.roles) != list(model.heads.parent_four_vector.roles):
+            raise ValueError("Parent head roles/path must match the resolved data.parent contract")
+    elif data.parent.path is not None:
+        raise ValueError("data.parent must be disabled when the parent head is disabled")
 
     if mode == "factorized" and formulation == "flow_matching":
         if reasoning.enabled or feedback.enabled or invisible.enabled or c2.enabled or model.compatibility.enabled:
@@ -448,7 +480,18 @@ def validate_experiment(config: DictConfig) -> None:
     _positive_int(inference.top_k_assignments, "inference.top_k_assignments")
     _positive_int(inference.posterior_samples, "inference.posterior_samples")
     _nonnegative(inference.compatibility_weight, "inference.compatibility_weight")
-    _exact_keys(inference.invisible, {"standard", "edm", "flow_matching"}, "inference.invisible")
+    _exact_keys(inference.invisible, {"point_estimator", "standard", "edm", "flow_matching"}, "inference.invisible")
+    if str(inference.invisible.point_estimator) not in {
+        "none", "cfm_single_draw", "cfm_cartesian_mean", "cfm_joint_medoid", "direct_point_head"
+    }:
+        raise ValueError("inference.invisible.point_estimator is invalid")
+    point_estimator = str(inference.invisible.point_estimator)
+    if point_estimator.startswith("cfm_") and (
+        not invisible.enabled or str(invisible.formulation) != "flow_matching"
+    ):
+        raise ValueError("CFM point estimators require an active flow-matching invisible model")
+    if point_estimator == "direct_point_head" and not model.heads.point_invisible.enabled:
+        raise ValueError("direct_point_head inference requires an enabled point_invisible head")
     _exact_keys(inference.invisible.standard, {"steps"}, "inference.invisible.standard")
     standard_steps = _positive_int(inference.invisible.standard.steps, "inference.invisible.standard.steps")
     if standard_steps > int(invisible.standard.training_steps):
@@ -475,7 +518,7 @@ def validate_experiment(config: DictConfig) -> None:
     training = config.training
     _exact_keys(
         training,
-        {"batch_size", "workers", "learning_rate", "weight_decay", "epochs", "precision", "gradient_clip", "accumulate_grad_batches", "trainable", "loss_weights", "scheduler", "early_stopping", "runtime", "output"},
+        {"batch_size", "workers", "learning_rate", "weight_decay", "epochs", "precision", "gradient_clip", "accumulate_grad_batches", "trainable", "loss_weights", "scheduler", "early_stopping", "runtime", "output", "shared_encoder_gradients"},
         "training",
     )
     _positive_int(training.batch_size, "training.batch_size")
@@ -488,6 +531,8 @@ def validate_experiment(config: DictConfig) -> None:
     _positive_int(training.accumulate_grad_batches, "training.accumulate_grad_batches")
     if not str(training.precision).strip() or not str(training.output).strip():
         raise ValueError("training.precision and output must be non-empty")
+    if str(training.shared_encoder_gradients) not in {"both", "assignment_only"}:
+        raise ValueError("training.shared_encoder_gradients must be both or assignment_only")
     _exact_keys(
         training.runtime,
         {"compile", "activation_checkpointing"},
@@ -509,9 +554,13 @@ def validate_experiment(config: DictConfig) -> None:
         raise ValueError("training.trainable includes c2 but C2 is inactive")
     if "compatibility" in trainable and not model.compatibility.enabled:
         raise ValueError("training.trainable includes compatibility but compatibility is inactive")
+    if "point" in trainable and not model.heads.point_invisible.enabled:
+        raise ValueError("training.trainable includes point but point_invisible is inactive")
+    if "parent" in trainable and not model.heads.parent_four_vector.enabled:
+        raise ValueError("training.trainable includes parent but parent_four_vector is inactive")
     if mode == "joint_flow" and (("assignment" in trainable) != ("invisible" in trainable)):
         raise ValueError("joint_flow assignment and invisible dynamics must be trained/frozen together")
-    _exact_keys(training.loss_weights, {"assignment", "invisible", "compatibility"}, "training.loss_weights")
+    _exact_keys(training.loss_weights, {"assignment", "invisible", "compatibility", "point", "parent"}, "training.loss_weights")
     for key in training.loss_weights:
         _nonnegative(training.loss_weights[key], f"training.loss_weights.{key}")
     _exact_keys(training.scheduler, {"enabled", "factor", "patience", "min_lr"}, "training.scheduler")
