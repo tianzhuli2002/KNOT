@@ -34,10 +34,11 @@ MODEL_KEYS = {
     "compatibility",
     "heads",
     "topology_queries",
+    "parent_cfm",
 }
 TRAINABLE_COMPONENTS = {
     "visible", "assignment", "invisible", "point", "parent", "partonic",
-    "queries", "c2", "compatibility",
+    "queries", "c2", "compatibility", "partonic_cfm",
 }
 
 
@@ -210,9 +211,22 @@ def validate_experiment(config: DictConfig) -> None:
     data = config.data
     _exact_keys(
         data,
-        {"input", "tensor_cache", "force_rebuild_cache", "subset_seed", "test_size", "split", "truth_bindings", "max_events", "max_assignment_states", "invisible", "parent", "partonic"},
+        {"input", "inference_input", "visible_truth", "tensor_cache", "force_rebuild_cache", "subset_seed", "test_size", "split", "truth_bindings", "max_events", "max_assignment_states", "loader", "invisible", "parent", "partonic"},
         "data",
     )
+    if data.inference_input is not None and not Path(str(data.inference_input)).is_file():
+        raise FileNotFoundError(
+            f"Configured truth-free inference input does not exist: {data.inference_input}"
+        )
+    if data.visible_truth is not None and not Path(str(data.visible_truth)).is_file():
+        raise FileNotFoundError(
+            f"Configured visible truth sidecar does not exist: {data.visible_truth}"
+        )
+    _exact_keys(data.loader, {"pin_memory", "persistent_workers", "prefetch_factor"}, "data.loader")
+    if not isinstance(data.loader.pin_memory, bool) or not isinstance(data.loader.persistent_workers, bool):
+        raise ValueError("data.loader pin_memory and persistent_workers must be boolean")
+    if data.loader.prefetch_factor is not None:
+        _positive_int(data.loader.prefetch_factor, "data.loader.prefetch_factor")
     int(data.subset_seed)
     test_size = float(data.test_size)
     if not math.isfinite(test_size) or not 0.0 < test_size < 1.0:
@@ -245,9 +259,6 @@ def validate_experiment(config: DictConfig) -> None:
         limit = data.max_events[split]
         if limit is not None:
             _positive_int(limit, f"data.max_events.{split}")
-    if data.max_events.train is not None and int(data.max_events.train) > 500_000:
-        raise ValueError("Maintained studies cap training at 500000 events")
-
     model = config.model
     _exact_keys(model, MODEL_KEYS, "model")
     mode = str(model.mode)
@@ -305,6 +316,41 @@ def validate_experiment(config: DictConfig) -> None:
         _positive_int(model.topology_queries.n_heads, "model.topology_queries.n_heads")
         if int(model.latent.d_model) % int(model.topology_queries.n_heads):
             raise ValueError("model.topology_queries.n_heads must divide model.latent.d_model")
+    _exact_keys(
+        model.parent_cfm,
+        {
+            "enabled", "conditioning", "roles", "truth_bindings", "target_path",
+            "n_heads", "layers", "d_feedforward", "dropout",
+            "p2_neutrino_steps", "p2_neutrino_solver", "sampling_steps",
+            "sampling_solver",
+        },
+        "model.parent_cfm",
+    )
+    if not isinstance(model.parent_cfm.enabled, bool):
+        raise ValueError("model.parent_cfm.enabled must be boolean")
+    if str(model.parent_cfm.conditioning) not in {"P0", "P1", "P2"}:
+        raise ValueError("model.parent_cfm.conditioning must be P0, P1 or P2")
+    if list(model.parent_cfm.roles) != ["top", "antitop"]:
+        raise ValueError("Partonic CFM roles must be ordered [top, antitop]")
+    if set(model.parent_cfm.truth_bindings) != {"top", "antitop"}:
+        raise ValueError("Partonic CFM truth_bindings must define top and antitop")
+    if model.parent_cfm.enabled:
+        if not model.topology_queries.enabled:
+            raise ValueError("Partonic CFM requires enabled topology queries")
+        _positive_int(model.parent_cfm.n_heads, "model.parent_cfm.n_heads")
+        if int(model.latent.d_model) % int(model.parent_cfm.n_heads):
+            raise ValueError("model.parent_cfm.n_heads must divide model.latent.d_model")
+        _positive_int(model.parent_cfm.layers, "model.parent_cfm.layers")
+        _positive_int(model.parent_cfm.d_feedforward, "model.parent_cfm.d_feedforward")
+        dropout = float(model.parent_cfm.dropout)
+        if not math.isfinite(dropout) or not 0 <= dropout < 1:
+            raise ValueError("model.parent_cfm.dropout must lie in [0,1)")
+        _positive_int(model.parent_cfm.p2_neutrino_steps, "model.parent_cfm.p2_neutrino_steps")
+        _positive_int(model.parent_cfm.sampling_steps, "model.parent_cfm.sampling_steps")
+        if str(model.parent_cfm.p2_neutrino_solver) not in {"euler", "heun"}:
+            raise ValueError("model.parent_cfm.p2_neutrino_solver must be euler or heun")
+        if str(model.parent_cfm.sampling_solver) not in {"euler", "heun"}:
+            raise ValueError("model.parent_cfm.sampling_solver must be euler or heun")
     if len(set(model.visible.inputs.object_features)) != len(model.visible.inputs.object_features):
         raise ValueError("model.visible.inputs.object_features must be unique")
     if len(set(model.visible.inputs.event_features)) != len(model.visible.inputs.event_features):
@@ -485,8 +531,21 @@ def validate_experiment(config: DictConfig) -> None:
                 raise ValueError("Partonic head roles must match data.partonic roles")
             if dict(data.partonic.truth_bindings) != dict(model.heads.partonic.truth_bindings):
                 raise ValueError("Partonic truth-binding metadata must match the head declaration")
-    elif data.partonic.path is not None:
+    elif data.partonic.path is not None and not model.parent_cfm.enabled:
         raise ValueError("data.partonic must be disabled when the partonic head is disabled")
+    if model.parent_cfm.enabled:
+        if model.mode != "factorized":
+            raise ValueError("Partonic CFM requires model.mode=factorized")
+        if model.parent_cfm.conditioning in {"P1", "P2"}:
+            if model.assignment.formulation != "discriminative":
+                raise ValueError("P1/P2 require predicted discriminative assignment probabilities")
+        if model.parent_cfm.conditioning == "P2":
+            if not invisible.enabled or str(invisible.formulation) != "flow_matching":
+                raise ValueError("P2 requires the existing invisible flow-matching generator")
+        if data.partonic.roles and list(data.partonic.roles) != ["top", "antitop"]:
+            raise ValueError("Partonic CFM data must be role ordered [top, antitop]")
+        if dict(data.partonic.truth_bindings) != dict(model.parent_cfm.truth_bindings):
+            raise ValueError("Partonic CFM data and model truth bindings differ")
 
     if mode == "factorized" and formulation == "flow_matching":
         if reasoning.enabled or feedback.enabled or invisible.enabled or c2.enabled or model.compatibility.enabled:
@@ -557,7 +616,7 @@ def validate_experiment(config: DictConfig) -> None:
     training = config.training
     _exact_keys(
         training,
-        {"batch_size", "workers", "learning_rate", "weight_decay", "epochs", "precision", "gradient_clip", "accumulate_grad_batches", "trainable", "loss_weights", "scheduler", "early_stopping", "runtime", "output", "shared_encoder_gradients", "partonic_shared_encoder_gradients"},
+        {"batch_size", "workers", "learning_rate", "weight_decay", "fused_adamw", "epochs", "precision", "gradient_clip", "accumulate_grad_batches", "trainable", "loss_weights", "scheduler", "early_stopping", "runtime", "output", "shared_encoder_gradients", "partonic_shared_encoder_gradients", "parent_cfm_shared_encoder_gradients"},
         "training",
     )
     _positive_int(training.batch_size, "training.batch_size")
@@ -565,6 +624,8 @@ def validate_experiment(config: DictConfig) -> None:
         raise ValueError("training.workers must be non-negative")
     _positive(training.learning_rate, "training.learning_rate")
     _nonnegative(training.weight_decay, "training.weight_decay")
+    if not isinstance(training.fused_adamw, bool):
+        raise ValueError("training.fused_adamw must be boolean")
     _positive_int(training.epochs, "training.epochs")
     _nonnegative(training.gradient_clip, "training.gradient_clip")
     _positive_int(training.accumulate_grad_batches, "training.accumulate_grad_batches")
@@ -574,6 +635,8 @@ def validate_experiment(config: DictConfig) -> None:
         raise ValueError("training.shared_encoder_gradients must be both or assignment_only")
     if str(training.partonic_shared_encoder_gradients) not in {"both", "assignment_only"}:
         raise ValueError("training.partonic_shared_encoder_gradients must be both or assignment_only")
+    if str(training.parent_cfm_shared_encoder_gradients) not in {"both", "assignment_only"}:
+        raise ValueError("training.parent_cfm_shared_encoder_gradients must be both or assignment_only")
     _exact_keys(
         training.runtime,
         {"compile", "activation_checkpointing"},
@@ -603,9 +666,15 @@ def validate_experiment(config: DictConfig) -> None:
         raise ValueError("training.trainable includes queries but topology_queries is inactive")
     if "partonic" in trainable and not model.heads.partonic.enabled:
         raise ValueError("training.trainable includes partonic but the partonic head is inactive")
+    if "partonic_cfm" in trainable and not model.parent_cfm.enabled:
+        raise ValueError("training.trainable includes partonic_cfm but the parent CFM is inactive")
+    if model.parent_cfm.enabled and (
+        "partonic_cfm" in trainable or float(training.loss_weights.partonic_cfm) > 0
+    ) and model.parent_cfm.target_path is None:
+        raise ValueError("Partonic CFM training requires an explicit truth sidecar")
     if mode == "joint_flow" and (("assignment" in trainable) != ("invisible" in trainable)):
         raise ValueError("joint_flow assignment and invisible dynamics must be trained/frozen together")
-    _exact_keys(training.loss_weights, {"assignment", "invisible", "compatibility", "point", "parent", "partonic"}, "training.loss_weights")
+    _exact_keys(training.loss_weights, {"assignment", "invisible", "compatibility", "point", "parent", "partonic", "partonic_cfm"}, "training.loss_weights")
     for key in training.loss_weights:
         _nonnegative(training.loss_weights[key], f"training.loss_weights.{key}")
     if model.heads.partonic.enabled and (

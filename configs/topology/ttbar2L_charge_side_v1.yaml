@@ -1,0 +1,15 @@
+# Charge-side semantic order for the partonic after-FSR data adapter.
+# This is intentionally separate from the legacy flavour-side ttbar2L.yaml.
+# LEPTON slot 1 is the positive lepton and slot 2 the negative lepton. The
+# invisible roles are declared for shared-query conditioning, but their source
+# data binding is explicitly null until neutrino charge/top-side association
+# is independently verified.
+topology:
+  top:
+    b: {source: JET, truth: top_b}
+    lepton: {source: LEPTON, truth: top_lepton}
+    nu: {source: NEUTRINO, truth: top_neutrino}
+  antitop:
+    b: {source: JET, truth: antitop_b}
+    lepton: {source: LEPTON, truth: antitop_lepton}
+    nu: {source: NEUTRINO, truth: antitop_neutrino}

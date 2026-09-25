@@ -19,6 +19,8 @@ from joint_event_reconstruction.evaluation import (
 from joint_event_reconstruction.prediction_schema import (
     DISCRETE_PREDICTION_SCHEMA,
     JOINT_PREDICTION_SCHEMA,
+    PREDICTION_SCHEMA,
+    validate_prediction,
     validate_joint_prediction,
 )
 from joint_event_reconstruction.physics_observables import (
@@ -370,6 +372,35 @@ def evaluate_any_predictions(path: str | Path) -> dict:
     path = Path(path).expanduser().resolve()
     with h5py.File(path, "r") as source:
         schema = source.attrs.get("schema_version")
+    if schema == PREDICTION_SCHEMA:
+        with h5py.File(path, "r") as source:
+            visible_truth = bool(source.attrs.get("visible_truth_available", True))
+            invisible_truth = bool(source.attrs.get("invisible_truth_available", True))
+        if not visible_truth or not invisible_truth:
+            validate_prediction(path)
+            with h5py.File(path, "r") as source:
+                event_count = len(source["EVENT_ID"])
+                probabilities = source["VISIBLE/constrained_probabilities"][:]
+                result = {
+                    "prediction_file": str(path),
+                    "events": event_count,
+                    "visible_truth_available": visible_truth,
+                    "invisible_truth_available": invisible_truth,
+                    "assignment_hypotheses": int(source.attrs["K"]),
+                    "retained_topk_probability_mass": {
+                        "mean": float(probabilities.sum(axis=1).mean()),
+                        "minimum": float(probabilities.sum(axis=1).min()),
+                    },
+                    "physics_metrics": "not computed: the prediction file has no truth sidecar",
+                    "schema_validated": True,
+                }
+                if "INVISIBLE/samples" in source:
+                    result["invisible_posterior"] = {
+                        "samples_per_event_hypothesis": int(source.attrs["M"]),
+                        "actual_nfe": int(source["INVISIBLE"].attrs["actual_nfe"]),
+                        "finite": bool(np.isfinite(source["INVISIBLE/samples"][:]).all()),
+                    }
+                return result
     if schema == JOINT_PREDICTION_SCHEMA:
         return evaluate_joint_predictions(path)
 

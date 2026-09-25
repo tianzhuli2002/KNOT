@@ -150,7 +150,11 @@ class AssignmentSpace:
 def build_assignment_template(
     spec: TopologySpec,
     pools: Mapping[str, tuple[CandidateRecord, ...]],
+    *,
+    max_states: int | None = None,
 ) -> AssignmentTemplate:
+    if max_states is not None and int(max_states) <= 0:
+        raise ValueError("max_states must be positive or null")
     roots = tuple(spec.roots)
     nodes = tuple(spec.dag_order)
     node_position = {name: index for index, name in enumerate(nodes)}
@@ -189,6 +193,13 @@ def build_assignment_template(
 
         if valid:
             root_states.append(tuple(int(index) for index in root_selection))
+            if max_states is not None and len(root_states) > int(max_states):
+                root_sizes = {root: len(pools[root]) for root in roots}
+                raise RuntimeError(
+                    "Complete assignment state count exceeds the configured limit: "
+                    f"observed_at_least={len(root_states)}, max_states={int(max_states)}, "
+                    f"root_candidates={root_sizes}, topology={spec.signature}"
+                )
             node_state = [NULL_CANDIDATE] * len(nodes)
             for node, candidate_index in selected_nodes.items():
                 node_state[node_position[node]] = int(candidate_index)

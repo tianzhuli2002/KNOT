@@ -29,7 +29,7 @@ from joint_event_reconstruction.m0.data.labels import (
     read_transformer_classification_labels,
     resolve_transformer_label_path,
 )
-from joint_event_reconstruction.m0.data.splits import load_or_create_split
+from joint_event_reconstruction.m0.data.splits import index_hash, load_or_create_split
 
 logger = logging.getLogger(__name__)
 
@@ -152,6 +152,32 @@ def _has_observables(cfg):
 def _stable_json_hash(value, length=12):
     encoded = json.dumps(_plain_config_value(value), sort_keys=True, default=str).encode()
     return hashlib.sha1(encoded).hexdigest()[:length]
+
+
+def _external_link_identity(h5_path):
+    """Fingerprint explicitly linked sidecars in an HDF5 training view."""
+    result = {}
+    with h5py.File(str(h5_path), "r") as source:
+        for name in ("INPUTS", "EVENT_ID", "SPLIT", "META", "LABELS"):
+            link = source.get(name, getlink=True)
+            if not isinstance(link, h5py.ExternalLink):
+                continue
+            target = Path(link.filename).expanduser()
+            if not target.is_absolute():
+                target = Path(h5_path).expanduser().resolve().parent / target
+            target = target.resolve()
+            if not target.is_file():
+                raise FileNotFoundError(
+                    f"External HDF5 link {name} points to missing file {target}"
+                )
+            stat = target.stat()
+            result[name] = {
+                "path": str(target),
+                "object": str(link.path),
+                "size_bytes": int(stat.st_size),
+                "mtime_ns": int(stat.st_mtime_ns),
+            }
+    return result
 
 
 def _indices_hash(indices):
@@ -905,7 +931,9 @@ def validate_transformer_task_config(config):
     reconstruction_enabled = bool(reconstruction.get("enabled", False))
 
     if not classification_enabled and not reconstruction_enabled:
-        raise ValueError("Transformer classification and reconstruction cannot both be disabled.")
+        mode = str((config.get("general", {}) or {}).get("mode", "train"))
+        if mode not in {"predict", "sample"}:
+            raise ValueError("Transformer classification and reconstruction cannot both be disabled during training.")
     for task_name, task_cfg in (("classification", classification), ("reconstruction", reconstruction)):
         weight = float(task_cfg.get("weight", 1.0 if task_name == "classification" else 0.0))
         if not np.isfinite(weight) or weight < 0.0:
@@ -1218,6 +1246,7 @@ class TransformerH5Dataset(Dataset):
         schema=None,
         configured_widths=None,
         reconstruction_cfg=None,
+        classification_enabled=True,
     ):
         self.h5_path = str(h5_path)
         self.config = cfg
@@ -1235,10 +1264,15 @@ class TransformerH5Dataset(Dataset):
         self._files = {}
         self.reconstruction_cfg = reconstruction_cfg or {}
         self.reconstruction_enabled = bool(self.reconstruction_cfg.get("enabled", False))
+        self.classification_enabled = bool(classification_enabled)
 
         with h5py.File(self.h5_path, "r") as h5_file:
             self.widths = dict(configured_widths or _configured_widths_from_h5(h5_file, self.schema, cfg))
-            self.label_path = resolve_transformer_label_path(h5_file) if self.label_override is None else None
+            self.label_path = (
+                resolve_transformer_label_path(h5_file)
+                if self.label_override is None and self.classification_enabled
+                else None
+            )
 
         self.total_tokens = (
             sum(self.widths.get(source_name, 0) for source_name in _token_source_names(self.schema))
@@ -1604,6 +1638,8 @@ class TransformerH5Dataset(Dataset):
     def _read_label(self, h5_file, event_idx):
         if self.label_override is not None:
             return self.label_override
+        if not self.classification_enabled:
+            return 0.0
         value = float(read_transformer_classification_labels(h5_file, event_idx)[0])
         if not np.isfinite(value):
             raise ValueError(
@@ -1847,6 +1883,9 @@ class TransformerDataModule(L.LightningDataModule):
 
         self.full_config = config
         self.config = config.dataset
+        self.classification_enabled = bool(
+            (config.get("tasks", {}).get("classification", {}) or {}).get("enabled", True)
+        )
         self.h5_path = self.config.get("input_h5_path", None)
         self.random_seed = config.general.seed
         self.schema = build_token_schema(self.config)
@@ -1871,9 +1910,7 @@ class TransformerDataModule(L.LightningDataModule):
         setup_start = time.perf_counter()
         logger.info("Setting up TransformerDataModule.")
 
-        classification_enabled = bool(
-            (self.full_config.get("tasks", {}).get("classification", {}) or {}).get("enabled", True)
-        )
+        classification_enabled = self.classification_enabled
         validate_transformer_h5_inputs(
             self.h5_path,
             self.schema,
@@ -1947,7 +1984,13 @@ class TransformerDataModule(L.LightningDataModule):
         if self.reconstruction_enabled:
             self.reco_builder = ReconstructionCandidateBuilder(self.reconstruction_cfg, self.schema, self.configured_widths)
 
-        all_labels = self._read_all_labels(self.h5_path, n_events)
+        if classification_enabled:
+            all_labels = self._read_all_labels(self.h5_path, n_events)
+        else:
+            # Reconstruction-only source files need not synthesize an unrelated
+            # event-classification truth dataset.  Canonical /SPLIT or the
+            # configured stable split controls population membership below.
+            all_labels = np.zeros(n_events, dtype=np.int8)
         split_cfg = self.config.get("split", {}) or {}
         arrays, self.split_metadata = load_or_create_split(
             split_cfg.get("indices_path", None), all_labels,
@@ -1956,6 +1999,51 @@ class TransformerDataModule(L.LightningDataModule):
             test_size=float(self.config.get("test_size", 0.2)),
             require_existing=bool(split_cfg.get("require_existing", False)),
         )
+        with h5py.File(self.h5_path, "r") as identity_file:
+            if "EVENT_ID" in identity_file:
+                event_dataset = identity_file["EVENT_ID"]
+                if event_dataset.ndim != 1 or not np.issubdtype(
+                    event_dataset.dtype, np.integer
+                ) or len(event_dataset) != n_events:
+                    raise TypeError(
+                        f"Stable EVENT_ID must be integer [{n_events}]: "
+                        f"{self.h5_path}:EVENT_ID shape={event_dataset.shape}, "
+                        f"dtype={event_dataset.dtype}"
+                    )
+                all_event_ids = np.asarray(event_dataset[:], dtype=np.int64)
+                if len(np.unique(all_event_ids)) != n_events:
+                    raise ValueError(
+                        f"Stable EVENT_ID contains duplicates: {self.h5_path}:EVENT_ID"
+                    )
+                event_id_hashes = {}
+                event_id_counts = {}
+                for split_name in ("train", "validation", "test"):
+                    rows = np.sort(np.asarray(arrays[split_name], dtype=np.int64))
+                    if len(rows):
+                        ids = all_event_ids[rows]
+                        event_id_hashes[split_name] = index_hash(np.sort(ids))
+                    else:
+                        event_id_hashes[split_name] = index_hash(np.empty(0, dtype=np.int64))
+                    event_id_counts[split_name] = len(rows)
+                self.split_metadata["event_id_hashes"] = event_id_hashes
+                self.split_metadata["event_id_counts"] = event_id_counts
+                owner = event_dataset.file
+                source_contract = {}
+                for key in (
+                    "source_manifest_sha256",
+                    "split_membership_sha256",
+                    "split_version",
+                    "adapter_version",
+                    "source_path",
+                    "max_jets",
+                ):
+                    value = owner.attrs.get(key)
+                    if isinstance(value, bytes):
+                        value = value.decode("utf-8")
+                    if value is not None:
+                        source_contract[key] = str(value)
+                if source_contract:
+                    self.split_metadata["source_contract"] = source_contract
         self.split_indices = arrays
         selected_indices = arrays["selected"]
         train_idx = arrays["train"]
@@ -2029,6 +2117,7 @@ class TransformerDataModule(L.LightningDataModule):
             schema=self.schema,
             configured_widths=self.configured_widths,
             reconstruction_cfg=self.reconstruction_cfg if self.reconstruction_enabled else None,
+            classification_enabled=self.classification_enabled,
         )
 
     def _needs_scaler_state(self) -> bool:
@@ -2144,6 +2233,7 @@ class TransformerDataModule(L.LightningDataModule):
                 scaler_state={},
                 schema=self.schema,
                 configured_widths=widths,
+                classification_enabled=self.classification_enabled,
             )
             sorted_indices = np.sort(np.asarray(train_indices, dtype=np.int64))
 
@@ -2326,6 +2416,7 @@ class TransformerDataModule(L.LightningDataModule):
                 "size_bytes": self._h5_size_bytes(h5_path),
                 "n_events": int(self._n_events_for_h5(h5_path)),
                 "event_id_fingerprint": self._dataset_event_identity(h5_path),
+                "external_links": _external_link_identity(h5_path),
             },
             "fingerprint": fingerprint,
             "input_schema": _h5_schema_summary(
@@ -2786,10 +2877,14 @@ class TransformerDataModule(L.LightningDataModule):
             width = 1 if source_name == "GLOBAL" else int(dataset.widths[source_name])
             values = ds[sorted_indices, :width] if ds.ndim > 1 else ds[sorted_indices]
             source_arrays[source_name] = values[restore]
-        if label_override is None:
+        if label_override is not None:
+            label_values = np.full(len(event_indices), float(label_override), dtype=np.float32)
+        elif dataset.classification_enabled:
             label_values = read_transformer_classification_labels(h5_file, sorted_indices)[restore]
         else:
-            label_values = np.full(len(event_indices), float(label_override), dtype=np.float32)
+            # Measured-only caches for structured objectives do not invent an
+            # unrelated event-classification target.
+            label_values = np.zeros(len(event_indices), dtype=np.float32)
         reco_label_arrays = {}
         if dataset.reconstruction_enabled:
             for source_name, token_indices in dataset.reco_builder.source_ranges.items():
@@ -2834,6 +2929,7 @@ class TransformerDataModule(L.LightningDataModule):
             schema=self.schema,
             configured_widths=self.configured_widths,
             reconstruction_cfg=self.reconstruction_cfg if self.reconstruction_enabled else None,
+            classification_enabled=self.classification_enabled,
         )
 
         n_events = len(dataset)
@@ -2927,6 +3023,9 @@ class TransformerDataModule(L.LightningDataModule):
             schema=self.schema,
             configured_widths=self.configured_widths,
             reconstruction_cfg=self.reconstruction_cfg if self.reconstruction_enabled else None,
+            classification_enabled=(
+                label_override is None and self.classification_enabled
+            ),
         )
         n_events = len(selected_indices)
         tokens = torch.empty((n_events, dataset.total_tokens, self.schema.dim), dtype=torch.float32)
@@ -3138,6 +3237,9 @@ class TransformerDataModule(L.LightningDataModule):
                 schema=self.schema,
                 configured_widths=sample_widths,
                 reconstruction_cfg=self.reconstruction_cfg if self.reconstruction_enabled else None,
+                classification_enabled=(
+                    label_override is None and self.classification_enabled
+                ),
             )
 
         self.configured_widths = old_widths or sample_widths

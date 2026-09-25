@@ -1,0 +1,86 @@
+# Bounded CPU plumbing check only; invisible targets are synthetic, not physics truth.
+experiment: {name: partonic_ttbar2L_2M_q1_cpu, seed: 41001}
+topology: configs/topology/ttbar2L_charge_side_v1.yaml
+data:
+  input: results/experiments/partonic_ttbar2L_2M_v1/adapted/partonic_ttbar2l_development_maxjets8_v1_measured.h5
+  inference_input: results/experiments/partonic_ttbar2L_2M_v1/adapted/partonic_ttbar2l_development_maxjets8_v1_measured.h5
+  visible_truth: results/experiments/partonic_ttbar2L_2M_v1/adapted/partonic_ttbar2l_development_maxjets8_v1_supervision.h5
+  invisible_truth: results/experiments/partonic_ttbar2L_2M_v1/adapted/synthetic_charge_side_neutrinos_v1.h5
+  allow_synthetic: true
+  cache: null
+  subset_seed: 41001
+  test_size: 0.05
+  events: {train: 12, validation: 8, test: null}
+  max_assignment_states: 100000
+  loader: {pin_memory: false, persistent_workers: false}
+inputs:
+  transforms:
+    e: log
+    eta: [minmax, -5.0, 5.0]
+    phi: sincos
+    pt: log
+    btag: [minmax, 0.0, 6.0]
+    charge: [minmax, -1.0, 1.0]
+    id: none
+    njet: [minmax, 0.0, 20.0]
+    nelectron: [minmax, 0.0, 2.0]
+    nmuon: [minmax, 0.0, 2.0]
+    nBJets_90: [minmax, 0.0, 20.0]
+    nBJets_85: [minmax, 0.0, 20.0]
+    nBJets_77: [minmax, 0.0, 20.0]
+    nBJets_70: [minmax, 0.0, 20.0]
+    nBJets_65: [minmax, 0.0, 20.0]
+  JET: {count: 8, features: [e, eta, phi, pt, btag, id]}
+  LEPTON: {count: 2, features: [e, eta, phi, pt, charge, id]}
+  MET: {count: 1, features: [phi, pt, id]}
+  GLOBAL: {features: [njet, nelectron, nmuon, nBJets_90, nBJets_85, nBJets_77, nBJets_70, nBJets_65]}
+model:
+  latent: {d_model: 32, n_heads: 2, d_feedforward: 64, dropout: 0.0}
+  encoder:
+    type: lgatr
+    layers: 1
+    n_heads: 2
+    hidden: {multivector_channels: 2, scalar_channels: 16}
+    momentum_scale_gev: 100.0
+    symmetry_breaking: {beam: xyplane, time: true}
+  assignment: {formulation: discriminative}
+  mode: factorized
+  topology_queries:
+    enabled: true
+    interaction: topology_plus_global
+    layers: 1
+    n_heads: 2
+    dropout: 0.0
+    roles:
+      - {name: top, node: top, kind: parent, related: [ttbar]}
+      - {name: antitop, node: antitop, kind: parent, related: [ttbar]}
+      - {name: ttbar, node: null, kind: global, related: [top, antitop]}
+    relations: [[top, ttbar], [antitop, ttbar]]
+  invisible:
+    conditioning: {assignment: none}
+    coordinates: {type: met_residual}
+    generator:
+      type: cfm
+      network: {d_model: 32, n_heads: 2, layers: 1, d_feedforward: 64, dropout: 0.0, zero_init_output: true}
+    mass_shell:
+      enforcement: exact
+      mass: {mode: fixed, value: 0.0, parameterization: null}
+      roles: {}
+  heads:
+    point_invisible: {enabled: false}
+    parent_four_vector: {enabled: false}
+    partonic: {enabled: false}
+inference:
+  seed: 41001
+  invisible: {point_estimator: none}
+training:
+  batch_size: 4
+  workers: 0
+  optimizer: {type: adamw, fused_adamw: false}
+  learning_rate: 0.001
+  weight_decay: 0.0
+  epochs: 1
+  precision: 32-true
+  trainable: [visible, assignment, invisible, queries]
+  loss_weights: {assignment: 1.0, invisible: 1.0, partonic: 0.0, partonic_cfm: 0.0}
+  output: results/experiments/partonic_ttbar2L_2M_v1/q1_cpu

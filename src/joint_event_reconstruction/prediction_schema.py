@@ -565,16 +565,20 @@ def validate_prediction(path: str | Path, *, deep: bool = True) -> None:
                     if values.shape != (count, top_k, len(roles), 4):
                         raise ValueError(f"Prediction output has invalid {name}")
                     _require_finite_dataset(values, name, deep=deep)
-            if "TRUTH/NEUTRINO" not in source:
-                raise ValueError("Prediction output has invalid invisible truth")
-            truth = source["TRUTH/NEUTRINO"][:]
-            if (
-                truth.shape != (count, samples.shape[3], 3)
-                or not np.isfinite(truth).all()
-            ):
-                raise ValueError("Prediction output has invalid invisible truth")
+            invisible_truth_available = bool(
+                source.attrs.get("invisible_truth_available", True)
+            )
+            if invisible_truth_available:
+                if "TRUTH/NEUTRINO" not in source:
+                    raise ValueError("Prediction output has invalid invisible truth")
+                truth = source["TRUTH/NEUTRINO"][:]
+                if (
+                    truth.shape != (count, samples.shape[3], 3)
+                    or not np.isfinite(truth).all()
+                ):
+                    raise ValueError("Prediction output has invalid invisible truth")
             truth_physical = source.get("TRUTH/INVISIBLE_FOUR_VECTOR")
-            if truth_physical is not None:
+            if truth_physical is not None and invisible_truth_available:
                 values = truth_physical[:]
                 if values.shape != (count, samples.shape[3], 4):
                     raise ValueError("Prediction output has invalid invisible truth four-vectors")
@@ -654,24 +658,32 @@ def validate_prediction(path: str | Path, *, deep: bool = True) -> None:
                 raise ValueError("Prediction output has invalid OBSERVED/MET")
             _require_finite(met, "Prediction OBSERVED/MET")
         if "COMPOSITES" in source:
-            if "TRUTH/COMPOSITES" not in source:
+            truth_composites_available = bool(
+                source.attrs.get("truth_composites_available", True)
+            )
+            if truth_composites_available and "TRUTH/COMPOSITES" not in source:
                 raise ValueError("Prediction output is missing truth composites")
-            truth_composites = source["TRUTH/COMPOSITES"]
+            truth_composites = source.get("TRUTH/COMPOSITES")
             for node in source["COMPOSITES"]:
                 values = source[f"COMPOSITES/{node}"]
-                truth_values = truth_composites[node]
-                if (
-                    values.shape != (count, top_k, posterior_samples, 4)
-                    or truth_values.shape != (count, 4)
-                ):
+                if values.shape != (count, top_k, posterior_samples, 4):
                     raise ValueError(f"Prediction output has invalid composite {node}")
+                if truth_composites is not None and node in truth_composites:
+                    truth_values = truth_composites[node]
+                    if truth_values.shape != (count, 4):
+                        raise ValueError(f"Prediction output has invalid truth composite {node}")
+                elif truth_composites_available:
+                    raise ValueError(f"Prediction output is missing truth composite {node}")
+                else:
+                    truth_values = None
                 if deep:
                     for chunk in _iter_hdf5_chunks(values):
                         _require_finite_or_missing(chunk, f"Prediction COMPOSITES/{node}")
-                    for chunk in _iter_hdf5_chunks(truth_values):
-                        _require_finite_or_missing(
-                            chunk, f"Prediction TRUTH/COMPOSITES/{node}"
-                        )
+                    if truth_values is not None:
+                        for chunk in _iter_hdf5_chunks(truth_values):
+                            _require_finite_or_missing(
+                                chunk, f"Prediction TRUTH/COMPOSITES/{node}"
+                            )
         joint = source["JOINT"]
         if "compatibility_logit" in joint:
             for name in ("compatibility_logit", "final_score", "rank_indices"):

@@ -1,0 +1,194 @@
+# Explicit real-data parent-CFM configuration. P0/P1 use verified after-FSR truth.
+experiment:
+  name: partonic_ttbar2L_2M_p0_gpu_smoke
+  seed: 42001
+topology: configs/topology/ttbar2L_charge_side_v1.yaml
+data:
+  input: results/experiments/partonic_ttbar2L_2M_v1/adapted/partonic_ttbar2l_development_maxjets8_v1_measured.h5
+  cache: null
+  subset_seed: 42001
+  test_size: 0.05
+  events:
+    train: 64
+    validation: 32
+    test: null
+  max_assignment_states: 100000
+  loader:
+    pin_memory: false
+    persistent_workers: false
+inputs:
+  transforms:
+    e: log
+    eta:
+    - minmax
+    - -5.0
+    - 5.0
+    phi: sincos
+    pt: log
+    btag:
+    - minmax
+    - 0.0
+    - 6.0
+    charge:
+    - minmax
+    - -1.0
+    - 1.0
+    id: none
+    njet:
+    - minmax
+    - 0.0
+    - 20.0
+    nelectron:
+    - minmax
+    - 0.0
+    - 2.0
+    nmuon:
+    - minmax
+    - 0.0
+    - 2.0
+    nBJets_90:
+    - minmax
+    - 0.0
+    - 20.0
+    nBJets_85:
+    - minmax
+    - 0.0
+    - 20.0
+    nBJets_77:
+    - minmax
+    - 0.0
+    - 20.0
+    nBJets_70:
+    - minmax
+    - 0.0
+    - 20.0
+    nBJets_65:
+    - minmax
+    - 0.0
+    - 20.0
+  JET:
+    count: 8
+    features:
+    - e
+    - eta
+    - phi
+    - pt
+    - btag
+    - id
+  LEPTON:
+    count: 2
+    features:
+    - e
+    - eta
+    - phi
+    - pt
+    - charge
+    - id
+  MET:
+    count: 1
+    features:
+    - phi
+    - pt
+    - id
+  GLOBAL:
+    features:
+    - njet
+    - nelectron
+    - nmuon
+    - nBJets_90
+    - nBJets_85
+    - nBJets_77
+    - nBJets_70
+    - nBJets_65
+model:
+  latent:
+    d_model: 128
+    n_heads: 4
+    d_feedforward: 384
+    dropout: 0.05
+  encoder:
+    type: lgatr
+    layers: 4
+    n_heads: 4
+    hidden:
+      multivector_channels: 8
+      scalar_channels: 64
+    momentum_scale_gev: 100.0
+    symmetry_breaking:
+      beam: xyplane
+      time: true
+    dropout: 0.0
+  assignment:
+    formulation: discriminative
+  mode: factorized
+  topology_queries:
+    enabled: true
+    interaction: topology_plus_global
+    layers: 2
+    n_heads: 4
+    dropout: 0.0
+    roles:
+    - name: top
+      node: top
+      kind: parent
+      related:
+      - ttbar
+    - name: antitop
+      node: antitop
+      kind: parent
+      related:
+      - ttbar
+    - name: ttbar
+      node: null
+      kind: global
+      related:
+      - top
+      - antitop
+    relations:
+    - - top
+      - ttbar
+    - - antitop
+      - ttbar
+  parent_cfm:
+    enabled: true
+    conditioning: P0
+    target_path: results/experiments/partonic_ttbar2L_2M_v1/adapted/partonic_ttbar2l_development_maxjets8_v1_supervision.h5
+    layers: 4
+    d_feedforward: 384
+    sampling_steps: 32
+    sampling_solver: heun
+    n_heads: 4
+    dropout: 0.0
+    p2_neutrino_steps: 8
+    p2_neutrino_solver: heun
+  heads:
+    point_invisible:
+      enabled: false
+    parent_four_vector:
+      enabled: false
+    partonic:
+      enabled: false
+inference:
+  seed: 42001
+  invisible:
+    point_estimator: none
+training:
+  batch_size: 16
+  workers: 0
+  optimizer:
+    type: adamw
+    fused_adamw: false
+  learning_rate: 0.000361545
+  weight_decay: 6.073529387441413e-05
+  epochs: 1
+  precision: 32-true
+  trainable:
+  - visible
+  - queries
+  - partonic_cfm
+  loss_weights:
+    assignment: 0.0
+    invisible: 0.0
+    partonic: 0.0
+    partonic_cfm: 1.0
+  output: results/experiments/partonic_ttbar2L_2M_v1/gpu_smoke_p0

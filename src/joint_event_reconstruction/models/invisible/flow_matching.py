@@ -62,6 +62,7 @@ class ContinuousFlowMatching(nn.Module):
         condition: torch.Tensor | None = None,
         visible_fourmomenta: torch.Tensor | None = None,
         met_xy: torch.Tensor | None = None,
+        support_mask: torch.Tensor | None = None,
     ) -> dict:
         source = self.source(target, generator=generator, condition=condition)
         time = torch.rand(
@@ -77,9 +78,24 @@ class ContinuousFlowMatching(nn.Module):
             visible_fourmomenta=visible_fourmomenta,
             met_xy=met_xy,
         )
+        squared_error = (prediction - target_velocity).square()
+        active = self.active_mask.to(device=target.device, dtype=target.dtype)
+        active_dimensions = active.sum().clamp_min(1.0)
+        per_event = (squared_error * active).reshape(len(target), -1).sum(dim=1)
+        per_event = per_event / active_dimensions
+        if support_mask is None:
+            loss = per_event.mean()
+        else:
+            if support_mask.dtype != torch.bool or support_mask.shape != (len(target),):
+                raise ValueError(
+                    "CFM support_mask must be boolean [B], found "
+                    f"dtype={support_mask.dtype}, shape={tuple(support_mask.shape)}"
+                )
+            weights = support_mask.to(dtype=per_event.dtype)
+            loss = (per_event * weights).sum() / weights.sum().clamp_min(1.0)
         return {
-            "loss": (prediction - target_velocity).square().sum()
-            / (len(target) * self.active_mask.sum()),
+            "loss": loss,
+            "per_event_loss": per_event,
             "time": time,
             "state": state,
             "source": source,

@@ -80,6 +80,26 @@ class PartonicTruthStore:
             support = np.asarray(source["PARTONIC/SUPPORT"][:])
             if support.shape != (len(event_ids), len(self.role_names)) or support.dtype != np.bool_:
                 raise TypeError(f"{self.path}: PARTONIC/SUPPORT must be boolean [{len(event_ids)},{len(self.role_names)}]")
+            source_metadata = {}
+            for key in (
+                "partonic_truth_definition",
+                "partonic_units",
+                "partonic_target_representation",
+                "partonic_feature_transform",
+                "partonic_inverse_transform",
+                "source_manifest_sha256",
+                "split_membership_sha256",
+                "split_version",
+                "sidecar_version",
+                "source_path",
+                "max_jets",
+            ):
+                value = source.attrs.get(key)
+                if isinstance(value, bytes):
+                    value = value.decode("utf-8")
+                if value is not None:
+                    source_metadata[key] = str(value)
+            source_metadata["synthetic"] = bool(source.attrs.get("synthetic", False))
         if len(np.unique(event_ids)) != len(event_ids):
             raise ValueError(f"{self.path}: EVENT_ID contains duplicates")
         dense = np.stack(values, axis=1)
@@ -95,9 +115,24 @@ class PartonicTruthStore:
         self.values = dense[order].astype(np.float32, copy=False)
         self.support = support[order].astype(np.bool_, copy=False)
         self.truth_bindings = observed_bindings
-        self.synthetic = bool(False)
-        with h5py.File(self.path, "r") as source:
-            self.synthetic = bool(source.attrs.get("synthetic", False))
+        self.synthetic = bool(source_metadata.get("synthetic", False))
+        stat = self.path.stat()
+        self.metadata = {
+            "path": str(self.path),
+            "size_bytes": int(stat.st_size),
+            "mtime_ns": int(stat.st_mtime_ns),
+            "roles": list(self.role_names),
+            "truth_bindings": dict(self.truth_bindings),
+            **source_metadata,
+        }
+        if source_metadata.get("partonic_target_representation") not in (
+            None,
+            "partonic_px_py_pz_log1p_mass_v1",
+        ):
+            raise ValueError(
+                f"{self.path}: unsupported partonic target representation "
+                f"{source_metadata['partonic_target_representation']!r}"
+            )
 
     def lookup(self, event_ids: torch.Tensor | np.ndarray) -> tuple[torch.Tensor, torch.Tensor]:
         requested = np.asarray(event_ids.cpu() if torch.is_tensor(event_ids) else event_ids, dtype=np.int64)

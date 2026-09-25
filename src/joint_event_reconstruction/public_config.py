@@ -20,7 +20,7 @@ PUBLIC_TOP_KEYS = {
 }
 TRAINABLE_COMPONENTS = {
     "visible", "assignment", "invisible", "point", "parent", "partonic",
-    "queries", "c2", "compatibility",
+    "partonic_cfm", "queries", "c2", "compatibility",
 }
 
 
@@ -29,7 +29,12 @@ def _path(value: object, *, data_path: bool = False) -> Path:
     if path.is_absolute():
         return path.resolve()
     roots = runtime_paths()
-    root = roots.project_root if data_path else roots.source_root
+    repository_prefixes = {"configs", "scripts", "src", "results"}
+    root = (
+        roots.source_root
+        if not data_path or (path.parts and path.parts[0] in repository_prefixes)
+        else roots.project_root
+    )
     return (root / path).resolve()
 
 
@@ -120,6 +125,12 @@ def _truth_bindings(topology_path: Path) -> dict[str, dict]:
             "top_e_b": ("JET", 1), "top_e_lepton": ("ELECTRON", 1),
             "top_mu_b": ("JET", 2), "top_mu_lepton": ("MUON", 1),
             "top_e_neutrino": ("NEUTRINO", 0), "top_mu_neutrino": ("NEUTRINO", 1),
+        },
+        "ttbar2L_charge_side_v1": {
+            "top_b": ("JET", 1), "top_lepton": ("LEPTON", 1),
+            "top_neutrino": ("NEUTRINO", None),
+            "antitop_b": ("JET", 2), "antitop_lepton": ("LEPTON", 2),
+            "antitop_neutrino": ("NEUTRINO", None),
         },
         "ttbar1L": {
             "leptonic_b": ("JET", 1), "hadronic_b": ("JET", 2),
@@ -226,9 +237,9 @@ def build_visible_loader_config(experiment: DictConfig) -> DictConfig:
         "train_num_workers": int(experiment.training.workers),
         "val_num_workers": int(experiment.training.workers),
         "test_num_workers": int(experiment.training.workers),
-        "pin_memory": True,
-        "persistent_workers": True,
-        "prefetch_factor": 2,
+        "pin_memory": bool(experiment.data.loader.pin_memory),
+        "persistent_workers": bool(experiment.data.loader.persistent_workers),
+        "prefetch_factor": experiment.data.loader.prefetch_factor,
         "cache": {
             "enabled": data.cache is not None,
             "path": data.cache,
@@ -781,11 +792,102 @@ def _resolve_topology_queries(public, latent: dict) -> dict:
     }
 
 
+def _resolve_parent_cfm(public, latent: dict) -> dict:
+    """Resolve the joint top/antitop CFM without coupling it to the direct head."""
+    result = {
+        "enabled": False,
+        "conditioning": "P0",
+        "roles": ["top", "antitop"],
+        "truth_bindings": {
+            "top": "partonic_after_fsr_top",
+            "antitop": "partonic_after_fsr_antitop",
+        },
+        "target_path": None,
+        "n_heads": int(latent["n_heads"]),
+        "layers": 2,
+        "d_feedforward": int(latent["d_feedforward"]),
+        "dropout": 0.0,
+        "p2_neutrino_steps": 8,
+        "p2_neutrino_solver": "heun",
+        "sampling_steps": 32,
+        "sampling_solver": "heun",
+    }
+    if public is None:
+        return result
+    _mapping(public, "model.parent_cfm")
+    _unknown(
+        public,
+        {
+            "enabled", "conditioning", "roles", "truth_bindings", "target_path",
+            "n_heads", "layers", "d_feedforward", "dropout",
+            "p2_neutrino_steps", "p2_neutrino_solver", "sampling_steps",
+            "sampling_solver",
+        },
+        "model.parent_cfm",
+    )
+    enabled = bool(public.get("enabled", False))
+    conditioning = str(public.get("conditioning", "P0"))
+    if conditioning not in {"P0", "P1", "P2"}:
+        raise ValueError("model.parent_cfm.conditioning must be P0, P1 or P2")
+    roles = [str(value) for value in public.get("roles", ["top", "antitop"])]
+    if roles != ["top", "antitop"]:
+        raise ValueError(
+            "Joint partonic CFM roles are fixed in semantic order [top, antitop]"
+        )
+    raw_bindings = public.get("truth_bindings", result["truth_bindings"])
+    if OmegaConf.is_config(raw_bindings):
+        raw_bindings = OmegaConf.to_container(raw_bindings, resolve=True)
+    if not isinstance(raw_bindings, dict) or set(raw_bindings) != set(roles):
+        raise ValueError("model.parent_cfm.truth_bindings must define top and antitop exactly")
+    bindings = {str(key): str(value) for key, value in raw_bindings.items()}
+    if any(not value for value in bindings.values()):
+        raise ValueError("Partonic CFM truth-binding names must be non-empty")
+    target_path = public.get("target_path")
+    if enabled and target_path is None:
+        # Prediction is permitted without a truth sidecar; training validation
+        # below rejects this when parent_cfm is an active objective.
+        pass
+    n_heads = int(public.get("n_heads", latent["n_heads"]))
+    if int(latent["d_model"]) % n_heads:
+        raise ValueError("model.parent_cfm.n_heads must divide model.latent.d_model")
+    layers = int(public.get("layers", 2))
+    d_feedforward = int(public.get("d_feedforward", latent["d_feedforward"]))
+    dropout = float(public.get("dropout", 0.0))
+    if layers <= 0 or d_feedforward <= 0:
+        raise ValueError("Partonic CFM layers and d_feedforward must be positive")
+    if not 0.0 <= dropout < 1.0:
+        raise ValueError("model.parent_cfm.dropout must lie in [0,1)")
+    p2_steps = int(public.get("p2_neutrino_steps", 8))
+    sampling_steps = int(public.get("sampling_steps", 32))
+    p2_solver = str(public.get("p2_neutrino_solver", "heun"))
+    sampling_solver = str(public.get("sampling_solver", "heun"))
+    if p2_steps <= 0 or sampling_steps <= 0:
+        raise ValueError("Partonic CFM sampling budgets must be positive")
+    if p2_solver not in {"euler", "heun"} or sampling_solver not in {"euler", "heun"}:
+        raise ValueError("Partonic CFM solvers must be euler or heun")
+    return {
+        **result,
+        "enabled": enabled,
+        "conditioning": conditioning,
+        "roles": roles,
+        "truth_bindings": bindings,
+        "target_path": None if target_path is None else str(target_path),
+        "n_heads": n_heads,
+        "layers": layers,
+        "d_feedforward": d_feedforward,
+        "dropout": dropout,
+        "p2_neutrino_steps": p2_steps,
+        "p2_neutrino_solver": p2_solver,
+        "sampling_steps": sampling_steps,
+        "sampling_solver": sampling_solver,
+    }
+
+
 def _resolve_model(public, defaults) -> dict:
     _mapping(public, "model")
     allowed = {
         "mode", "latent", "encoder", "assignment", "invisible", "joint",
-        "feedback", "compatibility", "heads", "topology_queries",
+        "feedback", "compatibility", "heads", "topology_queries", "parent_cfm",
     }
     _unknown(public, allowed, "model")
     for obsolete, replacement in {
@@ -803,13 +905,14 @@ def _resolve_model(public, defaults) -> dict:
     encoder = _resolve_visible(public.encoder, latent, defaults)
     heads = _resolve_optional_heads(public.get("heads"))
     topology_queries = _resolve_topology_queries(public.get("topology_queries"), latent)
+    parent_cfm = _resolve_parent_cfm(public.get("parent_cfm"), latent)
 
     mode = str(public.mode)
     if mode not in {"factorized", "joint"}:
         raise ValueError("model.mode must be factorized or joint")
     joint_public = public.get("joint")
     if mode == "joint":
-        if any(value["enabled"] for value in heads.values()):
+        if any(value["enabled"] for value in heads.values()) or parent_cfm["enabled"]:
             raise ValueError("Optional point/parent heads currently require model.mode=factorized")
         if joint_public is None:
             raise ValueError("model.mode=joint requires model.joint")
@@ -897,6 +1000,7 @@ def _resolve_model(public, defaults) -> dict:
             },
             "heads": heads,
             "topology_queries": topology_queries,
+            "parent_cfm": parent_cfm,
         }
 
     if joint_public is not None:
@@ -1036,6 +1140,7 @@ def _resolve_model(public, defaults) -> dict:
         },
         "heads": heads,
         "topology_queries": topology_queries,
+        "parent_cfm": parent_cfm,
     }
 
 
@@ -1054,11 +1159,27 @@ def resolve_public_experiment(public: DictConfig, *, source_path: str | Path | N
     data_public = public.data
     _mapping(data_public, "data")
     data_keys = {
-        "input", "cache", "events", "subset_seed", "max_assignment_states",
-        "test_size", "split", "allow_synthetic",
+        "input", "inference_input", "visible_truth", "invisible_truth", "cache", "events", "subset_seed", "max_assignment_states",
+        "test_size", "split", "allow_synthetic", "loader",
     }
     _unknown(data_public, data_keys, "data")
     _required(data_public, {"input", "cache"}, "data")
+    loader_public = data_public.get("loader", {})
+    _mapping(loader_public, "data.loader")
+    _unknown(loader_public, {"pin_memory", "persistent_workers", "prefetch_factor"}, "data.loader")
+    loader = {
+        "pin_memory": bool(loader_public.get("pin_memory", True)),
+        "persistent_workers": bool(loader_public.get("persistent_workers", True)),
+        "prefetch_factor": loader_public.get("prefetch_factor", 2),
+    }
+    if not isinstance(loader_public.get("pin_memory", True), bool):
+        raise ValueError("data.loader.pin_memory must be boolean")
+    if not isinstance(loader_public.get("persistent_workers", True), bool):
+        raise ValueError("data.loader.persistent_workers must be boolean")
+    if loader["prefetch_factor"] is not None and int(loader["prefetch_factor"]) <= 0:
+        raise ValueError("data.loader.prefetch_factor must be a positive integer or null")
+    if loader["prefetch_factor"] is not None:
+        loader["prefetch_factor"] = int(loader["prefetch_factor"])
     test_size = float(data_public.get("test_size", 0.2))
     if not 0.0 < test_size < 1.0:
         raise ValueError("data.test_size must lie strictly between zero and one")
@@ -1078,6 +1199,36 @@ def resolve_public_experiment(public: DictConfig, *, source_path: str | Path | N
     _unknown(events, {"train", "validation", "test"}, "data.events")
     _required(events, {"train", "validation", "test"}, "data.events")
     input_path = _path(data_public.input, data_path=True)
+    inference_input_value = data_public.get("inference_input")
+    inference_input_path = (
+        None
+        if inference_input_value is None
+        else _path(inference_input_value, data_path=True)
+    )
+    if inference_input_path is not None and not inference_input_path.is_file():
+        raise FileNotFoundError(
+            f"Configured truth-free inference input does not exist: {inference_input_path}"
+        )
+    invisible_truth_value = data_public.get("invisible_truth")
+    invisible_truth_path = (
+        None
+        if invisible_truth_value is None
+        else _path(invisible_truth_value, data_path=True)
+    )
+    if invisible_truth_path is not None and not invisible_truth_path.is_file():
+        raise FileNotFoundError(
+            f"Configured invisible truth sidecar does not exist: {invisible_truth_path}"
+        )
+    visible_truth_value = data_public.get("visible_truth")
+    visible_truth_path = (
+        None
+        if visible_truth_value is None
+        else _path(visible_truth_value, data_path=True)
+    )
+    if visible_truth_path is not None and not visible_truth_path.is_file():
+        raise FileNotFoundError(
+            f"Configured visible truth sidecar does not exist: {visible_truth_path}"
+        )
     cache_value = data_public.cache
     cache_path = None
     if cache_value is not None:
@@ -1115,6 +1266,23 @@ def resolve_public_experiment(public: DictConfig, *, source_path: str | Path | N
                 f"{partonic_path}"
             )
         partonic_head["target_path"] = str(partonic_path)
+    parent_cfm = model["parent_cfm"]
+    parent_cfm_path = None
+    if parent_cfm["enabled"] and parent_cfm["target_path"] is not None:
+        parent_cfm_path = _path(parent_cfm["target_path"], data_path=True)
+        if not parent_cfm_path.is_file():
+            raise FileNotFoundError(
+                "Enabled partonic CFM truth sidecar does not exist: "
+                f"{parent_cfm_path}"
+            )
+        parent_cfm["target_path"] = str(parent_cfm_path)
+    if parent_cfm["enabled"] and partonic_head["enabled"]:
+        if partonic_head["roles"] != parent_cfm["roles"]:
+            raise ValueError("Direct partonic head and parent CFM cannot use different role stores")
+        if partonic_head["truth_bindings"] != parent_cfm["truth_bindings"]:
+            raise ValueError("Direct partonic head and parent CFM truth bindings must agree")
+        if partonic_path is not None and parent_cfm_path is not None and partonic_path != parent_cfm_path:
+            raise ValueError("Direct partonic head and parent CFM must share one partonic sidecar")
     kinematic_names = {"e", "pt", "eta", "phi", "sin_phi", "cos_phi"}
     object_features = []
     for source, spec in data_config.collections.items():
@@ -1176,20 +1344,24 @@ def resolve_public_experiment(public: DictConfig, *, source_path: str | Path | N
         "batch_size", "workers", "optimizer", "learning_rate", "weight_decay", "epochs", "precision", "gradient_clip",
         "accumulate_grad_batches", "trainable", "loss_weights", "scheduler",
         "early_stopping", "runtime", "output", "shared_encoder_gradients",
-        "partonic_shared_encoder_gradients",
+        "partonic_shared_encoder_gradients", "parent_cfm_shared_encoder_gradients",
     }
     _unknown(training_public, training_keys, "training")
     training = _merge(defaults.training, training_public)
     optimizer = training_public.get("optimizer")
+    fused_adamw = False
     if optimizer is not None:
         _mapping(optimizer, "training.optimizer")
-        _unknown(optimizer, {"type", "learning_rate", "weight_decay"}, "training.optimizer")
+        _unknown(optimizer, {"type", "learning_rate", "weight_decay", "fused_adamw"}, "training.optimizer")
         if str(optimizer.get("type", "adamw")) != "adamw":
             raise ValueError("training.optimizer.type must be adamw")
         if optimizer.get("learning_rate") is not None:
             training.learning_rate = optimizer.learning_rate
         if optimizer.get("weight_decay") is not None:
             training.weight_decay = optimizer.weight_decay
+        fused_adamw = optimizer.get("fused_adamw", False)
+        if not isinstance(fused_adamw, bool):
+            raise ValueError("training.optimizer.fused_adamw must be boolean")
 
     if training_public.get("trainable") is None:
         trainable = ["visible", "assignment"]
@@ -1207,6 +1379,8 @@ def resolve_public_experiment(public: DictConfig, *, source_path: str | Path | N
             trainable.append("queries")
         if model["heads"]["partonic"]["enabled"]:
             trainable.append("partonic")
+        if parent_cfm["enabled"]:
+            trainable.append("partonic_cfm")
     else:
         trainable = [str(value) for value in training_public.trainable]
     if not trainable or len(set(trainable)) != len(trainable):
@@ -1224,14 +1398,25 @@ def resolve_public_experiment(public: DictConfig, *, source_path: str | Path | N
         raise ValueError("training.trainable=queries requires enabled topology_queries")
     if "partonic" in trainable and not model["heads"]["partonic"]["enabled"]:
         raise ValueError("training.trainable=partonic requires an enabled partonic head")
+    if "partonic_cfm" in trainable and not parent_cfm["enabled"]:
+        raise ValueError("training.trainable=partonic_cfm requires model.parent_cfm.enabled")
     if model["heads"]["partonic"]["enabled"] and not model["topology_queries"]["enabled"]:
         raise ValueError("model.heads.partonic requires enabled model.topology_queries")
+    if parent_cfm["enabled"] and not model["topology_queries"]["enabled"]:
+        raise ValueError("model.parent_cfm requires enabled shared topology queries")
     partonic_gradient_policy = str(
         training_public.get("partonic_shared_encoder_gradients", "both")
     )
     if partonic_gradient_policy not in {"both", "assignment_only"}:
         raise ValueError(
             "training.partonic_shared_encoder_gradients must be both or assignment_only"
+        )
+    parent_cfm_gradient_policy = str(
+        training_public.get("parent_cfm_shared_encoder_gradients", "both")
+    )
+    if parent_cfm_gradient_policy not in {"both", "assignment_only"}:
+        raise ValueError(
+            "training.parent_cfm_shared_encoder_gradients must be both or assignment_only"
         )
     if model["mode"] == "joint_flow" and (("assignment" in trainable) != ("invisible" in trainable)):
         raise ValueError("joint_flow assignment and invisible dynamics must be trainable/frozen together")
@@ -1243,6 +1428,7 @@ def resolve_public_experiment(public: DictConfig, *, source_path: str | Path | N
         "point": 1.0 if "point" in trainable else 0.0,
         "parent": 1.0 if "parent" in trainable else 0.0,
         "partonic": 1.0 if "partonic" in trainable else 0.0,
+        "partonic_cfm": 1.0 if "partonic_cfm" in trainable else 0.0,
     }
     if training_public.get("loss_weights") is not None:
         _mapping(training_public.loss_weights, "training.loss_weights")
@@ -1258,9 +1444,17 @@ def resolve_public_experiment(public: DictConfig, *, source_path: str | Path | N
             "with an explicit truth sidecar; omit partonic from training.trainable "
             "and set its loss weight to zero for truth-free inference."
         )
+    if parent_cfm["enabled"] and (
+        "partonic_cfm" in trainable or loss_weights["partonic_cfm"] > 0.0
+    ) and parent_cfm_path is None:
+        raise ValueError(
+            "Partonic CFM training requires model.parent_cfm.target_path; "
+            "truth-free prediction may set training.trainable without partonic_cfm "
+            "and set training.loss_weights.partonic_cfm=0."
+        )
 
     output_value = training_public.get("output", f"results/{public.experiment.name}")
-    output_path = runtime_paths().project(output_value)
+    output_path = _path(output_value)
     return OmegaConf.create(
         {
             "experiment": _plain(public.experiment),
@@ -1269,6 +1463,12 @@ def resolve_public_experiment(public: DictConfig, *, source_path: str | Path | N
             "input_definition": _plain(data_config),
             "data": {
                 "input": str(input_path),
+                "inference_input": (
+                    None if inference_input_path is None else str(inference_input_path)
+                ),
+                "visible_truth": (
+                    None if visible_truth_path is None else str(visible_truth_path)
+                ),
                 "tensor_cache": None if cache_path is None else str(cache_path),
                 "force_rebuild_cache": False,
                 "subset_seed": int(data_public.get("subset_seed", public.experiment.seed)),
@@ -1284,8 +1484,9 @@ def resolve_public_experiment(public: DictConfig, *, source_path: str | Path | N
                     "test": events.test,
                 },
                 "max_assignment_states": int(data_public.get("max_assignment_states", 100000)),
+                "loader": loader,
                 "invisible": {
-                    "path": str(input_path),
+                    "path": str(invisible_truth_path or input_path),
                     "allow_synthetic": bool(data_public.get("allow_synthetic", False)),
                 },
                 "parent": {
@@ -1293,9 +1494,9 @@ def resolve_public_experiment(public: DictConfig, *, source_path: str | Path | N
                     "roles": list(parent_head["roles"]),
                 },
                 "partonic": {
-                    "path": None if partonic_path is None else str(partonic_path),
-                    "roles": list(partonic_head["roles"]),
-                    "truth_bindings": dict(partonic_head["truth_bindings"]),
+                    "path": None if partonic_path is None and parent_cfm_path is None else str(parent_cfm_path or partonic_path),
+                    "roles": list(parent_cfm["roles"] if parent_cfm["enabled"] else partonic_head["roles"]),
+                    "truth_bindings": dict(parent_cfm["truth_bindings"] if parent_cfm["enabled"] else partonic_head["truth_bindings"]),
                 },
             },
             "model": model,
@@ -1329,6 +1530,7 @@ def resolve_public_experiment(public: DictConfig, *, source_path: str | Path | N
                 "workers": int(training_public.get("workers", 4)),
                 "learning_rate": float(training.learning_rate),
                 "weight_decay": float(training.weight_decay),
+                "fused_adamw": fused_adamw,
                 "epochs": int(training.epochs),
                 "precision": str(training.precision),
                 "gradient_clip": float(training.gradient_clip),
@@ -1340,6 +1542,7 @@ def resolve_public_experiment(public: DictConfig, *, source_path: str | Path | N
                     training_public.get("shared_encoder_gradients", "both")
                 ),
                 "partonic_shared_encoder_gradients": partonic_gradient_policy,
+                "parent_cfm_shared_encoder_gradients": parent_cfm_gradient_policy,
                 "scheduler": _plain(training.scheduler),
                 "early_stopping": _plain(training.early_stopping),
                 "output": str(output_path),

@@ -138,6 +138,8 @@ class InvisibleGenerator(nn.Module):
         node_context: dict[str, torch.Tensor] | None = None,
         *,
         mode: str | None = None,
+        query_role_context: torch.Tensor | None = None,
+        query_role_names: tuple[str, ...] = (),
     ) -> torch.Tensor:
         """Build parent contexts for non-hypothesis sampling and training.
 
@@ -148,9 +150,26 @@ class InvisibleGenerator(nn.Module):
         """
         mode = self.assignment_mode if mode is None else mode
         contexts = []
-        for role in self.spec.invisible_roles:
+        # Query-enabled models provide one projected state per compiled
+        # invisible role. This is distinct from the shared pooled context and
+        # keeps charge-side ordering in the topology contract.
+        if query_role_context is not None:
+            expected_names = tuple(role.key for role in self.spec.invisible_roles)
+            if tuple(query_role_names) != expected_names:
+                raise ValueError(
+                    "Topology-query invisible role order differs from the compiled topology: "
+                    f"expected={expected_names}, observed={query_role_names}"
+                )
+            if query_role_context.shape != (
+                len(pooled), len(expected_names), pooled.shape[-1]
+            ):
+                raise ValueError("Topology-query invisible role contexts have an invalid shape")
+        for role_index, role in enumerate(self.spec.invisible_roles):
             node = role.node
-            base = pooled if node_context is None else node_context[node]
+            if query_role_context is not None:
+                base = query_role_context[:, role_index]
+            else:
+                base = pooled if node_context is None else node_context[node]
             if mode == "none":
                 summary = torch.zeros_like(base)
             else:
@@ -190,6 +209,8 @@ class InvisibleGenerator(nn.Module):
         node_context: dict[str, torch.Tensor] | None = None,
         *,
         mode: str | None = None,
+        query_role_context: torch.Tensor | None = None,
+        query_role_names: tuple[str, ...] = (),
     ) -> torch.Tensor:
         """Build coordinate-token contexts from one context per invisible role."""
         role_context = self.role_parent_context(
@@ -198,6 +219,8 @@ class InvisibleGenerator(nn.Module):
             pooled,
             node_context,
             mode=mode,
+            query_role_context=query_role_context,
+            query_role_names=query_role_names,
         )
         return self.coordinates.parent_context(role_context, pooled)
 

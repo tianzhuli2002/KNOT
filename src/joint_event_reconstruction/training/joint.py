@@ -88,6 +88,7 @@ def active_architecture(model) -> dict:
     topology_queries = getattr(model, "topology_queries", None)
     if topology_queries is not None and bool(topology_queries.enabled):
         payload["topology_queries"] = _resolved(topology_queries)
+        payload["topology_queries"]["state_contract_version"] = 2
     heads = getattr(model, "heads", None)
     if heads is not None and any(
         bool(getattr(heads, name).enabled)
@@ -106,6 +107,16 @@ def active_architecture(model) -> dict:
             # checkpoint identity but do not make reload depend on a path.
             head_payload["partonic"].pop("target_path", None)
         payload["heads"] = head_payload
+    parent_cfm = getattr(model, "parent_cfm", None)
+    if parent_cfm is not None and bool(parent_cfm.enabled):
+        parent_payload = _resolved(parent_cfm)
+        parent_payload.pop("target_path", None)
+        parent_payload.pop("sampling_steps", None)
+        parent_payload.pop("sampling_solver", None)
+        if str(parent_payload.get("conditioning", "P0")) != "P2":
+            parent_payload.pop("p2_neutrino_steps", None)
+            parent_payload.pop("p2_neutrino_solver", None)
+        payload["parent_cfm"] = parent_payload
     return payload
 
 
@@ -151,6 +162,12 @@ def architecture_component_signatures(model) -> dict[str, str]:
         payloads["partonic"] = {
             "latent_width": architecture["latent"]["d_model"],
             "head": heads["partonic"],
+            "topology_queries": architecture.get("topology_queries"),
+        }
+    if architecture.get("parent_cfm", {}).get("enabled", False):
+        payloads["partonic_cfm"] = {
+            "latent_width": architecture["latent"]["d_model"],
+            "parent_cfm": architecture["parent_cfm"],
             "topology_queries": architecture.get("topology_queries"),
         }
     if architecture.get("topology_queries") is not None:
@@ -207,6 +224,8 @@ def _apply_trainable_components(event_model, mode: str, components: set[str]) ->
         _freeze(event_model.parent_head)
     if "partonic" not in components:
         _freeze(event_model.partonic_head)
+    if "partonic_cfm" not in components:
+        _freeze(event_model.parent_cfm)
 
 
 class JointEventModule(L.LightningModule):
@@ -218,6 +237,7 @@ class JointEventModule(L.LightningModule):
         invisible_scaler=None,
         point_scaler=None,
         partonic_scaler=None,
+        parent_cfm_scaler=None,
         synthetic_data: bool = False,
     ):
         super().__init__()
@@ -280,6 +300,16 @@ class JointEventModule(L.LightningModule):
             partonic_shared_encoder_gradients=str(
                 experiment.training.partonic_shared_encoder_gradients
             ),
+            parent_cfm_config=(
+                model.parent_cfm if bool(model.parent_cfm.enabled) else None
+            ),
+            parent_cfm_scaler=(
+                parent_cfm_scaler if parent_cfm_scaler is not None else partonic_scaler
+            ),
+            parent_cfm_loss_weight=float(experiment.training.loss_weights.partonic_cfm),
+            parent_cfm_shared_encoder_gradients=str(
+                experiment.training.parent_cfm_shared_encoder_gradients
+            ),
         )
 
         trainable_components = {str(value) for value in experiment.training.trainable}
@@ -302,7 +332,10 @@ class JointEventModule(L.LightningModule):
         )
         self.partonic_scaler_metadata = (
             None
-            if self.event_model.partonic_head is None or partonic_scaler is None
+            if (
+                self.event_model.partonic_head is None
+                and self.event_model.parent_cfm is None
+            ) or partonic_scaler is None
             else partonic_scaler.as_dict()
         )
         if invisible_config is not None:
@@ -413,12 +446,22 @@ class JointEventModule(L.LightningModule):
                     experiment.training.partonic_shared_encoder_gradients
                 ),
                 "partonic_roles": list(self.event_model.partonic_roles),
+                "parent_cfm_conditioning": (
+                    None if self.event_model.parent_cfm is None
+                    else self.event_model.parent_cfm.conditioning
+                ),
+                "parent_cfm_roles": (
+                    [] if self.event_model.parent_cfm is None
+                    else list(self.event_model.parent_cfm.ROLES)
+                ),
                 "partonic_target_representation": (
                     partonic_scaler.representation if partonic_scaler is not None else None
                 ),
                 "experiment_seed": int(experiment.experiment.seed),
                 "data_subset_seed": int(experiment.data.subset_seed),
                 "precision": str(experiment.training.precision),
+                "fused_adamw_requested": bool(experiment.training.fused_adamw),
+                "compile_requested": bool(experiment.training.runtime.compile),
                 "external_package_versions": {
                     "torch": torch.__version__,
                     "lightning": importlib.metadata.version("lightning"),
@@ -428,13 +471,20 @@ class JointEventModule(L.LightningModule):
         )
         self.learning_rate = float(experiment.training.learning_rate)
         self.weight_decay = float(experiment.training.weight_decay)
+        self.fused_adamw = bool(experiment.training.fused_adamw)
+        self.compile_requested = bool(experiment.training.runtime.compile)
+        compiled = torch.compile(self.event_model) if self.compile_requested else None
+        object.__setattr__(self, "_compiled_event_forward", compiled)
         self.scheduler_config = experiment.training.scheduler
 
     def forward(self, batch: dict, **kwargs) -> dict:
+        compiled = object.__getattribute__(self, "_compiled_event_forward")
+        if compiled is not None:
+            return compiled(batch, **kwargs)
         return self.event_model(batch, **kwargs)
 
     def _step(self, batch: dict, stage: str) -> torch.Tensor:
-        output = self(batch)
+        output = self(batch, compute_objectives=True)
         batch_size = len(batch["tokens"])
         self.log(
             f"{stage}_loss",
@@ -444,13 +494,14 @@ class JointEventModule(L.LightningModule):
             batch_size=batch_size,
             prog_bar=stage != "train",
         )
-        self.log(
-            f"{stage}_assignment_loss",
-            output["assignment_loss"],
-            on_step=False,
-            on_epoch=True,
-            batch_size=batch_size,
-        )
+        if "assignment_loss" in output:
+            self.log(
+                f"{stage}_assignment_loss",
+                output["assignment_loss"],
+                on_step=False,
+                on_epoch=True,
+                batch_size=batch_size,
+            )
         if "invisible_loss" in output:
             self.log(
                 f"{stage}_invisible_loss",
@@ -482,6 +533,14 @@ class JointEventModule(L.LightningModule):
                 f"{stage}_partonic_loss", output["partonic_loss"], on_step=False,
                 on_epoch=True, batch_size=batch_size,
             )
+        if "partonic_cfm_loss" in output:
+            self.log(
+                f"{stage}_partonic_cfm_loss",
+                output["partonic_cfm_loss"],
+                on_step=False,
+                on_epoch=True,
+                batch_size=batch_size,
+            )
         return output["loss"]
 
     def training_step(self, batch, batch_idx):
@@ -497,11 +556,14 @@ class JointEventModule(L.LightningModule):
         trainable = [parameter for parameter in self.parameters() if parameter.requires_grad]
         if not trainable:
             raise RuntimeError("Experiment freezes every trainable parameter")
+        use_fused = self.fused_adamw and trainable[0].device.type == "cuda"
+        if self.fused_adamw and not use_fused:
+            self.print("Fused AdamW requested but parameters are on CPU; using regular AdamW.")
         optimiser = torch.optim.AdamW(
             trainable,
             lr=self.learning_rate,
             weight_decay=self.weight_decay,
-            fused=False,
+            fused=use_fused,
         )
         if not self.scheduler_config.enabled:
             return optimiser

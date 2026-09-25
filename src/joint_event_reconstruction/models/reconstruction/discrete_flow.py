@@ -130,6 +130,12 @@ class DiscreteAssignmentFlow(nn.Module):
             visible, assignment_context, None, time, state=None
         )
         node_context = self.reasoner.as_dict(topology)
+        query_context = visible.get("node_context")
+        if query_context is not None:
+            node_context = {
+                name: node_context[name] + query_context[name]
+                for name in self.spec.dag_order
+            }
         local_logits, local_probabilities = reconstruction.score_candidates(
             candidate_embeddings,
             visible["pooled"],

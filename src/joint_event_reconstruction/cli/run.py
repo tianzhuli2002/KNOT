@@ -31,6 +31,7 @@ _COMPONENT_PREFIXES = {
     "parent": ("event_model.parent_head.",),
     "queries": ("event_model.topology_queries.",),
     "partonic": ("event_model.partonic_head.",),
+    "partonic_cfm": ("event_model.parent_cfm.",),
 }
 
 
@@ -47,48 +48,78 @@ def _load_repo_script(relative_path: str, module_name: str):
     return module
 
 
-def build_data(config, visible):
+def build_data(config, visible, *, include_truth: bool = True, device: str | None = None):
     from joint_event_reconstruction.data.structured import StructuredDataModule
 
+    visible_data = OmegaConf.create(OmegaConf.to_container(visible, resolve=True))
+    assignment_supervision = (
+        include_truth and float(config.training.loss_weights.assignment) > 0.0
+    )
+    visible_truth_path = (
+        config.data.visible_truth
+        if assignment_supervision and config.data.visible_truth is not None
+        else None
+    )
+    if not include_truth or visible_truth_path is not None or not assignment_supervision:
+        visible_data.general.mode = "predict"
+        if not include_truth:
+            inference_input = config.data.get("inference_input")
+            if inference_input is not None:
+                visible_data.dataset.input_h5_path = str(inference_input)
+        visible_data.tasks.reconstruction.enabled = False
+    if device == "cpu":
+        visible_data.dataset.pin_memory = False
+
     invisible = config.data.invisible
-    if config.model.invisible.enabled and invisible.path is None:
+    if include_truth and config.model.invisible.enabled and invisible.path is None:
         raise ValueError("Invisible inference is enabled but the data config has no invisible_truth")
     build_assignments = (
         str(config.model.mode) == "joint_flow"
         or str(config.model.assignment.formulation) == "flow_matching"
+        or (
+            bool(config.model.parent_cfm.enabled)
+            and str(config.model.parent_cfm.conditioning) in {"P1", "P2"}
+        )
     )
     return StructuredDataModule(
-        visible,
+        visible_data,
         config.topology_config,
         truth_bindings=OmegaConf.to_container(config.data.truth_bindings, resolve=True),
         tensor_cache=config.data.tensor_cache,
-        invisible_path=invisible.path if config.model.invisible.enabled else None,
+        invisible_path=(
+            invisible.path if include_truth and config.model.invisible.enabled else None
+        ),
         point_enabled=bool(config.model.heads.point_invisible.enabled),
         parent_path=(
             config.data.parent.path
-            if config.model.heads.parent_four_vector.enabled
+            if include_truth and config.model.heads.parent_four_vector.enabled
             else None
         ),
         parent_roles=(
             tuple(str(role) for role in config.model.heads.parent_four_vector.roles)
-            if config.model.heads.parent_four_vector.enabled
+            if include_truth and config.model.heads.parent_four_vector.enabled
             else ()
         ),
         partonic_path=(
             config.data.partonic.path
-            if config.model.heads.partonic.enabled
+            if include_truth
+            and (
+                config.model.heads.partonic.enabled
+                or config.model.parent_cfm.enabled
+            )
             else None
         ),
         partonic_roles=(
-            tuple(str(role) for role in config.model.heads.partonic.roles)
-            if config.model.heads.partonic.enabled
+            tuple(str(role) for role in config.data.partonic.roles)
+            if config.model.heads.partonic.enabled or config.model.parent_cfm.enabled
             else ()
         ),
         partonic_truth_bindings=(
-            OmegaConf.to_container(config.model.heads.partonic.truth_bindings, resolve=True)
-            if config.model.heads.partonic.enabled
+            OmegaConf.to_container(config.data.partonic.truth_bindings, resolve=True)
+            if config.model.heads.partonic.enabled or config.model.parent_cfm.enabled
             else None
         ),
+        visible_truth_path=visible_truth_path,
         allow_synthetic=bool(invisible.allow_synthetic),
         max_events=OmegaConf.to_container(config.data.max_events, resolve=True),
         subset_seed=int(config.data.subset_seed),
@@ -98,6 +129,7 @@ def build_data(config, visible):
         ),
         coordinates_config=config.model.invisible.coordinates,
         mass_shell_config=config.model.invisible.mass_shell,
+        require_truth=assignment_supervision,
     )
 
 
@@ -201,6 +233,7 @@ def train(
     initial_checkpoint: str | None = None,
     initial_components: tuple[str, ...] = (),
     public_config_path: str | None = None,
+    resume_from: str | None = None,
 ) -> None:
     import lightning as L
     import torch
@@ -211,7 +244,7 @@ def train(
     torch.set_float32_matmul_precision("high")
     L.seed_everything(int(config.experiment.seed), workers=True)
     visible = load_visible_config(config)
-    data = build_data(config, visible)
+    data = build_data(config, visible, device=device)
     data.setup("fit")
     module = JointEventModule(
         config,
@@ -267,6 +300,30 @@ def train(
     module.hparams["cache_metadata"] = cache_metadata
     module.hparams["dataset_identity"] = cache_metadata.get("source_identity")
     module.hparams["split_identity"] = data.split_metadata
+    if data.structured_collator.partonic_store is not None:
+        truth_metadata = data.structured_collator.partonic_store.metadata
+        module.hparams["partonic_truth_contract"] = {
+            "truth_definition": truth_metadata.get("partonic_truth_definition"),
+            "units": truth_metadata.get("partonic_units"),
+            "roles": list(data.structured_collator.partonic_store.role_names),
+            "truth_bindings": dict(data.structured_collator.partonic_store.truth_bindings),
+            "source_manifest_sha256": truth_metadata.get("source_manifest_sha256"),
+            "split_membership_sha256": truth_metadata.get("split_membership_sha256"),
+            "split_version": truth_metadata.get("split_version"),
+        }
+        module.hparams["partonic_scaler_fit"] = data.partonic_scaler_fit_metadata
+    if data.structured_collator.visible_store is not None:
+        module.hparams["visible_truth_metadata"] = dict(
+            data.structured_collator.visible_store.metadata
+        )
+    if resume_from is not None:
+        resume_checkpoint = torch.load(
+            Path(resume_from).expanduser().resolve(),
+            map_location="cpu",
+            weights_only=False,
+        )
+        module.validate_checkpoint_metadata(resume_checkpoint)
+        _validate_checkpoint_data_contract(resume_checkpoint, config, data)
     (output_dir / "provenance.json").write_text(
         json.dumps(
             {
@@ -279,6 +336,8 @@ def train(
                 "cache_metadata": cache_metadata,
                 "dataset_identity": cache_metadata.get("source_identity"),
                 "split_identity": data.split_metadata,
+                "visible_truth_metadata": module.hparams.get("visible_truth_metadata"),
+                "partonic_truth_contract": module.hparams.get("partonic_truth_contract"),
                 "external_package_versions": module.hparams["external_package_versions"],
             },
             indent=2,
@@ -301,6 +360,8 @@ def train(
             monitor="val_loss",
             mode="min",
             save_top_k=1,
+            save_last=True,
+            enable_version_counter=False,
             filename="best-loss",
         )
     ]
@@ -325,7 +386,109 @@ def train(
         callbacks=callbacks,
         default_root_dir=config.training.output,
     )
-    trainer.fit(module, datamodule=data)
+    trainer.fit(module, datamodule=data, ckpt_path=resume_from)
+
+
+def _validate_checkpoint_data_contract(
+    checkpoint: dict, config, data, *, allow_reserved_test: bool = False
+) -> None:
+    saved_hparams = checkpoint.get("hyper_parameters", {})
+    saved_split = saved_hparams.get("split_identity")
+    current_split = data.split_metadata
+    if saved_split is not None:
+        if current_split is None:
+            raise ValueError("Checkpoint contains a frozen split identity but input has none")
+        for key in ("event_id_hashes", "event_id_counts", "source_contract"):
+            expected = saved_split.get(key)
+            observed = current_split.get(key)
+            if expected != observed and not (
+                allow_reserved_test
+                and key in {"event_id_hashes", "event_id_counts"}
+            ):
+                raise ValueError(
+                    "Input does not match checkpoint event/split identity: "
+                    f"{key} checkpoint={expected!r}, current={observed!r}"
+                )
+        if saved_split.get("event_id_hashes") != current_split.get("event_id_hashes"):
+            saved_counts = saved_split.get("event_id_counts", {})
+            current_counts = current_split.get("event_id_counts", {})
+            is_reserved_test_input = (
+                allow_reserved_test
+                and saved_split.get("policy") == "canonical_hdf5_SPLIT"
+                and current_split.get("policy") == "canonical_hdf5_SPLIT"
+                and int(saved_counts.get("train", 0)) > 0
+                and int(saved_counts.get("validation", 0)) > 0
+                and int(saved_counts.get("test", 0)) == 0
+                and int(current_counts.get("train", 0)) == 0
+                and int(current_counts.get("validation", 0)) == 0
+                and int(current_counts.get("test", 0)) > 0
+                and saved_split.get("source_contract") == current_split.get("source_contract")
+            )
+            if not is_reserved_test_input:
+                raise ValueError(
+                    "Prediction event IDs are outside the checkpoint train/validation "
+                    "population and are not a separately identified reserved-test input"
+                )
+    elif bool(config.model.parent_cfm.enabled):
+        raise ValueError(
+            "Partonic CFM checkpoint has no frozen event/split identity metadata"
+        )
+    saved_visible = saved_hparams.get("visible_truth_metadata")
+    current_visible = data.structured_collator.visible_store
+    if current_visible is not None:
+        if not isinstance(saved_visible, dict):
+            raise ValueError("Checkpoint is missing the visible assignment truth-store metadata")
+        current_metadata = current_visible.metadata
+        for key in (
+            "path",
+            "size_bytes",
+            "mtime_ns",
+            "source_names",
+            "source_manifest_sha256",
+            "split_membership_sha256",
+            "split_version",
+            "max_jets",
+        ):
+            if saved_visible.get(key) != current_metadata.get(key):
+                raise ValueError(
+                    "Visible assignment truth sidecar differs from the checkpoint: "
+                    f"{key} checkpoint={saved_visible.get(key)!r}, "
+                    f"current={current_metadata.get(key)!r}"
+                )
+    if not bool(config.model.parent_cfm.enabled):
+        return
+    contract = saved_hparams.get("partonic_truth_contract")
+    if not isinstance(contract, dict):
+        raise ValueError("Partonic CFM checkpoint is missing its truth contract")
+    expected_bindings = {
+        str(key): str(value)
+        for key, value in config.model.parent_cfm.truth_bindings.items()
+    }
+    if contract.get("truth_definition") != "partonic_after_fsr":
+        raise ValueError(
+            "Partonic CFM checkpoint does not declare genuine partonic_after_fsr truth: "
+            f"{contract.get('truth_definition')!r}"
+        )
+    if contract.get("units") != "GeV":
+        raise ValueError(
+            f"Partonic CFM checkpoint target units must be GeV, found {contract.get('units')!r}"
+        )
+    if contract.get("roles") != ["top", "antitop"] or contract.get("truth_bindings") != expected_bindings:
+        raise ValueError(
+            "Partonic CFM checkpoint target roles/bindings differ from the current configuration: "
+            f"checkpoint_roles={contract.get('roles')!r}, "
+            f"checkpoint_bindings={contract.get('truth_bindings')!r}, "
+            f"current_bindings={expected_bindings!r}"
+        )
+    source_contract = (current_split or {}).get("source_contract", {})
+    for key in ("source_manifest_sha256", "split_membership_sha256", "split_version"):
+        expected = contract.get(key)
+        observed = source_contract.get(key)
+        if expected is None or expected != observed:
+            raise ValueError(
+                "Partonic CFM checkpoint target/source identity differs from measured input: "
+                f"{key} checkpoint={expected!r}, input={observed!r}"
+            )
 
 
 def load_trained(config, visible, data, checkpoint_path: str) -> JointEventModule:
@@ -335,6 +498,9 @@ def load_trained(config, visible, data, checkpoint_path: str) -> JointEventModul
     from joint_event_reconstruction.training.joint import JointEventModule
 
     checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    _validate_checkpoint_data_contract(
+        checkpoint, config, data, allow_reserved_test=True
+    )
     checkpoint_scaler = checkpoint.get("invisible_scaler")
     if checkpoint_scaler is not None:
         scaler = InvisibleScaler.from_dict(checkpoint_scaler)
@@ -365,6 +531,7 @@ def load_trained(config, visible, data, checkpoint_path: str) -> JointEventModul
         invisible_scaler=scaler,
         point_scaler=point_scaler,
         partonic_scaler=partonic_scaler,
+        parent_cfm_scaler=partonic_scaler,
         synthetic_data=(
             bool(data.structured_collator.invisible_store.synthetic)
             if data.structured_collator.invisible_store is not None
@@ -393,7 +560,7 @@ def predict(config, args) -> None:
     L.seed_everything(prediction_seed, workers=True)
     device = _resolve_device(args.device)
     visible = load_visible_config(config)
-    data = build_data(config, visible)
+    data = build_data(config, visible, include_truth=False, device=device)
     data.setup("predict")
     module = load_trained(config, visible, data, args.checkpoint)
 
@@ -451,6 +618,47 @@ def predict(config, args) -> None:
 
     with h5py.File(Path(args.output).expanduser().resolve(), "r+") as output:
         output.attrs["prediction_seed"] = prediction_seed
+
+
+def predict_partonic(config, args) -> None:
+    """Reload a maintained checkpoint and write truth-free parent samples."""
+    import lightning as L
+    import torch
+
+    from joint_event_reconstruction.prediction_partonic import predict_partonic_hdf5
+
+    if not bool(config.model.parent_cfm.enabled):
+        raise ValueError("predict-partonic requires model.parent_cfm.enabled=true")
+    device = _resolve_device(args.device)
+    seed = int(config.inference.seed if args.seed is None else args.seed)
+    samples = int(
+        config.inference.posterior_samples if args.samples is None else args.samples
+    )
+    steps = int(
+        config.model.parent_cfm.sampling_steps if args.steps is None else args.steps
+    )
+    solver = str(
+        config.model.parent_cfm.sampling_solver if args.solver is None else args.solver
+    )
+    torch.set_float32_matmul_precision("high")
+    L.seed_everything(seed, workers=True)
+    visible = load_visible_config(config)
+    data = build_data(config, visible, include_truth=False, device=device)
+    data.setup("predict")
+    module = load_trained(config, visible, data, args.checkpoint)
+    result = predict_partonic_hdf5(
+        module,
+        data,
+        args.output,
+        split=args.split,
+        samples=samples,
+        steps=steps,
+        solver=solver,
+        seed=seed,
+        device=device,
+        checkpoint_path=args.checkpoint,
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
 
 
 def _plot_predictions(
@@ -512,6 +720,10 @@ def build_parser() -> argparse.ArgumentParser:
         default=(),
         help="Components copied exactly from --initial-checkpoint.",
     )
+    train_parser.add_argument(
+        "--resume-from",
+        help="Resume the same run, including optimiser and scheduler state, from a checkpoint.",
+    )
 
     predict_parser = commands.add_parser(
         "predict", help="write a self-describing prediction HDF5"
@@ -525,10 +737,32 @@ def build_parser() -> argparse.ArgumentParser:
     predict_parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
     predict_parser.add_argument("--recurrent-steps", type=int)
 
+    partonic_predict_parser = commands.add_parser(
+        "predict-partonic", help="write truth-free joint top/antitop CFM samples"
+    )
+    _experiment_options(partonic_predict_parser)
+    partonic_predict_parser.add_argument("--checkpoint", required=True)
+    partonic_predict_parser.add_argument("--output", required=True)
+    partonic_predict_parser.add_argument(
+        "--split", choices=("train", "validation", "test"), default="validation"
+    )
+    partonic_predict_parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
+    partonic_predict_parser.add_argument("--samples", type=int)
+    partonic_predict_parser.add_argument("--steps", type=int)
+    partonic_predict_parser.add_argument("--solver", choices=("euler", "heun"))
+    partonic_predict_parser.add_argument("--seed", type=int)
+
     evaluate_parser = commands.add_parser(
         "evaluate", help="evaluate one prediction HDF5; no experiment YAML required"
     )
     evaluate_parser.add_argument("--predictions", required=True)
+
+    evaluate_partonic_parser = commands.add_parser(
+        "evaluate-partonic", help="join parent samples to explicit after-FSR truth"
+    )
+    evaluate_partonic_parser.add_argument("--predictions", required=True)
+    evaluate_partonic_parser.add_argument("--truth", required=True)
+    evaluate_partonic_parser.add_argument("--output")
 
     plot_parser = commands.add_parser(
         "plot", help="render diagnostics for one or more prediction HDF5 files"
@@ -736,6 +970,15 @@ def _main() -> None:
 
         print(json.dumps(evaluate_any_predictions(args.predictions), indent=2, sort_keys=True))
         return
+    if args.command == "evaluate-partonic":
+        from joint_event_reconstruction.prediction_partonic import evaluate_partonic_hdf5
+
+        print(json.dumps(
+            evaluate_partonic_hdf5(args.predictions, args.truth, args.output),
+            indent=2,
+            sort_keys=True,
+        ))
+        return
     if args.command == "plot":
         if args.labels is not None and len(args.labels) != len(args.predictions):
             raise ValueError("--labels must match the number of prediction files")
@@ -759,10 +1002,14 @@ def _main() -> None:
             initial_checkpoint=args.initial_checkpoint,
             initial_components=tuple(args.initial_components),
             public_config_path=args.experiment,
+            resume_from=args.resume_from,
         )
         return
     if args.command == "predict":
         predict(config, args)
+        return
+    if args.command == "predict-partonic":
+        predict_partonic(config, args)
         return
     if args.command == "validate-data":
         validator = _load_repo_script("data/validate_joint_h5.py", "jer_validate_joint_h5")

@@ -384,6 +384,11 @@ def predict_hdf5(
     }[split]()
     iterator = iter(loader)
     sampling_generator = torch.Generator(device=device).manual_seed(int(prediction_seed))
+    visible_truth_available = bool(data.structured_collator.require_truth)
+    invisible_truth_available = data.structured_collator.invisible_store is not None
+    truth_composites_available = (
+        visible_truth_available and invisible_truth_available
+    )
     target = Path(output_path).expanduser().resolve()
     target.parent.mkdir(parents=True, exist_ok=True)
     temporary = target.with_suffix(target.suffix + ".tmp")
@@ -421,6 +426,9 @@ def predict_hdf5(
                     else "untrained"
                 ),
                 "split": split,
+                "visible_truth_available": visible_truth_available,
+                "invisible_truth_available": invisible_truth_available,
+                "truth_composites_available": truth_composites_available,
                 "prediction_seed": int(prediction_seed),
                 "recurrent_steps": -1 if recurrent_steps is None else recurrent_steps,
                 "invisible_formulation": module.hparams.invisible_formulation or "disabled",
@@ -556,12 +564,15 @@ def predict_hdf5(
                 physical_samples = module.event_model.invisible.decode_physical_state(
                     scaled, batch["met_xy"], scaler
                 )["four_vector"]
-                truth_state = module.event_model.invisible.coordinates.encode(
-                    batch["invisible_truth"], batch["met_xy"]
-                )
-                truth_physical = module.event_model.invisible.coordinates.decode_physical(
-                    truth_state, batch["met_xy"]
-                )["four_vector"]
+                truth_available = "invisible_truth" in batch
+                truth_physical = None
+                if truth_available:
+                    truth_state = module.event_model.invisible.coordinates.encode(
+                        batch["invisible_truth"], batch["met_xy"]
+                    )
+                    truth_physical = module.event_model.invisible.coordinates.decode_physical(
+                        truth_state, batch["met_xy"]
+                    )["four_vector"]
                 samples = samples_tensor.cpu().numpy().astype(np.float32)
                 mean = samples.mean(axis=2)
                 std = samples.std(axis=2)
@@ -593,7 +604,11 @@ def predict_hdf5(
                     point_four_vectors = physical_four_vectors_from_momenta(
                         module.event_model.invisible.coordinates, point_momenta
                     )
-                projection = _met_exact_truth_projection(module, batch)
+                projection = (
+                    _met_exact_truth_projection(module, batch)
+                    if truth_available
+                    else None
+                )
                 composites, truth_composites, observed_met = compose_physics(
                     module,
                     batch,
@@ -653,12 +668,15 @@ def predict_hdf5(
                 point_four_vectors = physical_four_vectors_from_momenta(
                     module.event_model.invisible.coordinates, point_momenta
                 )
-                truth_state = module.event_model.invisible.coordinates.encode(
-                    batch["invisible_truth"], batch["met_xy"]
-                )
-                truth_physical = module.event_model.invisible.coordinates.decode_physical(
-                    truth_state, batch["met_xy"]
-                )["four_vector"]
+                truth_available = "invisible_truth" in batch
+                truth_physical = None
+                if truth_available:
+                    truth_state = module.event_model.invisible.coordinates.encode(
+                        batch["invisible_truth"], batch["met_xy"]
+                    )
+                    truth_physical = module.event_model.invisible.coordinates.decode_physical(
+                        truth_state, batch["met_xy"]
+                    )["four_vector"]
                 direct_samples = point_momenta.unsqueeze(2)
                 composites, truth_composites, observed_met = compose_physics(
                     module,
@@ -675,6 +693,12 @@ def predict_hdf5(
                 invisible_group = destination.create_group("INVISIBLE")
                 joint_group = destination.create_group("JOINT")
                 truth_group = destination.create_group("TRUTH")
+                truth_group.attrs["visible_available"] = bool(
+                    destination.attrs["visible_truth_available"]
+                )
+                truth_group.attrs["invisible_available"] = bool(
+                    destination.attrs["invisible_truth_available"]
+                )
                 observed_group = destination.create_group("OBSERVED")
                 datasets = {
                     "event": create_prediction_dataset(destination, "EVENT_ID", (), "<i8"),
@@ -748,18 +772,20 @@ def predict_hdf5(
                         physical_std.shape[1:],
                         "<f4",
                     )
-                    datasets["nu_truth"] = create_prediction_dataset(
-                        truth_group,
-                        "NEUTRINO",
-                        tuple(batch["invisible_truth"].shape[1:]),
-                        "<f4",
-                    )
-                    datasets["truth_four_vector"] = create_prediction_dataset(
-                        truth_group,
-                        "INVISIBLE_FOUR_VECTOR",
-                        tuple(truth_physical.shape[1:]),
-                        "<f4",
-                    )
+                    if "invisible_truth" in batch:
+                        datasets["nu_truth"] = create_prediction_dataset(
+                            truth_group,
+                            "NEUTRINO",
+                            tuple(batch["invisible_truth"].shape[1:]),
+                            "<f4",
+                        )
+                    if truth_physical is not None:
+                        datasets["truth_four_vector"] = create_prediction_dataset(
+                            truth_group,
+                            "INVISIBLE_FOUR_VECTOR",
+                            tuple(truth_physical.shape[1:]),
+                            "<f4",
+                        )
                     if projection is not None:
                         projection_group = truth_group.create_group(
                             "MET_EXACT_PROJECTION"
@@ -794,14 +820,19 @@ def predict_hdf5(
                     ] = nfe * unique_branches * posterior_samples
                     if composites is not None:
                         composite_group = destination.create_group("COMPOSITES")
-                        truth_composite_group = truth_group.create_group("COMPOSITES")
+                        truth_composite_group = (
+                            truth_group.create_group("COMPOSITES")
+                            if bool(destination.attrs["truth_composites_available"])
+                            else None
+                        )
                         for node, values in composites.items():
                             datasets[f"composite/{node}"] = create_prediction_dataset(
                                 composite_group, node, values.shape[1:], "<f4"
                             )
-                            datasets[f"truth_composite/{node}"] = create_prediction_dataset(
-                                truth_composite_group, node, (4,), "<f4"
-                            )
+                            if truth_composite_group is not None:
+                                datasets[f"truth_composite/{node}"] = create_prediction_dataset(
+                                    truth_composite_group, node, (4,), "<f4"
+                                )
                     if observed_met is not None:
                         datasets["observed_met"] = create_prediction_dataset(
                             observed_group, "MET", (4,), "<f4"
@@ -809,14 +840,19 @@ def predict_hdf5(
                 if samples is None:
                     if composites is not None:
                         composite_group = destination.create_group("COMPOSITES")
-                        truth_composite_group = truth_group.create_group("COMPOSITES")
+                        truth_composite_group = (
+                            truth_group.create_group("COMPOSITES")
+                            if bool(destination.attrs["truth_composites_available"])
+                            else None
+                        )
                         for node, values in composites.items():
                             datasets[f"composite/{node}"] = create_prediction_dataset(
                                 composite_group, node, values.shape[1:], "<f4"
                             )
-                            datasets[f"truth_composite/{node}"] = create_prediction_dataset(
-                                truth_composite_group, node, (4,), "<f4"
-                            )
+                            if truth_composite_group is not None:
+                                datasets[f"truth_composite/{node}"] = create_prediction_dataset(
+                                    truth_composite_group, node, (4,), "<f4"
+                                )
                     if observed_met is not None:
                         datasets["observed_met"] = create_prediction_dataset(
                             observed_group, "MET", (4,), "<f4"
@@ -830,10 +866,11 @@ def predict_hdf5(
                     )
                     invisible_group.attrs["point_estimator"] = str(point_estimator)
                     invisible_group.attrs["point_output_rule"] = str(point_estimator)
-                    if samples is None:
+                    if samples is None and "invisible_truth" in batch:
                         datasets["nu_truth"] = create_prediction_dataset(
                             truth_group, "NEUTRINO", tuple(batch["invisible_truth"].shape[1:]), "<f4"
                         )
+                    if samples is None and truth_physical is not None:
                         datasets["truth_four_vector"] = create_prediction_dataset(
                             truth_group, "INVISIBLE_FOUR_VECTOR", tuple(truth_physical.shape[1:]), "<f4"
                         )
@@ -946,14 +983,16 @@ def predict_hdf5(
                 )
                 _append(datasets["four_vector_mean"], physical_mean)
                 _append(datasets["four_vector_std"], physical_std)
-                _append(
-                    datasets["nu_truth"],
-                    batch["invisible_truth"].cpu().numpy().astype(np.float32),
-                )
-                _append(
-                    datasets["truth_four_vector"],
-                    truth_physical.cpu().numpy().astype(np.float32),
-                )
+                if "nu_truth" in datasets:
+                    _append(
+                        datasets["nu_truth"],
+                        batch["invisible_truth"].cpu().numpy().astype(np.float32),
+                    )
+                if "truth_four_vector" in datasets:
+                    _append(
+                        datasets["truth_four_vector"],
+                        truth_physical.cpu().numpy().astype(np.float32),
+                    )
                 if projection is not None:
                     _append(
                         datasets["projected_truth"],
@@ -977,9 +1016,10 @@ def predict_hdf5(
                 if composites is not None:
                     for node, values in composites.items():
                         _append(datasets[f"composite/{node}"], values)
-                        _append(
-                            datasets[f"truth_composite/{node}"], truth_composites[node]
-                        )
+                        if f"truth_composite/{node}" in datasets:
+                            _append(
+                                datasets[f"truth_composite/{node}"], truth_composites[node]
+                            )
                 if observed_met is not None:
                     _append(datasets["observed_met"], observed_met)
             if point_momenta is not None:
@@ -987,10 +1027,11 @@ def predict_hdf5(
                     if composites is not None:
                         for node, values in composites.items():
                             _append(datasets[f"composite/{node}"], values)
-                            _append(
-                                datasets[f"truth_composite/{node}"],
-                                truth_composites[node],
-                            )
+                            if f"truth_composite/{node}" in datasets:
+                                _append(
+                                    datasets[f"truth_composite/{node}"],
+                                    truth_composites[node],
+                                )
                     if observed_met is not None:
                         _append(datasets["observed_met"], observed_met)
                 _append(
@@ -1001,11 +1042,12 @@ def predict_hdf5(
                     datasets["point_four_vectors"],
                     point_four_vectors.cpu().numpy().astype(np.float32),
                 )
-                if samples is None:
+                if samples is None and "nu_truth" in datasets:
                     _append(
                         datasets["nu_truth"],
                         batch["invisible_truth"].cpu().numpy().astype(np.float32),
                     )
+                if samples is None and "truth_four_vector" in datasets:
                     _append(
                         datasets["truth_four_vector"],
                         truth_physical.cpu().numpy().astype(np.float32),

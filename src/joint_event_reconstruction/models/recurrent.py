@@ -25,8 +25,23 @@ class RecurrentReasoner(nn.Module):
         self.shared_block = nn.TransformerEncoder(layer, num_layers=block_layers)
         self.output_norm = nn.LayerNorm(d_model)
 
-    def initialise(self, pooled: torch.Tensor, visible: torch.Tensor) -> torch.Tensor:
+    def initialise(
+        self,
+        pooled: torch.Tensor,
+        visible: torch.Tensor,
+        node_context: dict[str, torch.Tensor] | None = None,
+    ) -> torch.Tensor:
         topology = self.topology_tokens.unsqueeze(0).expand(len(visible), -1, -1)
+        if node_context is not None:
+            query_state = torch.stack(
+                [node_context[name] for name in self.spec.recurrent_tokens], dim=1
+            )
+            if query_state.shape != topology.shape:
+                raise ValueError(
+                    "Compiled topology-query states do not match recurrent topology tokens: "
+                    f"query={tuple(query_state.shape)}, recurrent={tuple(topology.shape)}"
+                )
+            topology = topology + query_state
         return torch.cat((pooled.unsqueeze(1), visible, topology), dim=1)
 
     def mask(self, padding_mask: torch.Tensor) -> torch.Tensor:

@@ -163,14 +163,14 @@ def _variant(base_path: Path, overrides: list[str]):
     return load_public_experiment(base_path, overrides=overrides)
 
 
-def _run_full_checks(base_path: Path) -> dict:
+def _run_full_checks(base_path: Path, overrides: list[str] | None = None) -> dict:
     common = [
         "data.events.train=4",
         "data.events.validation=2",
         "data.events.test=2",
         "training.batch_size=2",
     ]
-    config = _variant(base_path, common)
+    config = _variant(base_path, common + (overrides or []))
     data, batch, module = _batch_and_module(config)
     module.train()
     output = module(batch)
@@ -292,8 +292,11 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--experiment", required=True)
     parser.add_argument("--output", required=True)
+    parser.add_argument("--set", dest="overrides", action="append", default=[])
     args = parser.parse_args()
-    result = _run_full_checks(Path(args.experiment).expanduser().resolve())
+    result = _run_full_checks(
+        Path(args.experiment).expanduser().resolve(), args.overrides
+    )
     output = Path(args.output).expanduser().resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")

@@ -32,6 +32,99 @@ from joint_event_reconstruction.topology.compiler import load_topology
 logger = logging.getLogger(__name__)
 
 
+class VisibleTruthStore:
+    """Event-ID joined visible labels kept outside the measured-input cache."""
+
+    def __init__(self, path: str | Path, source_names: tuple[str, ...]):
+        self.path = Path(path).expanduser().resolve()
+        self.source_names = tuple(str(name) for name in source_names)
+        if not self.path.is_file():
+            raise FileNotFoundError(f"Visible truth sidecar does not exist: {self.path}")
+        with h5py.File(self.path, "r") as source:
+            if "EVENT_ID" not in source or "LABELS" not in source:
+                raise KeyError(f"{self.path} must contain EVENT_ID and LABELS/<source>")
+            event_ids = np.asarray(source["EVENT_ID"][:])
+            if event_ids.ndim != 1 or not np.issubdtype(event_ids.dtype, np.integer):
+                raise TypeError(f"{self.path}: EVENT_ID must be a one-dimensional integer array")
+            labels = {}
+            for name in self.source_names:
+                path_name = f"LABELS/{name}"
+                if path_name not in source:
+                    raise KeyError(f"{self.path}: missing {path_name}")
+                values = np.asarray(source[path_name][:])
+                if values.ndim != 2 or values.shape[0] != len(event_ids):
+                    raise ValueError(
+                        f"{self.path}:{path_name} must have shape [events,objects], "
+                        f"found {values.shape}"
+                    )
+                if not np.issubdtype(values.dtype, np.number):
+                    raise TypeError(f"{self.path}:{path_name} must be numeric")
+                finite = np.isfinite(values)
+                if finite.any() and (
+                    not np.equal(values[finite], np.rint(values[finite])).all()
+                    or not np.isin(values[finite], (0, 1, 2)).all()
+                ):
+                    raise ValueError(
+                        f"{self.path}:{path_name} contains invalid raw labels; "
+                        "expected integer labels 0, 1, 2 or NaN padding"
+                    )
+                labels[name] = values.astype(np.float32, copy=False)
+            support_path = "SUPPORT/VISIBLE_ASSIGNMENT_RECONSTRUCTABLE"
+            if support_path not in source:
+                raise KeyError(f"{self.path}: missing {support_path}")
+            support = np.asarray(source[support_path][:])
+            if support.shape != (len(event_ids),) or support.dtype != np.bool_:
+                raise TypeError(
+                    f"{self.path}:{support_path} must be boolean [{len(event_ids)}]"
+                )
+            metadata = {}
+            for key in (
+                "source_manifest_sha256",
+                "split_membership_sha256",
+                "split_version",
+                "adapter_version",
+                "source_path",
+                "max_jets",
+            ):
+                value = source.attrs.get(key)
+                if isinstance(value, bytes):
+                    value = value.decode("utf-8")
+                if value is not None:
+                    metadata[key] = str(value)
+        if len(np.unique(event_ids)) != len(event_ids):
+            raise ValueError(f"{self.path}: EVENT_ID contains duplicates")
+        order = np.argsort(event_ids)
+        self.event_ids = event_ids[order].astype(np.int64, copy=False)
+        self.labels = {name: values[order] for name, values in labels.items()}
+        self.support = support[order]
+        stat = self.path.stat()
+        self.metadata = {
+            "path": str(self.path),
+            "size_bytes": int(stat.st_size),
+            "mtime_ns": int(stat.st_mtime_ns),
+            "source_names": list(self.source_names),
+            **metadata,
+        }
+
+    def lookup(self, event_ids: torch.Tensor | np.ndarray):
+        requested = np.asarray(
+            event_ids.detach().cpu() if torch.is_tensor(event_ids) else event_ids,
+            dtype=np.int64,
+        )
+        positions = np.searchsorted(self.event_ids, requested)
+        valid = positions < len(self.event_ids)
+        valid &= self.event_ids[np.minimum(positions, len(self.event_ids) - 1)] == requested
+        if not valid.all():
+            raise KeyError(
+                f"Visible truth sidecar {self.path} is missing EVENT_ID values "
+                f"{requested[~valid][:10].tolist()}"
+            )
+        return (
+            {name: torch.from_numpy(values[positions].copy()) for name, values in self.labels.items()},
+            torch.from_numpy(self.support[positions].copy()),
+        )
+
+
 class StructuredCollator:
     """Attach topology-derived candidate/assignment tensors to a fixed token layout."""
 
@@ -43,6 +136,7 @@ class StructuredCollator:
         truth_bindings: dict | None = None,
         build_assignments: bool = False,
         max_assignment_states: int | None = None,
+        require_truth: bool = True,
     ):
         self.topology_path = str(Path(topology_path).expanduser().resolve())
         self.source_type_ids = dict(source_type_ids)
@@ -51,12 +145,14 @@ class StructuredCollator:
         self.max_assignment_states = (
             None if max_assignment_states is None else int(max_assignment_states)
         )
+        self.require_truth = bool(require_truth)
         if self.max_assignment_states is not None and self.max_assignment_states <= 0:
             raise ValueError("max_assignment_states must be positive or null")
         self._spec = None
         self._templates = None
         self._assignment_template = None
         self._type_layout = None
+        self.visible_store = None
         self.invisible_store = None
         self.invisible_scaler = None
         self.point_scaler = None
@@ -115,43 +211,86 @@ class StructuredCollator:
             )
 
     def __call__(self, items: list[dict]) -> dict:
-        batch = _collate_transformer(items)
-        if "reco_raw_labels" not in batch:
-            raise ValueError(
-                "Structured reconstruction requires raw visible reconstruction labels"
-            )
+        # PyTorch calls Dataset.__getitems__ for batched map-style retrieval.
+        # The cached dataset returns a tensor dictionary directly; uncached
+        # compatibility datasets still pass a list of per-event examples.
+        batch = items if isinstance(items, dict) else _collate_transformer(items)
         type_ids = batch["type_ids"]
         padding = batch["padding_mask"]
-        raw = batch["reco_raw_labels"]
+        raw = batch.get("reco_raw_labels")
         self._validate_static_layout(type_ids)
+        visible_assignment_support = None
+        if raw is None and self.visible_store is not None:
+            source_labels, visible_assignment_support = self.visible_store.lookup(
+                batch["event_index"]
+            )
+            raw = torch.full(
+                type_ids.shape,
+                float("nan"),
+                dtype=torch.float32,
+                device=type_ids.device,
+            )
+            for source_name, values in source_labels.items():
+                if source_name not in self.source_type_ids:
+                    raise KeyError(
+                        f"Visible truth source {source_name!r} has no input source type"
+                    )
+                positions = (
+                    self._type_layout == self.source_type_ids[source_name]
+                ).nonzero(as_tuple=False).flatten().to(type_ids.device)
+                if values.shape[1] != len(positions):
+                    raise ValueError(
+                        "Visible truth and measured token widths differ: "
+                        f"source={source_name}, truth={values.shape[1]}, "
+                        f"tokens={len(positions)}, sidecar={self.visible_store.path}"
+                    )
+                raw[:, positions] = values.to(device=raw.device)
+        if raw is None and self.require_truth:
+            raise ValueError(
+                "Structured reconstruction requires raw visible labels or a validated "
+                "visible-truth sidecar"
+            )
 
-        batch_size = len(items)
+        batch_size = len(batch["tokens"])
         truth_by_node = {}
         pools = {}
         for node_name in self.spec.dag_order:
             template = self._templates[node_name]
             ownership = template["leaf_ownership"]
-            candidate_mask = ~(
-                padding.unsqueeze(1) & ownership.unsqueeze(0)
-            ).any(dim=2)
-            candidate_truth = torch.ones(
-                (batch_size, len(ownership)), dtype=torch.bool
+            ownership_edges = template["ownership_edges"].to(device=padding.device)
+            blocked = torch.zeros(
+                (batch_size, len(ownership)), dtype=torch.int32, device=padding.device
             )
-            for role in self.spec.nodes[node_name].leaf_roles:
-                if role.invisible:
-                    continue
-                indices = template["leaf_indices"][role.key]
-                values = raw[:, indices.reshape(-1)].reshape(
-                    batch_size, len(indices), role.multiplicity
+            if ownership_edges.numel():
+                candidate_indices = ownership_edges[:, 0]
+                token_indices = ownership_edges[:, 1]
+                padded_owned = padding[:, token_indices].to(dtype=torch.int32)
+                blocked.scatter_add_(
+                    1,
+                    candidate_indices.unsqueeze(0).expand(batch_size, -1),
+                    padded_owned,
                 )
-                expected = template["truth_values"][role.key].to(dtype=values.dtype)
-                candidate_truth &= (
-                    values.sort(dim=2).values == expected
-                ).all(dim=2)
-            for role in self.spec.nodes[node_name].composite_roles:
-                candidate_truth &= truth_by_node[role.child][
-                    :, template["child_indices"][role.key]
-                ]
+            candidate_mask = blocked == 0
+            candidate_truth = torch.zeros(
+                (batch_size, len(ownership)), dtype=torch.bool, device=padding.device
+            )
+            if raw is not None:
+                candidate_truth.fill_(True)
+                for role in self.spec.nodes[node_name].leaf_roles:
+                    if role.invisible:
+                        continue
+                    indices = template["leaf_indices"][role.key]
+                    values = raw[:, indices.reshape(-1)].reshape(
+                        batch_size, len(indices), role.multiplicity
+                    )
+                    expected = template["truth_values"][role.key].to(dtype=values.dtype)
+                    candidate_truth &= (
+                        values.sort(dim=2).values == expected
+                    ).all(dim=2)
+                for role in self.spec.nodes[node_name].composite_roles:
+                    candidate_truth &= truth_by_node[role.child][
+                        :, template["child_indices"][role.key]
+                    ]
             candidate_truth &= candidate_mask
             truth_count = candidate_truth.sum(dim=1)
             if (truth_count > 1).any():
@@ -171,12 +310,36 @@ class StructuredCollator:
             pools[node_name] = {
                 "candidate_mask": candidate_mask,
                 "leaf_ownership": ownership,
+                "ownership_edges": ownership_edges,
                 "leaf_indices": template["leaf_indices"],
                 "child_indices": template["child_indices"],
                 "truth_index": truth_index,
                 "reconstructable": reconstructable,
             }
         structured = {"pools": pools}
+        if visible_assignment_support is not None:
+            roots = self.spec.roots
+            if set(roots) != {"top", "antitop"}:
+                raise ValueError(
+                    "Charge-side visible support requires top and antitop roots; "
+                    f"found {roots}"
+                )
+            computed_support = (
+                pools["top"]["reconstructable"]
+                & pools["antitop"]["reconstructable"]
+            )
+            observed_support = visible_assignment_support.to(computed_support.device)
+            mismatch_mask = computed_support != observed_support
+            if mismatch_mask.any():
+                mismatch = int(mismatch_mask.nonzero(as_tuple=False)[0])
+                raise ValueError(
+                    "Visible assignment support disagrees with sidecar labels: "
+                    f"EVENT_ID={int(batch['event_index'][mismatch])}, "
+                    f"computed={bool(computed_support[mismatch])}, "
+                    f"sidecar={bool(observed_support[mismatch])}, "
+                    f"truth={self.visible_store.path}"
+                )
+            batch["visible_assignment_support"] = observed_support
         if self._assignment_template is not None:
             structured["assignments"] = self._assignment_template.batch(pools)
         batch["structured"] = structured
@@ -259,6 +422,7 @@ class StructuredCollator:
                     ] = True
             templates[node_name] = {
                 "leaf_ownership": ownership,
+                "ownership_edges": ownership.nonzero(as_tuple=False),
                 "leaf_indices": leaf_indices,
                 "truth_values": truth_values,
                 "child_indices": child_indices,
@@ -266,20 +430,11 @@ class StructuredCollator:
 
         assignment_template = None
         if self.build_assignments:
-            assignment_template = build_assignment_template(self.spec, records)
-            if (
-                self.max_assignment_states is not None
-                and assignment_template.state_count > self.max_assignment_states
-            ):
-                root_sizes = {root: len(records[root]) for root in self.spec.roots}
-                raise RuntimeError(
-                    "Complete assignment state space is too large for configured "
-                    "DFM/joint flow: "
-                    f"states={assignment_template.state_count}, "
-                    f"max_states={self.max_assignment_states}, roots={root_sizes}, "
-                    f"topology={self.topology_path}. Increase "
-                    "data.max_assignment_states only after checking memory scaling."
-                )
+            assignment_template = build_assignment_template(
+                self.spec,
+                records,
+                max_states=self.max_assignment_states,
+            )
         return templates, assignment_template
 
 
@@ -295,19 +450,37 @@ class StructuredCachedDataset(Dataset):
 
     def __getitem__(self, item):
         position = int(self.positions[item])
-        return {
+        result = {
             "tokens": self.payload["tokens"][position],
             "type_ids": self.payload["type_ids"][position],
             "padding_mask": self.payload["padding_mask"][position],
             "labels": self.payload["labels"][position],
             "event_index": self.payload.get("event_id", self.payload["indices"])[position],
-            "reco_raw_labels": self.payload["reco_raw_labels"][position],
             "reco_source_ids": self.payload["type_ids"][position].to(torch.int8),
             "physics_vectors": self.payload["physics_vectors"][position],
         }
+        if "reco_raw_labels" in self.payload:
+            result["reco_raw_labels"] = self.payload["reco_raw_labels"][position]
+        return result
 
     def __getitems__(self, items):
-        return [self[item] for item in items]
+        positions = torch.as_tensor(
+            self.positions[np.asarray(items, dtype=np.int64)], dtype=torch.long
+        )
+        event_source = self.payload.get("event_id", self.payload["indices"])
+        type_ids = self.payload["type_ids"].index_select(0, positions)
+        result = {
+            "tokens": self.payload["tokens"].index_select(0, positions),
+            "type_ids": type_ids,
+            "padding_mask": self.payload["padding_mask"].index_select(0, positions),
+            "labels": self.payload["labels"].index_select(0, positions),
+            "event_index": event_source.index_select(0, positions),
+            "reco_source_ids": type_ids.to(torch.int8),
+            "physics_vectors": self.payload["physics_vectors"].index_select(0, positions),
+        }
+        if "reco_raw_labels" in self.payload:
+            result["reco_raw_labels"] = self.payload["reco_raw_labels"].index_select(0, positions)
+        return result
 
 
 class StructuredDataModule(TransformerDataModule):
@@ -332,6 +505,8 @@ class StructuredDataModule(TransformerDataModule):
         max_assignment_states: int | None = None,
         coordinates_config=None,
         mass_shell_config=None,
+        require_truth: bool = True,
+        visible_truth_path: str | Path | None = None,
     ):
         self.tensor_cache = (
             None if tensor_cache is None else Path(tensor_cache).expanduser().resolve()
@@ -343,8 +518,14 @@ class StructuredDataModule(TransformerDataModule):
             truth_bindings=truth_bindings,
             build_assignments=build_assignments,
             max_assignment_states=max_assignment_states,
+            require_truth=require_truth,
         )
         self.invisible_path = invisible_path
+        self.visible_truth_path = (
+            None
+            if visible_truth_path is None
+            else Path(visible_truth_path).expanduser().resolve()
+        )
         self.point_enabled = bool(point_enabled)
         self.parent_path = parent_path
         self.parent_roles = tuple(str(role) for role in parent_roles)
@@ -362,6 +543,7 @@ class StructuredDataModule(TransformerDataModule):
         self.allow_synthetic = allow_synthetic
         self.max_events = max_events
         self.subset_seed = subset_seed
+        self.partonic_scaler_fit_metadata = None
         self.invisible_scaler = None
         self.point_scaler = None
         self.parent_store = None
@@ -427,8 +609,10 @@ class StructuredDataModule(TransformerDataModule):
         )
         required_payload = {
             "indices", "tokens", "type_ids", "padding_mask", "labels",
-            "reco_raw_labels", "physics_vectors",
+            "physics_vectors", "event_id",
         }
+        if self.reconstruction_enabled:
+            required_payload.add("reco_raw_labels")
         missing_payload = sorted(required_payload - set(payload))
         if missing_payload:
             raise ValueError(
@@ -442,6 +626,25 @@ class StructuredDataModule(TransformerDataModule):
                 "Explicit tensor cache event indices do not equal the stable "
                 "selected split: "
                 f"cache={len(payload_indices)}, selected={len(selected)}"
+            )
+        payload_event_ids = torch.as_tensor(payload["event_id"]).cpu().numpy()
+        if payload_event_ids.ndim != 1 or len(payload_event_ids) != len(selected):
+            raise ValueError(
+                "Explicit tensor cache EVENT_ID has invalid shape: "
+                f"expected=({len(selected)},), observed={payload_event_ids.shape}"
+            )
+        with h5py.File(self.h5_path, "r") as source:
+            if "EVENT_ID" not in source:
+                raise KeyError(
+                    f"Explicit tensor cache requires canonical EVENT_ID values: {self.h5_path}"
+                )
+            canonical_event_ids = np.asarray(source["EVENT_ID"][selected])
+        if not np.array_equal(payload_event_ids, canonical_event_ids):
+            mismatch = int(np.flatnonzero(payload_event_ids != canonical_event_ids)[0])
+            raise ValueError(
+                "Explicit tensor cache EVENT_ID mapping differs from its canonical input: "
+                f"cache_row={mismatch}, cache_event_id={int(payload_event_ids[mismatch])}, "
+                f"canonical_event_id={int(canonical_event_ids[mismatch])}, input={self.h5_path}"
             )
         expected_shape = (len(selected), self._configured_total_tokens())
         vectors = payload["physics_vectors"]
@@ -511,6 +714,11 @@ class StructuredDataModule(TransformerDataModule):
             dataset = getattr(self, f"{loader_name}_dataset")
             count = None if self.max_events is None else self.max_events.get(loader_name)
             positions = np.arange(len(dataset), dtype=np.int64)
+            if count is not None and int(count) > len(positions):
+                raise ValueError(
+                    f"Configured data.max_events.{loader_name}={int(count)} exceeds "
+                    f"the frozen {split_name} population of {len(positions)} events"
+                )
             if count is not None and int(count) < len(positions):
                 event_ids = self._selected_ids(split_name, positions)
                 positions = deterministic_subset_positions(
@@ -531,6 +739,30 @@ class StructuredDataModule(TransformerDataModule):
         self.parent_store = parent_store
         self.structured_collator.parent_store = parent_store
 
+        visible_store = None
+        if self.visible_truth_path is not None and self.structured_collator.require_truth:
+            source_names = tuple(
+                sorted({role.source for role in self.structured_collator.spec.visible_leaf_roles})
+            )
+            visible_store = VisibleTruthStore(self.visible_truth_path, source_names)
+            source_contract = (self.split_metadata or {}).get("source_contract", {})
+            for key in (
+                "source_manifest_sha256",
+                "split_membership_sha256",
+                "split_version",
+                "max_jets",
+            ):
+                expected = source_contract.get(key)
+                observed = visible_store.metadata.get(key)
+                if expected is not None and expected != observed:
+                    raise ValueError(
+                        "Visible truth sidecar does not match measured-event source/split: "
+                        f"key={key}, input={expected!r}, truth={observed!r}, "
+                        f"input={self.h5_path}, truth={visible_store.path}"
+                    )
+        self.visible_store = visible_store
+        self.structured_collator.visible_store = visible_store
+
         partonic_store = None
         if self.partonic_path is not None:
             partonic_store = PartonicTruthStore(
@@ -538,19 +770,53 @@ class StructuredDataModule(TransformerDataModule):
                 self.partonic_roles,
                 self.partonic_truth_bindings,
             )
+            if partonic_store.metadata.get("partonic_truth_definition") not in (
+                None,
+                "partonic_after_fsr",
+            ):
+                raise ValueError(
+                    "Partonic CFM requires genuine partonic_after_fsr parent targets; "
+                    f"{partonic_store.path} declares "
+                    f"{partonic_store.metadata['partonic_truth_definition']!r}"
+                )
+            source_contract = (self.split_metadata or {}).get("source_contract", {})
+            for key in (
+                "source_manifest_sha256",
+                "split_membership_sha256",
+                "split_version",
+                "max_jets",
+            ):
+                expected = source_contract.get(key)
+                observed = partonic_store.metadata.get(key)
+                if expected is not None and expected != observed:
+                    raise ValueError(
+                        "Partonic truth sidecar does not match measured-event source/split: "
+                        f"key={key}, input={expected!r}, truth={observed!r}, "
+                        f"input={self.h5_path}, truth={partonic_store.path}"
+                    )
             if partonic_store.synthetic:
                 scaler_ids = self._selected_ids("train", selected_positions["train"])
+                scaler_population = "selected_train_subset"
             else:
                 full_train = np.arange(len(self.split_indices["train"]), dtype=np.int64)
                 scaler_ids = self._selected_ids("train", full_train)
+                scaler_population = "frozen_train_split"
             train_values, train_support = partonic_store.lookup(scaler_ids)
             self.partonic_scaler = PartonicScaler.fit(
                 train_values,
                 train_support,
                 self.partonic_roles,
             )
+            from joint_event_reconstruction.m0.data.splits import index_hash
+
+            self.partonic_scaler_fit_metadata = {
+                "population": scaler_population,
+                "event_id_hash": index_hash(np.sort(np.asarray(scaler_ids, dtype=np.int64))),
+                "event_count": int(len(scaler_ids)),
+            }
         else:
             self.partonic_scaler = None
+            self.partonic_scaler_fit_metadata = None
         self.partonic_store = partonic_store
         self.structured_collator.partonic_store = partonic_store
         self.structured_collator.partonic_scaler = self.partonic_scaler

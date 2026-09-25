@@ -2,12 +2,12 @@ site:
   name: csf3
 
 paths:
-  project_root: /net/scratch/w00238tl/JointEventReconstruction
-  data_root: /net/scratch/w00238tl/JointEventReconstruction/data
-  cache_root: /net/scratch/w00238tl/JointEventReconstruction/cache
-  results_root: /net/scratch/w00238tl/JointEventReconstruction/results
-  logs_root: /net/scratch/w00238tl/JointEventReconstruction/logs
-  runtime_root: /net/scratch/w00238tl/JointEventReconstruction/runtime
+  project_root: /net/scratch/w00238tl/JointEventReconstruction_topology_queries
+  data_root: /net/scratch/w00238tl/datasets/ttbar2L/combined_partonic_afterFSR_v1
+  cache_root: /net/scratch/w00238tl/JointEventReconstruction_topology_queries/cache
+  results_root: /net/scratch/w00238tl/JointEventReconstruction_topology_queries/results
+  logs_root: /net/scratch/w00238tl/JointEventReconstruction_topology_queries/logs
+  runtime_root: /net/scratch/w00238tl/JointEventReconstruction_topology_queries/runtime
 
 slurm:
   gpu_partition: gpuL

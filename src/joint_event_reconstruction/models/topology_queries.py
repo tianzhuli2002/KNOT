@@ -10,9 +10,41 @@ parameterisation.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 
 import torch
 from torch import nn
+
+
+@dataclass(frozen=True)
+class TopologyQueryState:
+    """Stable output contract for the one shared topology-query pass."""
+
+    query_states: torch.Tensor
+    global_context: torch.Tensor
+    query_summary: torch.Tensor
+    node_query_indices: tuple[tuple[str, int], ...]
+    node_contexts: dict[str, torch.Tensor]
+    invisible_role_names: tuple[str, ...]
+    invisible_query_indices: tuple[int, ...]
+    invisible_contexts: torch.Tensor
+    parent_role_names: tuple[str, ...]
+    parent_query_indices: tuple[int, ...]
+    parent_contexts: torch.Tensor
+    role_names: tuple[str, ...]
+    topology_identity: str
+
+    # Keep the old string-key access for the existing direct-head experiment.
+    def __getitem__(self, name: str):
+        aliases = {
+            "states": self.query_states,
+            "summary": self.query_summary,
+            "context": self.global_context,
+            "roles": self.role_names,
+        }
+        if name in aliases:
+            return aliases[name]
+        raise KeyError(name)
 
 
 def _normalise_role(entry: Mapping[str, object]) -> dict[str, object]:
@@ -46,6 +78,10 @@ class TopologyQueryBlock(nn.Module):
         layers: int = 1,
         dropout: float = 0.0,
         relation_edges: Sequence[tuple[int, int]] = (),
+        required_node_names: Sequence[str] = (),
+        invisible_role_names: Sequence[str] = (),
+        invisible_role_nodes: Sequence[str] = (),
+        topology_identity: str = "",
     ) -> None:
         super().__init__()
         if d_model <= 0 or n_heads <= 0 or d_model % n_heads:
@@ -67,6 +103,44 @@ class TopologyQueryBlock(nn.Module):
         self.n_heads = int(n_heads)
         self.query_roles = normalised
         self.query_names = names
+        node_entries = tuple(
+            (str(role["node"]), index)
+            for index, role in enumerate(normalised)
+            if role["node"] is not None
+        )
+        node_names = tuple(name for name, _ in node_entries)
+        if len(set(node_names)) != len(node_names):
+            raise ValueError(f"Each compiled node may map to only one query: {node_entries}")
+        missing_nodes = sorted(set(str(value) for value in required_node_names) - set(node_names))
+        if missing_nodes:
+            raise ValueError(
+                "Topology-query mode requires one query for every compiled node; "
+                f"missing={missing_nodes}"
+            )
+        invisible_names = tuple(str(value) for value in invisible_role_names)
+        invisible_nodes = tuple(str(value) for value in invisible_role_nodes)
+        if len(invisible_names) != len(invisible_nodes):
+            raise ValueError("Invisible query roles and compiled nodes must have equal lengths")
+        if len(set(invisible_names)) != len(invisible_names):
+            raise ValueError("Invisible role names must be unique")
+        node_to_query = dict(node_entries)
+        absent_invisible_nodes = sorted(set(invisible_nodes) - set(node_to_query))
+        if absent_invisible_nodes:
+            raise ValueError(
+                "Invisible roles require queries for their compiled decay nodes; "
+                f"missing={absent_invisible_nodes}"
+            )
+        self.node_query_indices = node_entries
+        self.invisible_role_names = invisible_names
+        self.invisible_query_indices = tuple(node_to_query[node] for node in invisible_nodes)
+        parent_entries = tuple(
+            (str(role["name"]), index)
+            for index, role in enumerate(normalised)
+            if str(role["kind"]) == "parent"
+        )
+        self.parent_role_names = tuple(name for name, _ in parent_entries)
+        self.parent_query_indices = tuple(index for _, index in parent_entries)
+        self.topology_identity = str(topology_identity)
         self.interaction = interaction
         self.layers = int(layers)
         self.role_embedding = nn.Parameter(torch.empty(len(names), d_model))
@@ -90,6 +164,17 @@ class TopologyQueryBlock(nn.Module):
         )
         self.summary = nn.Sequential(nn.LayerNorm(d_model), nn.Linear(d_model, d_model))
         self.event_context = nn.Sequential(nn.LayerNorm(d_model), nn.Linear(d_model, d_model))
+        if len(invisible_names):
+            self.invisible_projection = nn.Sequential(
+                nn.LayerNorm(d_model), nn.Linear(d_model, d_model)
+            )
+            self.invisible_role_embedding = nn.Parameter(
+                torch.empty(len(invisible_names), d_model)
+            )
+            nn.init.normal_(self.invisible_role_embedding, mean=0.0, std=0.02)
+        else:
+            self.invisible_projection = None
+            self.register_parameter("invisible_role_embedding", None)
         self.register_buffer(
             "kind_indices",
             torch.tensor([kind_index[str(role["kind"])] for role in normalised], dtype=torch.long),
@@ -162,23 +247,49 @@ class TopologyQueryBlock(nn.Module):
         query = self.role_embedding.unsqueeze(0).expand(len(pooled), -1, -1)
         query = query + self.kind_embedding(self.kind_indices).unsqueeze(0)
         query_delta, _ = self.event_query(
-            query, event, event, key_padding_mask=event_padding
+            query, event, event, key_padding_mask=event_padding, need_weights=False
         )
         query = self.query_norm[0](query + query_delta)
         for attention, norm, ffn in zip(
             self.query_attention, self.query_norm[1:], self.query_ffn, strict=True
         ):
-            delta, _ = attention(query, query, query, attn_mask=self.query_attention_mask)
+            delta, _ = attention(
+                query, query, query, attn_mask=self.query_attention_mask,
+                need_weights=False,
+            )
             query = norm(query + delta)
             query = query + ffn(query)
         summary = query.mean(dim=1)
         context = pooled + self.event_context(summary)
-        return {
-            "states": query,
-            "summary": self.summary(summary),
-            "context": context,
-            "roles": self.query_names,
+        node_contexts = {
+            name: query[:, index] for name, index in self.node_query_indices
         }
+        if self.invisible_query_indices:
+            assert self.invisible_projection is not None
+            invisible_source = query[:, self.invisible_query_indices]
+            invisible_contexts = self.invisible_projection(invisible_source)
+            invisible_contexts = invisible_contexts + self.invisible_role_embedding.unsqueeze(0)
+        else:
+            invisible_contexts = query.new_empty((len(query), 0, self.d_model))
+        if self.parent_query_indices:
+            parent_contexts = query[:, self.parent_query_indices]
+        else:
+            parent_contexts = query.new_empty((len(query), 0, self.d_model))
+        return TopologyQueryState(
+            query_states=query,
+            global_context=context,
+            query_summary=self.summary(summary),
+            node_query_indices=self.node_query_indices,
+            node_contexts=node_contexts,
+            invisible_role_names=self.invisible_role_names,
+            invisible_query_indices=self.invisible_query_indices,
+            invisible_contexts=invisible_contexts,
+            parent_role_names=self.parent_role_names,
+            parent_query_indices=self.parent_query_indices,
+            parent_contexts=parent_contexts,
+            role_names=self.query_names,
+            topology_identity=self.topology_identity,
+        )
 
 
-__all__ = ["TopologyQueryBlock"]
+__all__ = ["TopologyQueryBlock", "TopologyQueryState"]

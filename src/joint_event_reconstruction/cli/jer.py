@@ -33,7 +33,9 @@ from joint_event_reconstruction.studies import (
 _LEGACY_COMMANDS = {
     "train",
     "predict",
+    "predict-partonic",
     "evaluate",
+    "evaluate-partonic",
     "plot",
     "validate-data",
     "show-config",

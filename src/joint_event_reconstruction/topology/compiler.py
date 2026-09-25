@@ -62,11 +62,22 @@ def _leaf(
             f"data={binding['source']}"
         )
     raw_index = binding["index"]
-    if isinstance(raw_index, bool) or not isinstance(raw_index, int):
+    if source == "NEUTRINO":
+        # ``null`` is an explicit statement that the topology role exists but
+        # this dataset has no verified truth binding for it. It is not a
+        # fabricated zero neutrino and cannot be used as supervised truth.
+        if raw_index is not None and (
+            isinstance(raw_index, bool)
+            or not isinstance(raw_index, int)
+            or raw_index < 0
+        ):
+            raise ValueError(
+                f"Truth binding {truth_name!r} invisible index must be a non-negative "
+                "integer or explicit null"
+            )
+    elif isinstance(raw_index, bool) or not isinstance(raw_index, int):
         raise ValueError(f"Truth binding {truth_name!r} index must be an integer")
-    if source == "NEUTRINO" and raw_index < 0:
-        raise ValueError(f"Truth binding {truth_name!r} invisible index must be non-negative")
-    if source != "NEUTRINO" and raw_index <= 0:
+    elif raw_index <= 0:
         raise ValueError(
             f"Truth binding {truth_name!r} visible label must be positive; zero is unassigned"
         )
