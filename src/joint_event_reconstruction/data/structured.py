@@ -348,8 +348,14 @@ class StructuredCollator:
         elif self.invisible_store is not None:
             raise KeyError("Invisible truth collation requires physical MET vectors")
         if self.invisible_store is not None:
-            invisible = self.invisible_store.lookup(batch["event_index"])
+            invisible, invisible_support = self.invisible_store.lookup_with_support(
+                batch["event_index"]
+            )
             batch["invisible_truth"] = invisible
+            batch["invisible_support"] = invisible_support
+            batch["invisible_all_supported"] = bool(
+                getattr(self.invisible_store, "all_supported", False)
+            )
             state = self.invisible_coordinates.encode(invisible, batch["met_xy"])
             batch["invisible_target_state"] = state
             batch["invisible_truth_scaled"] = self.invisible_scaler.transform(state)
@@ -361,7 +367,7 @@ class StructuredCollator:
                     for role in self.spec.invisible_roles
                 ],
                 dim=1,
-            )
+            ) & invisible_support
         if self.parent_store is not None:
             batch["parent_truth"] = self.parent_store.lookup(batch["event_index"])
         if self.partonic_store is not None:
@@ -852,13 +858,60 @@ class StructuredDataModule(TransformerDataModule):
             store.synthetic = False
             store.metadata = {"source": "tensor_cache"}
             store.event_ids = cached_ids[order]
-            store.values = cached_truth[order]
+            cached_support = self.cache_payload.get("invisible_support")
+            if cached_support is not None:
+                if (
+                    cached_support.dtype != torch.bool
+                    or tuple(cached_support.shape) != tuple(cached_truth.shape[:2])
+                ):
+                    raise TypeError(
+                        "Cached invisible_support must be boolean [N,R] aligned with targets"
+                    )
+            support = (
+                np.ones(cached_truth.shape[:2], dtype=np.bool_)
+                if cached_support is None
+                else cached_support.numpy().astype(np.bool_, copy=False)
+            )
+            if support.shape != cached_truth.shape[:2]:
+                raise ValueError("Cached invisible support does not align with cached targets")
+            support = support[order]
+            values = cached_truth[order]
+            if not np.isfinite(values[support]).all():
+                raise ValueError("Cached supported invisible targets must be finite")
+            store.values = np.where(support[..., None], values, 0.0).astype(
+                np.float32, copy=False
+            )
+            store.support = support
+            store.all_supported = bool(support.all())
+            store.support_policy = (
+                "explicit_role_support"
+                if cached_support is not None
+                else "legacy_all_roles_required"
+            )
         else:
             store = InvisibleTruthStore(
                 self.invisible_path,
                 role_names,
                 allow_synthetic=self.allow_synthetic,
             )
+        if not store.synthetic:
+            source_contract = (self.split_metadata or {}).get("source_contract", {})
+            for key in (
+                "source_manifest_sha256",
+                "split_membership_sha256",
+                "split_version",
+                "max_jets",
+            ):
+                expected = source_contract.get(key)
+                observed = store.metadata.get(key)
+                if isinstance(observed, bytes):
+                    observed = observed.decode("utf-8")
+                if expected is not None and str(expected) != str(observed):
+                    raise ValueError(
+                        "Invisible truth sidecar does not match measured-event source/split: "
+                        f"key={key}, input={expected!r}, truth={observed!r}, "
+                        f"input={self.h5_path}, truth={store.path}"
+                    )
         if store.synthetic:
             scaler_ids = self._selected_ids("train", selected_positions["train"])
         else:
@@ -866,13 +919,23 @@ class StructuredDataModule(TransformerDataModule):
                 len(self.split_indices["train"]), dtype=np.int64
             )
             scaler_ids = self._selected_ids("train", full_train)
-        train_truth = store.lookup(scaler_ids)
+        train_truth, train_role_support = store.lookup_with_support(scaler_ids)
         scaler_positions = (
             selected_positions["train"]
             if store.synthetic
             else np.arange(len(training_dataset), dtype=np.int64)
         )
+        train_joint_support = train_role_support.all(dim=1)
+        if not bool(train_joint_support.any()):
+            supported_by_role = train_role_support.sum(dim=0).tolist()
+            raise ValueError(
+                "No training events have verified support for every joint invisible role; "
+                f"sidecar={store.path}, role_counts={supported_by_role}, "
+                f"roles={store.role_names}"
+            )
         train_met = self._met_for_positions(training_dataset, scaler_positions)
+        train_truth = train_truth[train_joint_support]
+        train_met = train_met[train_joint_support]
         train_state = self.invisible_coordinates.encode(train_truth, train_met)
         self.invisible_scaler = InvisibleScaler.fit(
             train_state,
@@ -884,10 +947,12 @@ class StructuredDataModule(TransformerDataModule):
             active_mask=self.invisible_coordinates.active_mask,
         )
         if self.point_enabled:
+            point_truth, point_support = store.lookup_with_support(scaler_ids)
             self.point_scaler = InvisibleScaler.fit(
-                train_truth,
+                point_truth,
                 role_names,
                 representation="direct_point_cartesian_v1",
+                support_mask=point_support,
             )
         else:
             self.point_scaler = None

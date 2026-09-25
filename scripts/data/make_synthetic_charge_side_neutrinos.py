@@ -37,6 +37,13 @@ def create(measured_path: Path, output_path: Path, seed: int) -> dict:
         with h5py.File(temporary, "w") as output:
             output.create_dataset("EVENT_ID", data=event_ids, dtype="<i8")
             output.create_dataset("LABELS/NEUTRINO", data=values, dtype=neutrino_dtype)
+            support = output.create_dataset(
+                "SUPPORT/INVISIBLE_ROLE",
+                data=np.ones((len(event_ids), 2), dtype=np.bool_),
+                dtype=np.bool_,
+            )
+            support.attrs["role_order"] = json.dumps(["top.nu", "antitop.nu"])
+            support.attrs["definition"] = "all synthetic fixture role targets are supported"
             output.attrs["synthetic"] = True
             output.attrs["invisible_roles"] = json.dumps(["top.nu", "antitop.nu"])
             output.attrs["units"] = "GeV"

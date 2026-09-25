@@ -112,6 +112,17 @@ class InvisibleTruthStore:
                     )
             event_ids = np.asarray(source["EVENT_ID"][:])
             values = source["LABELS/NEUTRINO"][:]
+            support_path = "SUPPORT/INVISIBLE_ROLE"
+            if support_path in source:
+                support = np.asarray(source[support_path][:])
+                support_policy = "explicit_role_support"
+            else:
+                # Existing canonical invisible sidecars were written only
+                # after every role target had passed finite-value validation.
+                # Keep that explicit legacy contract while new adapters write
+                # SUPPORT/INVISIBLE_ROLE for populations with unsupported rows.
+                support = np.ones(values.shape, dtype=np.bool_)
+                support_policy = "legacy_all_roles_required"
             self.synthetic = bool(source.attrs.get("synthetic", False))
             self.metadata = {key: source.attrs[key] for key in source.attrs}
             raw_roles = source.attrs.get("invisible_roles")
@@ -150,6 +161,11 @@ class InvisibleTruthStore:
                 f"{self.path}: LABELS/NEUTRINO must have shape "
                 f"{(len(event_ids), role_count)}, found {values.shape}"
             )
+        if support.shape != (len(event_ids), role_count) or support.dtype != np.bool_:
+            raise TypeError(
+                f"{self.path}:SUPPORT/INVISIBLE_ROLE must be boolean "
+                f"[{len(event_ids)},{role_count}], found {support.shape} {support.dtype}"
+            )
         if values.dtype.names != REQUIRED_COMPONENTS:
             raise TypeError(
                 f"{self.path}: LABELS/NEUTRINO fields must be exactly "
@@ -161,15 +177,30 @@ class InvisibleTruthStore:
         ):
             raise TypeError(f"{self.path}: px, py and pz must all be float32")
         dense = np.stack([values[name] for name in REQUIRED_COMPONENTS], axis=-1)
-        if not np.isfinite(dense).all():
+        if not np.isfinite(dense[support]).all():
             raise ValueError(
-                f"{self.path}: LABELS/NEUTRINO contains non-finite values"
+                f"{self.path}: supported LABELS/NEUTRINO targets contain non-finite values"
             )
         order = np.argsort(event_ids)
         self.event_ids = event_ids[order].astype(np.int64, copy=False)
         self.values = dense[order].astype(np.float32, copy=False)
+        self.support = support[order].astype(np.bool_, copy=False)
+        self.support_policy = support_policy
+        self.all_supported = bool(self.support.all())
+        self.metadata["support_policy"] = support_policy
 
     def lookup(self, event_ids: torch.Tensor | np.ndarray) -> torch.Tensor:
+        values, support = self.lookup_with_support(event_ids)
+        if not bool(support.all()):
+            raise ValueError(
+                f"Invisible truth sidecar {self.path} has unsupported role targets; "
+                "use lookup_with_support() so they cannot enter a physics loss unmasked"
+            )
+        return values
+
+    def lookup_with_support(
+        self, event_ids: torch.Tensor | np.ndarray
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         requested = np.asarray(
             event_ids.cpu() if torch.is_tensor(event_ids) else event_ids,
             dtype=np.int64,
@@ -186,12 +217,15 @@ class InvisibleTruthStore:
                 f"Invisible truth sidecar {self.path} is missing EVENT_ID values "
                 f"{missing}"
             )
-        result = torch.from_numpy(self.values[positions].copy())
-        if not torch.isfinite(result).all():
-            raise RuntimeError(
-                f"Non-finite invisible truth selected from {self.path}"
-            )
-        return result
+        values = torch.from_numpy(self.values[positions].copy())
+        support = torch.from_numpy(self.support[positions].copy())
+        # Unsupported values are deliberately replaced only after their mask
+        # has been retained. This keeps coordinate transforms finite while
+        # preventing placeholders from reaching the supported-event loss.
+        values = torch.where(support.unsqueeze(-1), values, torch.zeros_like(values))
+        if not torch.isfinite(values).all():
+            raise RuntimeError(f"Supported invisible truth selected from {self.path} is non-finite")
+        return values, support
 
 
 @dataclass(frozen=True)
@@ -210,6 +244,7 @@ class InvisibleScaler:
         *,
         representation: str = "cartesian_px_py_pz_v1",
         active_mask: torch.Tensor | None = None,
+        support_mask: torch.Tensor | None = None,
     ) -> "InvisibleScaler":
         if (
             values.ndim != 3
@@ -218,7 +253,21 @@ class InvisibleScaler:
         ):
             raise ValueError(f"Scaler input must be finite [N,T,D], found {tuple(values.shape)}")
         values = values.to(torch.float64)
-        mean = values.mean(dim=0)
+        if support_mask is None:
+            support_mask = torch.ones(values.shape[:2], dtype=torch.bool, device=values.device)
+        else:
+            support_mask = torch.as_tensor(support_mask, dtype=torch.bool, device=values.device)
+            if tuple(support_mask.shape) != tuple(values.shape[:2]):
+                raise ValueError("Invisible scaler support_mask must have shape [N,R]")
+        mean_rows = []
+        std_rows = []
+        for role in range(values.shape[1]):
+            selected = values[:, role][support_mask[:, role]]
+            if not len(selected):
+                raise ValueError(f"Invisible training role {role} has no supported targets")
+            mean_rows.append(selected.mean(dim=0))
+            std_rows.append(selected.std(dim=0, unbiased=False))
+        mean = torch.stack(mean_rows)
         if active_mask is None:
             active_mask = torch.ones(values.shape[1:], dtype=torch.bool)
         active_mask = torch.as_tensor(active_mask, dtype=torch.bool)
@@ -229,7 +278,7 @@ class InvisibleScaler:
             values[..., ~active_mask], torch.zeros_like(values[..., ~active_mask])
         ):
             raise ValueError("Inactive invisible-coordinate target components must be zero")
-        std = values.std(dim=0, unbiased=False)
+        std = torch.stack(std_rows)
         mean = torch.where(active_mask, mean, torch.zeros_like(mean))
         std = torch.where(active_mask, std, torch.ones_like(std))
         if not torch.isfinite(std).all() or (std[active_mask] <= 0).any():

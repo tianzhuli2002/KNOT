@@ -218,6 +218,16 @@ def validate_experiment(
             raise ValueError(f"{measured_path}: source_entry_index contains duplicates")
 
     target_support_counts = np.zeros(2, dtype=np.int64)
+    objective_support_counts = {
+        "visible_assignment": 0,
+        "neutrino_cfm_joint": 0,
+        "partonic_cfm_joint": 0,
+        "visible_and_neutrino": 0,
+        "visible_and_partonic": 0,
+        "neutrino_and_partonic": 0,
+        "all_three": 0,
+    }
+    invisible_role_support_counts = np.zeros(2, dtype=np.int64)
     with h5py.File(target_path, "r") as target:
         if "EVENT_ID" not in target or "PARTONIC" not in target:
             raise KeyError(f"Partonic truth sidecar {target_path} needs EVENT_ID and PARTONIC")
@@ -258,6 +268,44 @@ def validate_experiment(
             raise TypeError(
                 f"{target_path}:PARTONIC/SUPPORT must be boolean [{event_count},2]"
             )
+        if "SUPPORT/VISIBLE_ASSIGNMENT_RECONSTRUCTABLE" not in target:
+            raise KeyError(f"{target_path}: missing visible-assignment support")
+        visible_support_dataset = target["SUPPORT/VISIBLE_ASSIGNMENT_RECONSTRUCTABLE"]
+        if (
+            visible_support_dataset.shape != (event_count,)
+            or visible_support_dataset.dtype != np.bool_
+        ):
+            raise TypeError(
+                f"{target_path}:SUPPORT/VISIBLE_ASSIGNMENT_RECONSTRUCTABLE must be boolean [{event_count}]"
+            )
+        invisible_support_path = "SUPPORT/INVISIBLE_ROLE"
+        if invisible_support_path not in target:
+            raise KeyError(
+                f"{target_path}: missing explicit unsupported/supported neutrino-role mask"
+            )
+        invisible_support_dataset = target[invisible_support_path]
+        if (
+            invisible_support_dataset.shape != (event_count, 2)
+            or invisible_support_dataset.dtype != np.bool_
+        ):
+            raise TypeError(
+                f"{target_path}:{invisible_support_path} must be boolean [{event_count},2]"
+            )
+        invisible_roles = _json_attr(
+            invisible_support_dataset.attrs.get("role_order"),
+            "SUPPORT/INVISIBLE_ROLE.role_order",
+            target_path,
+        )
+        if invisible_roles != ["top.nu", "antitop.nu"]:
+            raise ValueError(
+                f"{target_path}: invisible support role order is incompatible: {invisible_roles}"
+            )
+        if not bool(manifest.get("bounded_sample", {}).get("neutrino_side_mapping_verified", False)):
+            if np.asarray(invisible_support_dataset[:], dtype=bool).any():
+                raise ValueError(
+                    "Neutrino role support is enabled even though source/top-side mapping "
+                    "remains unverified"
+                )
         for role in ROLES:
             dataset = target[f"PARTONIC/{role}"]
             if dataset.shape != (event_count, 4) or dataset.dtype != np.float32:
@@ -292,6 +340,12 @@ def validate_experiment(
                     [target[f"PARTONIC/{role}"][start:stop] for role in ROLES], axis=1
                 )
                 support = np.asarray(support_dataset[start:stop], dtype=bool)
+                visible_support = np.asarray(
+                    visible_support_dataset[start:stop], dtype=bool
+                )
+                invisible_support = np.asarray(
+                    invisible_support_dataset[start:stop], dtype=bool
+                )
                 if not np.isfinite(values).all():
                     raise ValueError(
                         f"{target_path}: non-finite partonic targets at {start}:{stop}"
@@ -306,6 +360,18 @@ def validate_experiment(
                         f"{target_path}: invalid supported parent p4 at {start}:{stop}"
                     )
                 target_support_counts += support.sum(axis=0)
+                invisible_role_support_counts += invisible_support.sum(axis=0)
+                invisible_joint = invisible_support.all(axis=1)
+                partonic_joint = support.all(axis=1)
+                objective_support_counts["visible_assignment"] += int(visible_support.sum())
+                objective_support_counts["neutrino_cfm_joint"] += int(invisible_joint.sum())
+                objective_support_counts["partonic_cfm_joint"] += int(partonic_joint.sum())
+                objective_support_counts["visible_and_neutrino"] += int((visible_support & invisible_joint).sum())
+                objective_support_counts["visible_and_partonic"] += int((visible_support & partonic_joint).sum())
+                objective_support_counts["neutrino_and_partonic"] += int((invisible_joint & partonic_joint).sum())
+                objective_support_counts["all_three"] += int(
+                    (visible_support & invisible_joint & partonic_joint).sum()
+                )
 
     visible_target_path = config.data.visible_truth
     if visible_target_path is not None:
@@ -370,6 +436,14 @@ def validate_experiment(
         "topology_signature": topology.signature,
         "truth_definition": TRUTH_DEFINITION,
         "support_counts": {role: int(target_support_counts[i]) for i, role in enumerate(ROLES)},
+        "objective_support": {
+            name: {"count": int(count), "fraction": float(count / max(event_count, 1))}
+            for name, count in objective_support_counts.items()
+        },
+        "neutrino_role_support_counts": {
+            name: int(invisible_role_support_counts[index])
+            for index, name in enumerate(("top.nu", "antitop.nu"))
+        },
         "parent_conditioning": str(config.model.parent_cfm.conditioning),
     }
 

@@ -292,6 +292,16 @@ def _prepare_supervision(source_path, output_path, measured_path, rows, event_id
             assignment_support = support_group.create_dataset(
                 "VISIBLE_ASSIGNMENT_RECONSTRUCTABLE", (count,), dtype=np.bool_
             )
+            invisible_support = support_group.create_dataset(
+                "INVISIBLE_ROLE", (count, 2), dtype=np.bool_, fillvalue=False
+            )
+            invisible_support.attrs["role_order"] = json.dumps(
+                ["top.nu", "antitop.nu"]
+            )
+            invisible_support.attrs["definition"] = (
+                "false for every event: source slots are electron/muon flavour ordered, "
+                "but charge-side neutrino association is unverified"
+            )
             target_datasets = {
                 role: partonic.create_dataset(
                     role, (count, 4), dtype="<f4",
@@ -409,6 +419,54 @@ def _write_training_view(path: Path, measured_path: Path, supervision_path: Path
     _atomic_h5(path, writer)
 
 
+def _support_summary(visible, invisible_role, partonic, split_values) -> dict:
+    visible = np.asarray(visible, dtype=bool)
+    invisible_role = np.asarray(invisible_role, dtype=bool)
+    partonic = np.asarray(partonic, dtype=bool)
+    split_values = np.asarray(split_values, dtype=np.uint8)
+    if (
+        visible.ndim != 1
+        or invisible_role.ndim != 2
+        or partonic.ndim != 2
+        or len(visible) != len(invisible_role)
+        or len(visible) != len(partonic)
+        or split_values.shape != visible.shape
+    ):
+        raise ValueError("Objective-support arrays do not align with the selected event population")
+    neutrino = invisible_role.all(axis=1)
+    parent = partonic.all(axis=1)
+
+    def counts(mask: np.ndarray) -> dict:
+        count = int(mask.sum())
+        return {"count": count, "fraction": float(count / max(len(mask), 1))}
+
+    def summarize(rows: np.ndarray) -> dict:
+        assignment_rows = visible[rows]
+        neutrino_rows = neutrino[rows]
+        parent_rows = parent[rows]
+        return {
+            "events": int(rows.sum()),
+            "visible_assignment": counts(assignment_rows),
+            "neutrino_cfm_joint": counts(neutrino_rows),
+            "partonic_cfm_joint": counts(parent_rows),
+            "partonic_role": [counts(partonic[rows, role]) for role in range(partonic.shape[1])],
+            "neutrino_role": [counts(invisible_role[rows, role]) for role in range(invisible_role.shape[1])],
+            "intersections": {
+                "visible_and_neutrino": counts(assignment_rows & neutrino_rows),
+                "visible_and_partonic": counts(assignment_rows & parent_rows),
+                "neutrino_and_partonic": counts(neutrino_rows & parent_rows),
+                "all_three": counts(assignment_rows & neutrino_rows & parent_rows),
+            },
+        }
+
+    result = {"all_selected": summarize(np.ones(len(visible), dtype=bool))}
+    for split_id, split_name in ((0, "train"), (1, "validation"), (2, "reserved_test")):
+        selected = split_values == split_id
+        if selected.any():
+            result[split_name] = summarize(selected)
+    return result
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", type=Path, default=SOURCE)
@@ -465,6 +523,12 @@ def main() -> None:
             "measured_input_has_labels_or_targets": any(name in measured for name in ("LABELS", "TARGETS")),
             "visible_assignment_reconstructable": int(truth["SUPPORT/VISIBLE_ASSIGNMENT_RECONSTRUCTABLE"][:].sum()),
             "partonic_role_support": truth["PARTONIC/SUPPORT"][:].sum(axis=0).astype(int).tolist(),
+            "objective_support": _support_summary(
+                truth["SUPPORT/VISIBLE_ASSIGNMENT_RECONSTRUCTABLE"][:],
+                truth["SUPPORT/INVISIBLE_ROLE"][:],
+                truth["PARTONIC/SUPPORT"][:],
+                measured["SPLIT"][:],
+            ),
             "neutrino_supervision": str(truth.attrs["neutrino_supervision"]),
             "source_manifest_sha256": source_manifest_hash,
             "split_membership_sha256": split_hash,

@@ -289,31 +289,42 @@ class InvisibleGenerator(nn.Module):
         event_mask: torch.Tensor | None = None,
     ) -> dict:
         context, mask = self.visible_context(visible)
+        flow_support = None
         if event_mask is not None:
             if event_mask.dtype != torch.bool or event_mask.shape != (len(target),):
                 raise ValueError(
                     "Invisible event_mask must be boolean [B], found "
                     f"dtype={event_mask.dtype}, shape={tuple(event_mask.shape)}"
                 )
-            if not event_mask.any():
-                return {
-                    "loss": target.sum() * 0.0,
-                    "valid_events": 0,
-                    "skipped_all_events": True,
-                }
-            target = target[event_mask]
-            context = context[event_mask]
-            mask = mask[event_mask]
-            parent_context = parent_context[event_mask]
-            if role_context is not None:
-                role_context = role_context[event_mask]
-        # ``target``, ``context`` and ``parent_context`` have already been
-        # restricted to supported events above.  Build the flow-matching
-        # condition from the same event subset; using the unfiltered pooled
-        # tensor here breaks truth-oracle training as soon as one event is
-        # unreconstructable.
+            independent_cfm = (
+                self.formulation_name == "flow_matching"
+                and getattr(self.formulation.coupling, "method", None) == "independent"
+            )
+            if independent_cfm:
+                # Independent coupling has no cross-event dependence, so
+                # unsupported rows can stay in the tensor batch and be
+                # removed by the flow's weighted reduction. This also makes
+                # an all-unsupported CFM batch a finite graph-connected zero
+                # without a device-to-host ``any()`` synchronization.
+                flow_support = event_mask
+            else:
+                if not bool(event_mask.any()):
+                    return {
+                        "loss": target.sum() * 0.0,
+                        "valid_events": 0,
+                        "skipped_all_events": True,
+                    }
+                target = target[event_mask]
+                context = context[event_mask]
+                mask = mask[event_mask]
+                parent_context = parent_context[event_mask]
+                if role_context is not None:
+                    role_context = role_context[event_mask]
+        # Event-filtered couplings use one consistent subset for the target
+        # and condition. Independent flow matching keeps the batch intact and
+        # applies ``flow_support`` only in its per-event loss reduction.
         condition_visible = visible
-        if event_mask is not None:
+        if event_mask is not None and flow_support is None:
             condition_visible = {"pooled": visible["pooled"][event_mask]}
         condition = self.coupling_condition(
             condition_visible,
@@ -322,7 +333,7 @@ class InvisibleGenerator(nn.Module):
         )
         visible_fourmomenta = self.visible_fourmomenta_context(visible)
         met_xy = visible.get("met_xy")
-        if event_mask is not None:
+        if event_mask is not None and flow_support is None:
             if visible_fourmomenta is not None:
                 visible_fourmomenta = visible_fourmomenta[event_mask]
             if met_xy is not None:
@@ -336,6 +347,7 @@ class InvisibleGenerator(nn.Module):
                 condition=condition,
                 visible_fourmomenta=visible_fourmomenta,
                 met_xy=met_xy,
+                support_mask=flow_support,
             )
         else:
             result = self.formulation.loss(
@@ -346,7 +358,11 @@ class InvisibleGenerator(nn.Module):
                 visible_fourmomenta=visible_fourmomenta,
                 met_xy=met_xy,
             )
-        result["valid_events"] = len(target)
+        result["valid_events"] = (
+            len(target) if event_mask is None else event_mask.sum()
+        )
+        if event_mask is not None:
+            result["support_fraction"] = event_mask.to(target.dtype).mean()
         return result
 
     def flow_source(

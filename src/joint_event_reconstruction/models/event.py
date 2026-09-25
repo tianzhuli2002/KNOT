@@ -981,8 +981,26 @@ class JointEventModel(nn.Module):
         )
         result["invisible_parent_context"] = parent
         event_mask = None
+        role_support = batch.get("invisible_support")
+        if role_support is not None:
+            expected = (len(batch["tokens"]), len(self.spec.invisible_roles))
+            if role_support.dtype != torch.bool or tuple(role_support.shape) != expected:
+                raise ValueError(
+                    "invisible_support must be boolean [B,R] in compiled topology role order; "
+                    f"expected={expected}, found={tuple(role_support.shape)} {role_support.dtype}"
+                )
+            if not bool(batch.get("invisible_all_supported", False)):
+                event_mask = role_support.all(dim=1)
+                result["invisible_physical_support_fraction"] = event_mask.to(
+                    visible["tokens"].dtype
+                ).mean()
         if self.invisible.assignment_mode in {"hypothesis", "truth"}:
-            event_mask = self._hypothesis_training_mask(batch)
+            assignment_mask = self._hypothesis_training_mask(batch)
+            event_mask = (
+                assignment_mask
+                if event_mask is None
+                else assignment_mask & event_mask
+            )
             result["invisible_training_mask"] = event_mask
             result["invisible_training_valid_fraction"] = event_mask.to(
                 visible["tokens"].dtype
@@ -1065,11 +1083,8 @@ class JointEventModel(nn.Module):
                         f"{tuple(support.shape)} {support.dtype}"
                     )
                 supported = support.unsqueeze(-1).expand_as(scaled)
-                if not support.any():
-                    raise RuntimeError(
-                        "Direct point-head training batch has no supported invisible targets"
-                    )
-                loss = (scaled - target).square().masked_select(supported).mean()
+                point_error = (scaled - target).square().masked_select(supported)
+                loss = point_error.sum() / supported.sum().clamp_min(1)
                 result["point_loss"] = loss
                 result["point_training_support_fraction"] = support.to(
                     scaled.dtype
