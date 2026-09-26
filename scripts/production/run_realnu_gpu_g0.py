@@ -292,8 +292,15 @@ def _validate_plain_prediction(path: Path, expected_source: Path) -> dict:
         source = Path(str(prediction.attrs.get("source_data", ""))).resolve()
         if source != expected_source.resolve():
             raise RuntimeError(f"Prediction source is not the truth-free measured HDF5: {source}")
-        if "TRUTH" in prediction:
-            raise RuntimeError(f"Truth-free prediction unexpectedly contains a TRUTH group: {path}")
+        truth_group = prediction.get("TRUTH")
+        if truth_group is None:
+            raise RuntimeError(f"Prediction is missing its TRUTH schema group: {path}")
+        if (
+            bool(truth_group.attrs.get("visible_available", True))
+            or bool(truth_group.attrs.get("invisible_available", True))
+            or set(truth_group.keys()) != {"topk_assignment"}
+        ):
+            raise RuntimeError(f"Truth-free prediction contains actual truth data: {path}")
         event_ids = np.asarray(prediction["EVENT_ID"][:], dtype=np.int64)
         if len(event_ids) != 128 or len(np.unique(event_ids)) != 128:
             raise RuntimeError(f"Prediction does not contain 128 unique validation events: {path}")
