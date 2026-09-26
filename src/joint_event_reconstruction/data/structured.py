@@ -19,7 +19,10 @@ from joint_event_reconstruction.data.invisible import (
 )
 from joint_event_reconstruction.data.partonic import PartonicScaler, PartonicTruthStore
 from joint_event_reconstruction.data.subsets import deterministic_subset_positions
-from joint_event_reconstruction.m0.data.module import TransformerDataModule, _collate_transformer
+from joint_event_reconstruction.m0.data.module import (
+    TransformerDataModule,
+    _collate_transformer,
+)
 from joint_event_reconstruction.models.invisible.coordinates import (
     build_invisible_coordinates,
     met_xy_from_batch,
@@ -27,7 +30,6 @@ from joint_event_reconstruction.models.invisible.coordinates import (
 from joint_event_reconstruction.topology.assignments import build_assignment_template
 from joint_event_reconstruction.topology.candidates import build_event_candidates
 from joint_event_reconstruction.topology.compiler import load_topology
-
 
 logger = logging.getLogger(__name__)
 
@@ -550,6 +552,7 @@ class StructuredDataModule(TransformerDataModule):
         self.max_events = max_events
         self.subset_seed = subset_seed
         self.partonic_scaler_fit_metadata = None
+        self.invisible_scaler_fit_metadata = None
         self.invisible_scaler = None
         self.point_scaler = None
         self.parent_store = None
@@ -588,7 +591,7 @@ class StructuredDataModule(TransformerDataModule):
             "token_feature_dim": int(self.schema.dim),
             "token_features": list(self.schema.names),
             "physics_vectors_shape": [
-                int(len(self.split_indices["selected"])),
+                len(self.split_indices["selected"]),
                 int(self._configured_total_tokens()),
                 4,
             ],
@@ -818,7 +821,7 @@ class StructuredDataModule(TransformerDataModule):
             self.partonic_scaler_fit_metadata = {
                 "population": scaler_population,
                 "event_id_hash": index_hash(np.sort(np.asarray(scaler_ids, dtype=np.int64))),
-                "event_count": int(len(scaler_ids)),
+                "event_count": len(scaler_ids),
             }
         else:
             self.partonic_scaler = None
@@ -859,14 +862,13 @@ class StructuredDataModule(TransformerDataModule):
             store.metadata = {"source": "tensor_cache"}
             store.event_ids = cached_ids[order]
             cached_support = self.cache_payload.get("invisible_support")
-            if cached_support is not None:
-                if (
-                    cached_support.dtype != torch.bool
-                    or tuple(cached_support.shape) != tuple(cached_truth.shape[:2])
-                ):
-                    raise TypeError(
-                        "Cached invisible_support must be boolean [N,R] aligned with targets"
-                    )
+            if cached_support is not None and (
+                cached_support.dtype != torch.bool
+                or tuple(cached_support.shape) != tuple(cached_truth.shape[:2])
+            ):
+                raise TypeError(
+                    "Cached invisible_support must be boolean [N,R] aligned with targets"
+                )
             support = (
                 np.ones(cached_truth.shape[:2], dtype=np.bool_)
                 if cached_support is None
@@ -946,6 +948,15 @@ class StructuredDataModule(TransformerDataModule):
             ),
             active_mask=self.invisible_coordinates.active_mask,
         )
+        from joint_event_reconstruction.m0.data.splits import index_hash
+
+        self.invisible_scaler_fit_metadata = {
+            "population": "selected_train_subset" if store.synthetic else "frozen_train_split",
+            "event_id_hash": index_hash(np.sort(np.asarray(scaler_ids, dtype=np.int64))),
+            "event_count": len(scaler_ids),
+            "supported_event_count_by_role": train_role_support.sum(dim=0).tolist(),
+            "joint_supported_event_count": int(train_joint_support.sum().item()),
+        }
         if self.point_enabled:
             point_truth, point_support = store.lookup_with_support(scaler_ids)
             self.point_scaler = InvisibleScaler.fit(

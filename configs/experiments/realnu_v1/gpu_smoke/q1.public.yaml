@@ -1,0 +1,210 @@
+experiment:
+  name: jer_realnu_v1_g0_q1
+  seed: 42011
+topology: configs/topology/ttbar2L_charge_side_v1.yaml
+data:
+  input: results/experiments/partonic_ttbar2L_2M_realnu_v1/adapted/train_validation/partonic_ttbar2l_train_validation_maxjets8_v1_measured.h5
+  inference_input: results/experiments/partonic_ttbar2L_2M_realnu_v1/adapted/train_validation/partonic_ttbar2l_train_validation_maxjets8_v1_measured.h5
+  visible_truth: results/experiments/partonic_ttbar2L_2M_realnu_v1/adapted/train_validation_authoritative_20260926/partonic_ttbar2l_train_validation_maxjets8_v1_supervision.h5
+  invisible_truth: results/experiments/partonic_ttbar2L_2M_realnu_v1/adapted/train_validation_authoritative_20260926/partonic_ttbar2l_train_validation_maxjets8_v1_supervision.h5
+  allow_synthetic: false
+  cache: results/experiments/partonic_ttbar2L_2M_realnu_v1/cache/train_validation_measured_maxjets8_v1.pt
+  subset_seed: 42011
+  test_size: 0.05
+  events:
+    train: 512
+    validation: 128
+    test: null
+  max_assignment_states: 100000
+  loader:
+    pin_memory: true
+    persistent_workers: true
+    prefetch_factor: 2
+inputs:
+  transforms:
+    e: log
+    eta:
+    - minmax
+    - -5.0
+    - 5.0
+    phi: sincos
+    pt: log
+    btag:
+    - minmax
+    - 0.0
+    - 6.0
+    charge:
+    - minmax
+    - -1.0
+    - 1.0
+    id: none
+    njet:
+    - minmax
+    - 0.0
+    - 20.0
+    nelectron:
+    - minmax
+    - 0.0
+    - 2.0
+    nmuon:
+    - minmax
+    - 0.0
+    - 2.0
+    nBJets_90:
+    - minmax
+    - 0.0
+    - 20.0
+    nBJets_85:
+    - minmax
+    - 0.0
+    - 20.0
+    nBJets_77:
+    - minmax
+    - 0.0
+    - 20.0
+    nBJets_70:
+    - minmax
+    - 0.0
+    - 20.0
+    nBJets_65:
+    - minmax
+    - 0.0
+    - 20.0
+  JET:
+    count: 8
+    features:
+    - e
+    - eta
+    - phi
+    - pt
+    - btag
+    - id
+  LEPTON:
+    count: 2
+    features:
+    - e
+    - eta
+    - phi
+    - pt
+    - charge
+    - id
+  MET:
+    count: 1
+    features:
+    - phi
+    - pt
+    - id
+  GLOBAL:
+    features:
+    - njet
+    - nelectron
+    - nmuon
+    - nBJets_90
+    - nBJets_85
+    - nBJets_77
+    - nBJets_70
+    - nBJets_65
+model:
+  latent:
+    d_model: 128
+    n_heads: 4
+    d_feedforward: 384
+    dropout: 0.05
+  encoder:
+    type: lgatr
+    layers: 4
+    n_heads: 4
+    hidden:
+      multivector_channels: 8
+      scalar_channels: 64
+    momentum_scale_gev: 100.0
+    symmetry_breaking:
+      beam: xyplane
+      time: true
+  assignment:
+    formulation: discriminative
+  mode: factorized
+  topology_queries:
+    enabled: true
+    interaction: topology_plus_global
+    layers: 2
+    n_heads: 4
+    dropout: 0.0
+    roles:
+    - name: top
+      node: top
+      kind: parent
+      related:
+      - ttbar
+    - name: antitop
+      node: antitop
+      kind: parent
+      related:
+      - ttbar
+    - name: ttbar
+      node: null
+      kind: global
+      related:
+      - top
+      - antitop
+    relations:
+    - - top
+      - ttbar
+    - - antitop
+      - ttbar
+  invisible:
+    conditioning:
+      assignment: none
+    coordinates:
+      type: met_residual
+    generator:
+      type: cfm
+      network:
+        d_model: 128
+        n_heads: 4
+        layers: 4
+        d_feedforward: 384
+        dropout: 0.0
+        zero_init_output: true
+    mass_shell:
+      enforcement: exact
+      mass:
+        mode: fixed
+        value: 0.0
+        parameterization: null
+      roles: {}
+  heads:
+    point_invisible:
+      enabled: false
+    parent_four_vector:
+      enabled: false
+    partonic:
+      enabled: false
+inference:
+  seed: 42011
+  invisible:
+    point_estimator: none
+    flow:
+      steps: 8
+      solver: heun
+training:
+  batch_size: 512
+  workers: 4
+  optimizer:
+    type: adamw
+    fused_adamw: false
+  learning_rate: 0.000361545
+  weight_decay: 6.0735294e-05
+  epochs: 1
+  precision: 16-mixed
+  trainable:
+  - visible
+  - assignment
+  - invisible
+  - queries
+  loss_weights:
+    assignment: 1.0
+    invisible: 1.0
+    partonic: 0.0
+    partonic_cfm: 0.0
+  output: results/experiments/partonic_ttbar2L_2M_realnu_v1/attempts/realnu_top_antitop_20260926_g0/Q1

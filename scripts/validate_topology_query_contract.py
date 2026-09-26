@@ -60,7 +60,9 @@ def _parameter_counts(module) -> dict[str, int]:
 
 def _batch_and_module(config):
     visible = load_visible_config(config)
-    data = build_data(config, visible)
+    visible.dataset.pin_memory = False
+    visible.dataset.persistent_workers = False
+    data = build_data(config, visible, device="cpu")
     data.setup("fit")
     batch = next(iter(data.train_dataloader()))
     module = JointEventModule(

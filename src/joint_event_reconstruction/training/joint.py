@@ -590,6 +590,8 @@ class JointEventModule(L.LightningModule):
             "input_features",
             "source_type_ids",
             "physics_vector_representation",
+            "invisible_truth_contract",
+            "invisible_scaler_fit",
         ):
             if saved.get(key) != self.hparams.get(key):
                 raise ValueError(

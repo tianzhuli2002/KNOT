@@ -106,6 +106,14 @@ def _validate_prediction_file(path: Path, expected_events: int, samples: int) ->
             raise ValueError(f"Invalid partonic prediction schema in {path}")
         if json.loads(str(source.attrs.get("parent_roles", "[]"))) != list(PARENT_ROLES):
             raise ValueError(f"Invalid parent-role metadata in {path}")
+        raw_order = source.attrs.get("parent_role_order")
+        if isinstance(raw_order, bytes):
+            raw_order = raw_order.decode("utf-8")
+        if (
+            source.attrs.get("parent_role_convention") != "top_antitop"
+            or json.loads(str(raw_order)) != list(PARENT_ROLES)
+        ):
+            raise ValueError(f"Invalid top/antitop parent-role convention in {path}")
         required = (
             "EVENT_ID",
             "PARTONIC/parents",
@@ -202,6 +210,8 @@ def predict_partonic_hdf5(
         with h5py.File(source_path, "r") as event_source, h5py.File(temporary, "w") as output:
             output.attrs["prediction_schema"] = PARTONIC_PREDICTION_SCHEMA
             output.attrs["parent_roles"] = json.dumps(PARENT_ROLES)
+            output.attrs["parent_role_convention"] = "top_antitop"
+            output.attrs["parent_role_order"] = json.dumps(PARENT_ROLES)
             output.attrs["truth_definition"] = "partonic_after_fsr_target_contract"
             output.attrs["units"] = "GeV"
             output.attrs["four_vector_order"] = "E,px,py,pz"
@@ -224,6 +234,34 @@ def predict_partonic_hdf5(
             output.attrs["partonic_scaler"] = json.dumps(
                 module.partonic_scaler_metadata, sort_keys=True
             )
+            partonic_contract = module.hparams.get("partonic_truth_contract", {})
+            if partonic_contract.get("source_file_sha256"):
+                output.attrs["source_file_sha256"] = str(
+                    partonic_contract["source_file_sha256"]
+                )
+            if conditioning == "P2":
+                invisible_contract = module.hparams.get("invisible_truth_contract")
+                if not isinstance(invisible_contract, dict):
+                    raise ValueError("P2 parent prediction requires real invisible-role provenance")
+                if (
+                    invisible_contract.get("invisible_role_convention") != "top_antitop"
+                    or invisible_contract.get("invisible_role_order")
+                    != ["top.nu", "antitop.nu"]
+                ):
+                    raise ValueError("P2 parent prediction requires [top.nu, antitop.nu] context")
+                output.attrs["invisible_role_convention"] = "top_antitop"
+                output.attrs["invisible_role_order"] = json.dumps(
+                    invisible_contract["invisible_role_order"]
+                )
+                output.attrs["invisible_source_file_sha256"] = str(
+                    invisible_contract.get("source_file_sha256", "")
+                )
+                output.attrs["invisible_source_manifest_sha256"] = str(
+                    invisible_contract.get("source_manifest_sha256", "")
+                )
+                output.attrs["invisible_split_membership_sha256"] = str(
+                    invisible_contract.get("split_membership_sha256", "")
+                )
             output.attrs["split_identity"] = json.dumps(data.split_metadata, sort_keys=True, default=str)
             for name in ("source_manifest_sha256", "split_membership_sha256", "split_version"):
                 if name in event_source.attrs:
@@ -334,8 +372,35 @@ def evaluate_partonic_hdf5(
             raise ValueError("Partonic posterior samples must have shape [N,S,2,4]")
         prediction_identity = {
             key: source.attrs.get(key)
-            for key in ("source_manifest_sha256", "split_membership_sha256", "split_version")
+            for key in (
+                "source_file_sha256",
+                "source_manifest_sha256",
+                "split_membership_sha256",
+                "split_version",
+            )
         }
+        raw_roles = source.attrs.get("parent_roles")
+        if isinstance(raw_roles, bytes):
+            raw_roles = raw_roles.decode("utf-8")
+        try:
+            parent_roles = json.loads(str(raw_roles))
+        except (TypeError, ValueError, json.JSONDecodeError) as error:
+            raise ValueError(f"{predictions}: invalid parent_roles metadata") from error
+        if parent_roles != list(PARENT_ROLES):
+            raise ValueError(f"{predictions}: parent roles must be ordered {PARENT_ROLES}")
+        role_convention = source.attrs.get("parent_role_convention")
+        role_order = source.attrs.get("parent_role_order")
+        if role_convention is not None or role_order is not None:
+            if isinstance(role_convention, bytes):
+                role_convention = role_convention.decode("utf-8")
+            if isinstance(role_order, bytes):
+                role_order = role_order.decode("utf-8")
+            try:
+                parsed_order = json.loads(str(role_order))
+            except (TypeError, ValueError, json.JSONDecodeError) as error:
+                raise ValueError(f"{predictions}: invalid parent_role_order metadata") from error
+            if role_convention != "top_antitop" or parsed_order != list(PARENT_ROLES):
+                raise ValueError(f"{predictions}: incompatible top/antitop parent-role metadata")
         split = str(source.attrs.get("split", ""))
         sampling_metadata = {
             key: source.attrs.get(key)
@@ -348,6 +413,32 @@ def evaluate_partonic_hdf5(
                 "conditioning",
             )
         }
+        if sampling_metadata["conditioning"] == "P2":
+            convention = source.attrs.get("invisible_role_convention")
+            order = source.attrs.get("invisible_role_order")
+            if isinstance(convention, bytes):
+                convention = convention.decode("utf-8")
+            if isinstance(order, bytes):
+                order = order.decode("utf-8")
+            try:
+                parsed_order = json.loads(str(order))
+            except (TypeError, ValueError, json.JSONDecodeError) as error:
+                raise ValueError(f"{predictions}: invalid invisible_role_order metadata") from error
+            if convention != "top_antitop" or parsed_order != ["top.nu", "antitop.nu"]:
+                raise ValueError(f"{predictions}: P2 context must be ordered [top.nu, antitop.nu]")
+            prediction_identity.update(
+                {
+                    "invisible_source_file_sha256": source.attrs.get(
+                        "invisible_source_file_sha256"
+                    ),
+                    "invisible_source_manifest_sha256": source.attrs.get(
+                        "invisible_source_manifest_sha256"
+                    ),
+                    "invisible_split_membership_sha256": source.attrs.get(
+                        "invisible_split_membership_sha256"
+                    ),
+                }
+            )
     store = PartonicTruthStore(truth, PARENT_ROLES)
     truth_values, support = store.lookup(prediction_ids)
     truth_values = truth_values.numpy().astype(np.float64, copy=False)
@@ -355,11 +446,28 @@ def evaluate_partonic_hdf5(
     if len(np.unique(prediction_ids)) != len(prediction_ids):
         raise ValueError("Partonic prediction EVENT_ID contains duplicates")
     with h5py.File(truth, "r") as source:
-        for key in ("source_manifest_sha256", "split_membership_sha256", "split_version"):
+        for key in (
+            "source_file_sha256",
+            "source_manifest_sha256",
+            "split_membership_sha256",
+            "split_version",
+        ):
             expected = prediction_identity.get(key)
             observed = source.attrs.get(key)
             if expected is not None and observed is not None and str(expected) != str(observed):
                 raise ValueError(f"Prediction/truth {key} mismatch: {expected!r} vs {observed!r}")
+        if sampling_metadata["conditioning"] == "P2":
+            for prediction_key, truth_key in (
+                ("invisible_source_file_sha256", "source_file_sha256"),
+                ("invisible_source_manifest_sha256", "source_manifest_sha256"),
+                ("invisible_split_membership_sha256", "split_membership_sha256"),
+            ):
+                expected = prediction_identity.get(prediction_key)
+                observed = source.attrs.get(truth_key)
+                if expected is None or observed is None or str(expected) != str(observed):
+                    raise ValueError(
+                        f"P2 prediction/truth {truth_key} mismatch: {expected!r} vs {observed!r}"
+                    )
     if samples.shape[0] != len(truth_values):
         raise ValueError("Prediction/truth event join changed event count")
 

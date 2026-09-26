@@ -395,6 +395,22 @@ def evaluate_any_predictions(path: str | Path) -> dict:
                     "schema_validated": True,
                 }
                 if "INVISIBLE/samples" in source:
+                    raw_roles = source.attrs["invisible_roles"]
+                    if isinstance(raw_roles, bytes):
+                        raw_roles = raw_roles.decode("utf-8")
+                    roles = json.loads(str(raw_roles))
+                    result["invisible_roles"] = roles
+                    if roles == ["top.nu", "antitop.nu"]:
+                        result["invisible_truth_contract"] = {
+                            "convention": str(source.attrs["invisible_role_convention"]),
+                            "roles": roles,
+                            "truth_definition": str(source.attrs["neutrino_truth_definition"]),
+                            "units": str(source.attrs["invisible_units"]),
+                            "source_file_sha256": str(source.attrs["source_file_sha256"]),
+                            "source_manifest_sha256": str(source.attrs["source_manifest_sha256"]),
+                            "split_membership_sha256": str(source.attrs["split_membership_sha256"]),
+                        }
+                if "INVISIBLE/samples" in source:
                     result["invisible_posterior"] = {
                         "samples_per_event_hypothesis": int(source.attrs["M"]),
                         "actual_nfe": int(source["INVISIBLE"].attrs["actual_nfe"]),

@@ -38,6 +38,65 @@ def _read_invisible_roles(source: h5py.File, expected: int, label: str) -> list[
     return roles
 
 
+def _validate_invisible_role_contract(
+    source: h5py.File, roles: list[str], label: str
+) -> None:
+    if roles == ["top.nu", "antitop.nu"]:
+        convention = source.attrs.get("invisible_role_convention")
+        order = source.attrs.get("invisible_role_order")
+        truth_definition = source.attrs.get("neutrino_truth_definition")
+        units = source.attrs.get("invisible_units")
+        for name, value in (
+            ("invisible_role_convention", convention),
+            ("neutrino_truth_definition", truth_definition),
+            ("invisible_units", units),
+        ):
+            if isinstance(value, bytes):
+                value = value.decode("utf-8")
+            if not isinstance(value, str) or not value:
+                raise ValueError(f"{label} is missing {name}")
+            if name == "invisible_role_convention" and value != "top_antitop":
+                raise ValueError(f"{label} has incompatible invisible role convention {value!r}")
+            if name == "neutrino_truth_definition" and value != "generator top-side neutrino and generator antitop-side neutrino":
+                raise ValueError(f"{label} has incompatible neutrino truth definition {value!r}")
+            if name == "invisible_units" and value != "GeV":
+                raise ValueError(f"{label} invisible units must be GeV")
+        if isinstance(order, bytes):
+            order = order.decode("utf-8")
+        try:
+            parsed_order = json.loads(str(order))
+        except (TypeError, ValueError, json.JSONDecodeError) as error:
+            raise ValueError(f"{label} has invalid invisible_role_order metadata") from error
+        if parsed_order != roles:
+            raise ValueError(f"{label} invisible_role_order differs from invisible_roles")
+        for name in (
+            "source_file_sha256",
+            "source_manifest_sha256",
+            "split_membership_sha256",
+        ):
+            value = source.attrs.get(name)
+            if isinstance(value, bytes):
+                value = value.decode("utf-8")
+            if not isinstance(value, str) or len(value) != 64:
+                raise ValueError(f"{label} is missing a valid {name}")
+    elif roles == ["electron.nu", "muon.nu"]:
+        convention = source.attrs.get("invisible_role_convention")
+        order = source.attrs.get("invisible_role_order")
+        if isinstance(convention, bytes):
+            convention = convention.decode("utf-8")
+        if isinstance(order, bytes):
+            order = order.decode("utf-8")
+        if convention is not None and convention != "flavour_ordered":
+            raise ValueError(f"{label} historical neutrino roles require flavour_ordered convention")
+        if order is not None:
+            try:
+                parsed_order = json.loads(str(order))
+            except (TypeError, ValueError, json.JSONDecodeError) as error:
+                raise ValueError(f"{label} has invalid historical invisible_role_order metadata") from error
+            if parsed_order != roles:
+                raise ValueError(f"{label} historical invisible_role_order differs from invisible_roles")
+
+
 def _require_integer(values: np.ndarray, label: str) -> None:
     if not np.issubdtype(values.dtype, np.integer):
         raise ValueError(f"{label} must contain integer values")
@@ -544,6 +603,7 @@ def validate_prediction(path: str | Path, *, deep: bool = True) -> None:
                 raise ValueError("Prediction output has invalid invisible samples")
             _require_finite_dataset(samples, "INVISIBLE/samples", deep=deep)
             roles = _read_invisible_roles(source, samples.shape[3], "Prediction output")
+            _validate_invisible_role_contract(source, roles, "Prediction output")
             for name in ("INVISIBLE/mean", "INVISIBLE/std"):
                 values = source[name]
                 if values.shape != (count, top_k, len(roles), 3):
@@ -842,7 +902,8 @@ def validate_joint_prediction(path: str | Path, *, deep: bool = True) -> None:
             if values.shape != (count, invisible.shape[2], 4):
                 raise ValueError("Joint-flow prediction has invalid invisible truth four-vectors")
             _require_finite(values, "TRUTH/INVISIBLE_FOUR_VECTOR")
-        _read_invisible_roles(source, invisible.shape[2], "Joint-flow prediction")
+        roles = _read_invisible_roles(source, invisible.shape[2], "Joint-flow prediction")
+        _validate_invisible_role_contract(source, roles, "Joint-flow prediction")
         _validate_met_exact_projection(source, "Joint-flow prediction", count)
         _require_integer(states, "Joint-flow assignment states")
         _require_integer(truth_state, "Joint-flow truth states")

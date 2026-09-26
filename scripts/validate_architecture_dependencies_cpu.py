@@ -257,7 +257,21 @@ def _truth_store_partial_support_check() -> dict:
             )
             support_dataset.attrs["role_order"] = json.dumps(role_names)
             destination.attrs["invisible_roles"] = json.dumps(role_names)
+            destination.attrs["invisible_role_convention"] = "top_antitop"
+            destination.attrs["invisible_role_order"] = json.dumps(role_names)
+            destination.attrs["units"] = "GeV"
+            destination.attrs["neutrino_truth_definition"] = (
+                "generator top-side neutrino and generator antitop-side neutrino"
+            )
             destination.attrs["synthetic"] = False
+            neutrinos = destination["LABELS/NEUTRINO"]
+            neutrinos.attrs["role_order"] = json.dumps(role_names)
+            neutrinos.attrs["invisible_role_convention"] = "top_antitop"
+            neutrinos.attrs["units"] = "GeV"
+            neutrinos.attrs["component_order"] = "px,py,pz"
+            neutrinos.attrs["truth_definition"] = (
+                "generator top-side neutrino and generator antitop-side neutrino"
+            )
         store = InvisibleTruthStore(path, role_names, allow_synthetic=False)
         values, observed_support = store.lookup_with_support(event_ids)
         if not torch.equal(observed_support, torch.from_numpy(support)):

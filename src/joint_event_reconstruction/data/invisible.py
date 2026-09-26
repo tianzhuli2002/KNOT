@@ -111,7 +111,11 @@ class InvisibleTruthStore:
                         f"Invisible truth sidecar {self.path} is missing {key}"
                     )
             event_ids = np.asarray(source["EVENT_ID"][:])
-            values = source["LABELS/NEUTRINO"][:]
+            neutrino_dataset = source["LABELS/NEUTRINO"]
+            values = neutrino_dataset[:]
+            neutrino_metadata = {
+                key: neutrino_dataset.attrs[key] for key in neutrino_dataset.attrs
+            }
             support_path = "SUPPORT/INVISIBLE_ROLE"
             if support_path in source:
                 support = np.asarray(source[support_path][:])
@@ -126,6 +130,8 @@ class InvisibleTruthStore:
             self.synthetic = bool(source.attrs.get("synthetic", False))
             self.metadata = {key: source.attrs[key] for key in source.attrs}
             raw_roles = source.attrs.get("invisible_roles")
+            raw_role_order = source.attrs.get("invisible_role_order")
+            role_convention = source.attrs.get("invisible_role_convention")
         if self.synthetic and not allow_synthetic:
             raise ValueError(
                 "Synthetic invisible truth is forbidden unless allow_synthetic=true: "
@@ -149,6 +155,36 @@ class InvisibleTruthStore:
                 f"{self.path}: invisible role order does not match topology; "
                 f"expected={self.role_names}, observed={observed_roles}"
             )
+        if self.role_names == ("top.nu", "antitop.nu") and not self.synthetic:
+            if isinstance(raw_role_order, bytes):
+                raw_role_order = raw_role_order.decode()
+            try:
+                observed_role_order = tuple(str(name) for name in json.loads(str(raw_role_order)))
+            except (TypeError, ValueError, json.JSONDecodeError) as error:
+                raise ValueError(f"{self.path}: invisible_role_order must be a JSON list") from error
+            if (
+                role_convention not in ("top_antitop", b"top_antitop")
+                or observed_role_order != self.role_names
+                or self.metadata.get("units") not in ("GeV", b"GeV")
+                or self.metadata.get("neutrino_truth_definition")
+                not in (
+                    "generator top-side neutrino and generator antitop-side neutrino",
+                    b"generator top-side neutrino and generator antitop-side neutrino",
+                )
+                or self.metadata.get("synthetic") not in (False, np.bool_(False))
+                or neutrino_metadata.get("invisible_role_convention")
+                not in ("top_antitop", b"top_antitop")
+                or neutrino_metadata.get("units") not in ("GeV", b"GeV")
+                or neutrino_metadata.get("truth_definition")
+                not in (
+                    "generator top-side neutrino and generator antitop-side neutrino",
+                    b"generator top-side neutrino and generator antitop-side neutrino",
+                )
+                or neutrino_metadata.get("component_order") not in ("px,py,pz", b"px,py,pz")
+            ):
+                raise ValueError(
+                    f"{self.path}: real top/antitop neutrinos require explicit top_antitop role metadata"
+                )
         if event_ids.ndim != 1 or not np.issubdtype(event_ids.dtype, np.integer):
             raise TypeError(
                 f"{self.path}: EVENT_ID must be a one-dimensional integer dataset"
@@ -180,6 +216,14 @@ class InvisibleTruthStore:
         if not np.isfinite(dense[support]).all():
             raise ValueError(
                 f"{self.path}: supported LABELS/NEUTRINO targets contain non-finite values"
+            )
+        if (
+            self.role_names == ("top.nu", "antitop.nu")
+            and not self.synthetic
+            and not np.array_equal(support, np.isfinite(dense).all(axis=-1))
+        ):
+            raise ValueError(
+                f"{self.path}: top/antitop support must equal finite producer-declared role truth"
             )
         order = np.argsort(event_ids)
         self.event_ids = event_ids[order].astype(np.int64, copy=False)

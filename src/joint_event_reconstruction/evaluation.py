@@ -458,6 +458,62 @@ def evaluate_predictions(path: str | Path) -> dict:
             source.attrs.get("invisible_assignment_conditioning", "unknown")
         )
         support = read_hdf5_support(source)
+        invisible_roles = []
+        raw_roles = source.attrs.get("invisible_roles")
+        if raw_roles is not None:
+            if isinstance(raw_roles, bytes):
+                raw_roles = raw_roles.decode("utf-8")
+            try:
+                invisible_roles = json.loads(str(raw_roles))
+            except (TypeError, ValueError, json.JSONDecodeError) as error:
+                raise ValueError(f"{path}: invalid invisible_roles metadata") from error
+        invisible_contract = None
+        if tuple(invisible_roles) == ("top.nu", "antitop.nu"):
+            convention = source.attrs.get("invisible_role_convention")
+            order = source.attrs.get("invisible_role_order")
+            truth_definition = source.attrs.get("neutrino_truth_definition")
+            units = source.attrs.get("invisible_units")
+            for name, value in (
+                ("invisible_role_convention", convention),
+                ("neutrino_truth_definition", truth_definition),
+                ("invisible_units", units),
+            ):
+                if isinstance(value, bytes):
+                    value = value.decode("utf-8")
+                if not isinstance(value, str) or not value:
+                    raise ValueError(f"{path}: missing {name} for real top/antitop prediction")
+                if name == "invisible_role_convention" and value != "top_antitop":
+                    raise ValueError(f"{path}: incompatible real-neutrino role convention {value!r}")
+                if name == "neutrino_truth_definition" and value != "generator top-side neutrino and generator antitop-side neutrino":
+                    raise ValueError(f"{path}: incompatible real-neutrino truth definition {value!r}")
+                if name == "invisible_units" and value != "GeV":
+                    raise ValueError(f"{path}: real-neutrino prediction units must be GeV")
+            if isinstance(order, bytes):
+                order = order.decode("utf-8")
+            try:
+                role_order = json.loads(str(order))
+            except (TypeError, ValueError, json.JSONDecodeError) as error:
+                raise ValueError(f"{path}: invalid invisible_role_order metadata") from error
+            if role_order != invisible_roles:
+                raise ValueError(
+                    f"{path}: invisible_role_order differs from invisible_roles: "
+                    f"{role_order!r} vs {invisible_roles!r}"
+                )
+            invisible_contract = {
+                "convention": "top_antitop",
+                "roles": role_order,
+                "truth_definition": truth_definition.decode("utf-8") if isinstance(truth_definition, bytes) else truth_definition,
+                "units": units.decode("utf-8") if isinstance(units, bytes) else units,
+                "source_file_sha256": source.attrs.get("source_file_sha256"),
+                "source_manifest_sha256": source.attrs.get("source_manifest_sha256"),
+                "split_membership_sha256": source.attrs.get("split_membership_sha256"),
+            }
+        elif tuple(invisible_roles) == ("electron.nu", "muon.nu"):
+            convention = source.attrs.get("invisible_role_convention")
+            if isinstance(convention, bytes):
+                convention = convention.decode("utf-8")
+            if convention is not None and convention != "flavour_ordered":
+                raise ValueError(f"{path}: historical neutrino roles require flavour_ordered convention")
         result = {
             "prediction_file": str(path),
             "events": len(source["EVENT_ID"]),
@@ -470,6 +526,8 @@ def evaluate_predictions(path: str | Path) -> dict:
             "invisible_formulation": str(
                 source.attrs.get("invisible_formulation", "disabled")
             ),
+            "invisible_roles": invisible_roles,
+            "invisible_truth_contract": invisible_contract,
             "invisible_assignment_conditioning": conditioning,
             "top_k_assignments": int(source.attrs["K"]),
             "posterior_samples": int(source.attrs["M"]),

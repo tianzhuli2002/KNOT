@@ -46,6 +46,7 @@ MET_DTYPE = np.dtype(
         ("btag", "<f4"), ("charge", "<f4"), ("id", "<f4"),
     ]
 )
+NEUTRINO_DTYPE = np.dtype([("px", "<f4"), ("py", "<f4"), ("pz", "<f4")])
 
 
 def _sha256(path: Path) -> str:
@@ -112,63 +113,55 @@ def measured_event_arrays(electrons, muons, global_rows) -> tuple[np.ndarray, np
     count = len(global_rows)
     leptons = _empty_records(LEPTON_DTYPE, (count, 2))
     met = _empty_records(MET_DTYPE, (count, 1))
-    for event in range(count):
-        objects = []
-        for source_type, source_name, rows in (
-            (1, "ELECTRON", electrons[event]),
-            (2, "MUON", muons[event]),
-        ):
-            for source_index, row in enumerate(rows):
-                present = (
-                    np.isfinite(row["pt"])
-                    and row["pt"] > 0.0
-                    and np.isfinite(row["eta"])
-                    and np.isfinite(row["phi"])
-                    and np.isfinite(row["e"])
-                )
-                if present:
-                    charge = float(row["charge"])
-                    if not np.isfinite(charge) or charge == 0.0:
-                        raise ValueError(
-                            f"Invalid measured lepton charge: source={source_name}, "
-                            f"event_in_chunk={event}, source_index={source_index}"
-                        )
-                    objects.append((charge, source_type, source_name, source_index, row))
-        if len(objects) != 2 or sum(item[0] > 0 for item in objects) != 1 or sum(item[0] < 0 for item in objects) != 1:
-            raise ValueError(
-                f"Expected one positive and one negative measured lepton; "
-                f"event_in_chunk={event}, found={len(objects)}"
-            )
-        ordered = sorted(objects, key=lambda item: 0 if item[0] > 0 else 1)
-        for slot, (charge, source_type, _source_name, source_index, row) in enumerate(ordered):
-            for field in ("e", "eta", "phi", "cos_phi", "sin_phi", "pt", "btag"):
-                if field in (row.dtype.names or ()) and np.isfinite(row[field]):
-                    leptons[field][event, slot] = row[field]
-            if not np.isfinite(leptons["cos_phi"][event, slot]):
-                leptons["cos_phi"][event, slot] = np.cos(float(row["phi"]))
-            if not np.isfinite(leptons["sin_phi"][event, slot]):
-                leptons["sin_phi"][event, slot] = np.sin(float(row["phi"]))
-            leptons["charge"][event, slot] = charge
-            leptons["id"][event, slot] = 2.0 if source_type == 1 else 3.0
-            leptons["is_el"][event, slot] = float(source_type == 1)
-            leptons["is_mu"][event, slot] = float(source_type == 2)
-            leptons["source_type"][event, slot] = source_type
-            leptons["source_index"][event, slot] = source_index
+    objects = np.concatenate((electrons, muons), axis=1)
+    source_type = np.broadcast_to(np.asarray((1, 1, 2, 2), dtype=np.int8), (count, 4))
+    source_index = np.broadcast_to(np.asarray((0, 1, 0, 1), dtype=np.int8), (count, 4))
+    present = (
+        np.isfinite(objects["pt"]) & (objects["pt"] > 0.0)
+        & np.isfinite(objects["eta"]) & np.isfinite(objects["phi"])
+        & np.isfinite(objects["e"])
+    )
+    charge = objects["charge"]
+    positive = present & np.isfinite(charge) & (charge > 0.0)
+    negative = present & np.isfinite(charge) & (charge < 0.0)
+    valid = (present.sum(axis=1) == 2) & (positive.sum(axis=1) == 1) & (negative.sum(axis=1) == 1)
+    if not valid.all():
+        bad = np.flatnonzero(~valid)[:10]
+        raise ValueError(
+            "Expected exactly one positive and one negative measured lepton; "
+            f"event_in_chunk={bad.tolist()}, object_counts={present.sum(axis=1)[bad].tolist()}"
+        )
+    indices = (positive.argmax(axis=1), negative.argmax(axis=1))
+    event_indices = np.arange(count)
+    for slot, index in enumerate(indices):
+        row = objects[event_indices, index]
+        for field in ("e", "eta", "phi", "pt", "btag"):
+            if field in (row.dtype.names or ()):
+                leptons[field][:, slot] = row[field]
+        for field, function in (("cos_phi", np.cos), ("sin_phi", np.sin)):
+            raw = row[field] if field in (row.dtype.names or ()) else np.full(count, np.nan)
+            leptons[field][:, slot] = np.where(np.isfinite(raw), raw, function(row["phi"]))
+        leptons["charge"][:, slot] = charge[event_indices, index]
+        leptons["id"][:, slot] = np.where(source_type[event_indices, index] == 1, 2.0, 3.0)
+        leptons["is_el"][:, slot] = source_type[event_indices, index] == 1
+        leptons["is_mu"][:, slot] = source_type[event_indices, index] == 2
+        leptons["source_type"][:, slot] = source_type[event_indices, index]
+        leptons["source_index"][:, slot] = source_index[event_indices, index]
 
-        global_row = global_rows[event]
-        met_pt = float(global_row["met_met"])
-        met_phi = float(global_row["met_phi"])
-        if not np.isfinite(met_pt) or met_pt < 0.0 or not np.isfinite(met_phi):
-            raise ValueError(f"Invalid measured MET magnitude/direction; event_in_chunk={event}")
-        met["e"][event, 0] = met_pt
-        met["pt"][event, 0] = met_pt
-        met["eta"][event, 0] = 0.0
-        met["phi"][event, 0] = met_phi
-        met["cos_phi"][event, 0] = np.cos(met_phi)
-        met["sin_phi"][event, 0] = np.sin(met_phi)
-        met["btag"][event, 0] = 0.0
-        met["charge"][event, 0] = 0.0
-        met["id"][event, 0] = 4.0
+    met_pt = np.asarray(global_rows["met_met"], dtype=np.float64)
+    met_phi = np.asarray(global_rows["met_phi"], dtype=np.float64)
+    if not np.isfinite(met_pt).all() or (met_pt < 0.0).any() or not np.isfinite(met_phi).all():
+        bad = np.flatnonzero(~np.isfinite(met_pt) | (met_pt < 0.0) | ~np.isfinite(met_phi))[:10]
+        raise ValueError(f"Invalid measured MET magnitude/direction; event_in_chunk={bad.tolist()}")
+    met["e"][:, 0] = met_pt
+    met["pt"][:, 0] = met_pt
+    met["eta"][:, 0] = 0.0
+    met["phi"][:, 0] = met_phi
+    met["cos_phi"][:, 0] = np.cos(met_phi)
+    met["sin_phi"][:, 0] = np.sin(met_phi)
+    met["btag"][:, 0] = 0.0
+    met["charge"][:, 0] = 0.0
+    met["id"][:, 0] = 4.0
     return leptons, met
 
 
@@ -268,10 +261,49 @@ def _parent_four_vectors(top_rows: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     return values, support
 
 
-def _prepare_supervision(source_path, output_path, measured_path, rows, event_ids, *, max_jets, chunk_size, source_manifest_hash, split_hash):
+def _prepare_supervision(
+    source_path,
+    output_path,
+    measured_path,
+    rows,
+    event_ids,
+    *,
+    max_jets,
+    chunk_size,
+    source_manifest_hash,
+    split_hash,
+    neutrino_role_support_path=None,
+    source_file_sha256=None,
+):
     with h5py.File(source_path, "r") as source, h5py.File(measured_path, "r") as measured:
         count = len(rows)
         jet_width = int(measured.attrs["max_jets"])
+        role_support_rows = role_support_ids = role_support_values = None
+        neutrino_role_support_sha256 = None
+        if neutrino_role_support_path is not None:
+            neutrino_role_support_sha256 = _sha256(Path(neutrino_role_support_path))
+            with np.load(neutrino_role_support_path, allow_pickle=False) as support_file:
+                role_support_rows = support_file["source_row"].astype(np.int64, copy=True)
+                role_support_ids = support_file["event_id"].astype(np.int64, copy=True)
+                role_support_values = support_file["support"].astype(np.bool_, copy=True)
+            if (
+                role_support_rows.ndim != 1
+                or role_support_ids.shape != role_support_rows.shape
+                or role_support_values.shape != (len(role_support_rows), 2)
+                or (np.diff(role_support_rows) <= 0).any()
+            ):
+                raise ValueError("Verified neutrino support product has invalid row/ID/support arrays")
+            if "TARGETS/NEUTRINO" not in source:
+                raise KeyError(f"Real-neutrino adapter requires /TARGETS/NEUTRINO in {source_path}")
+            expected_role_attrs = {
+                "order": "top, antitop",
+                "slot_0": "neutrino from top (positive-lepton side)",
+                "slot_1": "antineutrino from antitop (negative-lepton side)",
+                "units": "GeV",
+            }
+            observed_role_attrs = {key: source["TARGETS/NEUTRINO"].attrs.get(key) for key in expected_role_attrs}
+            if observed_role_attrs != expected_role_attrs:
+                raise ValueError(f"Real-neutrino source role metadata mismatch: {observed_role_attrs}")
 
         def writer(output):
             labels = output.create_group("LABELS")
@@ -298,10 +330,23 @@ def _prepare_supervision(source_path, output_path, measured_path, rows, event_id
             invisible_support.attrs["role_order"] = json.dumps(
                 ["top.nu", "antitop.nu"]
             )
+            invisible_support.attrs["invisible_role_convention"] = "top_antitop"
             invisible_support.attrs["definition"] = (
-                "false for every event: source slots are electron/muon flavour ordered, "
-                "but charge-side neutrino association is unverified"
+                "Valid event identity and producer-declared TARGETS/NEUTRINO role with finite "
+                "px,py,pz; no explicit producer validity flag is present; no flavor/charge inference"
             )
+            neutrino_dataset = None
+            if role_support_values is not None:
+                neutrino_dataset = labels.create_dataset(
+                    "NEUTRINO", (count, 2), dtype=NEUTRINO_DTYPE,
+                    chunks=(min(chunk_size, max(count, 1)), 2), compression="lzf",
+                )
+                neutrino_dataset.attrs["role_order"] = json.dumps(["top.nu", "antitop.nu"])
+                neutrino_dataset.attrs["invisible_role_convention"] = "top_antitop"
+                neutrino_dataset.attrs["units"] = "GeV"
+                neutrino_dataset.attrs["component_order"] = "px,py,pz"
+                neutrino_dataset.attrs["truth_definition"] = "generator top-side neutrino and generator antitop-side neutrino"
+                neutrino_dataset.attrs["source_dataset"] = "/TARGETS/NEUTRINO"
             target_datasets = {
                 role: partonic.create_dataset(
                     role, (count, 4), dtype="<f4",
@@ -316,51 +361,47 @@ def _prepare_supervision(source_path, output_path, measured_path, rows, event_id
                 stop = min(start + chunk_size, count)
                 selected_rows = np.asarray(rows[start:stop], dtype=np.int64)
                 event_chunk = np.asarray(event_ids[start:stop], dtype=np.int64)
+                measured_ids = np.asarray(measured["EVENT_ID"][start:stop], dtype=np.int64)
+                if not np.array_equal(measured_ids, event_chunk):
+                    raise ValueError(
+                        "Measured/truth sidecar event-ID join mismatch: "
+                        f"rows={start}:{stop}, measured={measured_ids[:5].tolist()}, truth={event_chunk[:5].tolist()}"
+                    )
                 e_input = source["/INPUTS/ELECTRON"][selected_rows]
                 m_input = source["/INPUTS/MUON"][selected_rows]
                 e_labels = source["/LABELS/ELECTRON"][selected_rows]
                 m_labels = source["/LABELS/MUON"][selected_rows]
                 all_jet_labels = source["/LABELS/JET"][selected_rows]
                 top_rows = source["/TARGETS/TOP"][selected_rows]
-                adapted_leptons = np.empty((stop - start, 2), dtype=np.float32)
-                adapted_charge = np.empty((stop - start, 2), dtype=np.uint8)
-                reconstructable = np.zeros(stop - start, dtype=np.bool_)
-                for event in range(stop - start):
-                    charge_slots = []
-                    label_slots = []
-                    for collection, source_labels, source_name in (
-                        (e_input[event], e_labels[event], "ELECTRON"),
-                        (m_input[event], m_labels[event], "MUON"),
-                    ):
-                        for slot, row in enumerate(collection):
-                            if np.isfinite(row["pt"]) and row["pt"] > 0.0:
-                                charge = float(row["charge"])
-                                if not np.isfinite(charge) or charge == 0.0:
-                                    raise ValueError(
-                                        f"Invalid lepton charge in truth alignment: file={source_path}, "
-                                        f"event_id={event_chunk[event]}, source={source_name}, slot={slot}"
-                                    )
-                                charge_slots.append(charge)
-                                label_slots.append(float(source_labels[slot]))
-                    order = np.argsort(np.asarray(charge_slots) < 0.0, kind="stable")
-                    if len(order) != 2 or not np.array_equal(order, np.asarray([0, 1])) and not np.array_equal(order, np.asarray([1, 0])):
-                        raise ValueError(f"Cannot establish charge-side order for event_id={event_chunk[event]}")
-                    ordered_labels = np.asarray(label_slots, dtype=np.float64)[order]
-                    ordered_charges = np.asarray(charge_slots, dtype=np.float64)[order]
-                    charge_expected = np.asarray([1.0, 2.0])
-                    if not np.array_equal(ordered_labels, charge_expected):
-                        raise ValueError(
-                            "Source matched lepton labels disagree with charge-side mapping: "
-                            f"file={source_path}, event_id={event_chunk[event]}, "
-                            f"labels={ordered_labels.tolist()}, charges={ordered_charges.tolist()}"
-                        )
-                    adapted_leptons[event, :] = ordered_labels.astype(np.float32)
-                    adapted_charge[event, :] = charge_expected.astype(np.uint8)
-                    selected_jets = all_jet_labels[event, :jet_width]
-                    reconstructable[event] = (
-                        np.count_nonzero(selected_jets == 1.0) == 1
-                        and np.count_nonzero(selected_jets == 2.0) == 1
+                event_count = stop - start
+                e_present = np.isfinite(e_input["pt"]) & (e_input["pt"] > 0.0)
+                m_present = np.isfinite(m_input["pt"]) & (m_input["pt"] > 0.0)
+                leptons = np.concatenate((e_input, m_input), axis=1)
+                lepton_labels_raw = np.concatenate((e_labels, m_labels), axis=1)
+                lepton_present = np.concatenate((e_present, m_present), axis=1)
+                lepton_charge_raw = leptons["charge"]
+                positive = lepton_present & np.isfinite(lepton_charge_raw) & (lepton_charge_raw > 0.0)
+                negative = lepton_present & np.isfinite(lepton_charge_raw) & (lepton_charge_raw < 0.0)
+                valid_leptons = (lepton_present.sum(axis=1) == 2) & (positive.sum(axis=1) == 1) & (negative.sum(axis=1) == 1)
+                if not valid_leptons.all():
+                    bad = np.flatnonzero(~valid_leptons)[:10]
+                    raise ValueError(f"Invalid measured charge-side inputs: file={source_path}, event_ids={event_chunk[bad].tolist()}")
+                ordered_indices = (positive.argmax(axis=1), negative.argmax(axis=1))
+                adapted_leptons = np.empty((event_count, 2), dtype=np.float32)
+                for role_index, source_index in enumerate(ordered_indices):
+                    adapted_leptons[:, role_index] = lepton_labels_raw[np.arange(event_count), source_index]
+                if not np.equal(adapted_leptons, np.asarray((1.0, 2.0), dtype=np.float32)).all():
+                    bad = np.flatnonzero(~np.equal(adapted_leptons, np.asarray((1.0, 2.0), dtype=np.float32)).all(axis=1))[:10]
+                    raise ValueError(
+                        "Source matched lepton labels disagree with measured charge side: "
+                        f"file={source_path}, event_ids={event_chunk[bad].tolist()}, labels={adapted_leptons[bad].tolist()}"
                     )
+                adapted_charge = np.broadcast_to(np.asarray((1, 2), dtype=np.uint8), (event_count, 2))
+                selected_jets = all_jet_labels[:, :jet_width]
+                reconstructable = (
+                    (np.sum(selected_jets == 1.0, axis=1) == 1)
+                    & (np.sum(selected_jets == 2.0, axis=1) == 1)
+                )
                 physical, target_support = _parent_four_vectors(top_rows)
                 target_datasets["top"][start:stop] = physical[:, 0]
                 target_datasets["antitop"][start:stop] = physical[:, 1]
@@ -370,10 +411,25 @@ def _prepare_supervision(source_path, output_path, measured_path, rows, event_id
                 lepton_labels[start:stop] = adapted_leptons
                 charge_side[start:stop] = adapted_charge
                 assignment_support[start:stop] = reconstructable
+                if role_support_values is not None:
+                    support_positions = np.searchsorted(role_support_rows, selected_rows)
+                    if (support_positions >= len(role_support_rows)).any() or not np.array_equal(role_support_rows[support_positions], selected_rows):
+                        raise ValueError(f"Verified neutrino support is missing source rows {selected_rows[:10].tolist()}")
+                    if not np.array_equal(role_support_ids[support_positions], event_chunk):
+                        raise ValueError("Verified neutrino support EVENT_ID does not match the raw source chunk")
+                    neutrinos = source["/TARGETS/NEUTRINO"][selected_rows]
+                    dense_neutrinos = np.stack([neutrinos[name] for name in ("px", "py", "pz")], axis=-1)
+                    chunk_support = role_support_values[support_positions]
+                    if not np.isfinite(dense_neutrinos[chunk_support]).all():
+                        raise ValueError(f"Supported neutrino targets are non-finite: event_ids={event_chunk[~chunk_support.all(axis=1)][:10].tolist()}")
+                    neutrino_dataset[start:stop] = neutrinos
+                    invisible_support[start:stop] = chunk_support
             labels["JET"].attrs["convention"] = "source truth labels; 1=top b, 2=antitop bbar, 0=background, NaN=padding"
             labels["LEPTON"].attrs["convention"] = "source matched labels reordered by measured charge; validated 1=positive/top side, 2=negative/antitop side"
             support_group["LEPTON_CHARGE_SIDE"].attrs["convention"] = "charge-derived labels, 1=positive/top side, 2=negative/antitop side; distinct from LABELS/LEPTON source truth"
             support_group["VISIBLE_ASSIGNMENT_RECONSTRUCTABLE"].attrs["definition"] = "both source-labelled b jets occur within configured max_jets; false is represented by maintained NULL assignment objective"
+            if neutrino_dataset is not None:
+                invisible_support.attrs["definition"] = "valid event identity and finite producer-declared top.nu/antitop.nu px,py,pz; no explicit producer validity flag is present; legacy flavor/charge cross-check does not affect support"
             for target in target_datasets.values():
                 target.attrs["physical_order"] = "E,px,py,pz"
                 target.attrs["units"] = "GeV"
@@ -389,12 +445,29 @@ def _prepare_supervision(source_path, output_path, measured_path, rows, event_id
             output.attrs["partonic_inverse_transform"] = "m=expm1(raw_log_mass), E=sqrt(px^2+py^2+pz^2+m^2)"
             output.attrs["sidecar_version"] = "partonic_ttbar2l_supervision_v1"
             output.attrs["source_path"] = str(source_path.resolve())
+            if source_file_sha256 is not None:
+                output.attrs["source_file_sha256"] = str(source_file_sha256)
             output.attrs["selected_event_count"] = count
             output.attrs["max_jets"] = jet_width
             output.attrs["split_version"] = SPLIT_NAME
             output.attrs["split_membership_sha256"] = split_hash
             output.attrs["source_manifest_sha256"] = source_manifest_hash
-            output.attrs["neutrino_supervision"] = "disabled: flavour order is known, neutrino charge/top side and same-flavour pairing are not verified"
+            if neutrino_dataset is not None:
+                output.attrs["invisible_roles"] = json.dumps(["top.nu", "antitop.nu"])
+                output.attrs["invisible_role_convention"] = "top_antitop"
+                output.attrs["invisible_role_order"] = json.dumps(["top.nu", "antitop.nu"])
+                output.attrs["neutrino_truth_definition"] = "generator top-side neutrino and generator antitop-side neutrino"
+                output.attrs["neutrino_order"] = "top.nu,antitop.nu"
+                output.attrs["units"] = "GeV"
+                output.attrs["synthetic"] = False
+                output.attrs["neutrino_source_dataset"] = "/TARGETS/NEUTRINO"
+                output.attrs["neutrino_source_branches"] = str(source["TARGETS/NEUTRINO"].attrs["source_branches"])
+                output.attrs["neutrino_source_energy_scale_applied"] = float(source.attrs["neutrino_energy_scale_applied"])
+                output.attrs["neutrino_role_support_sha256"] = neutrino_role_support_sha256
+                output.attrs["neutrino_supervision"] = "producer-declared top/antitop targets with finite px,py,pz; legacy flavor/charge disagreement is diagnostic only"
+                output.attrs["neutrino_role_support_definition"] = "valid event identity and finite authoritative target components; no flavor/charge inference"
+            else:
+                output.attrs["neutrino_supervision"] = "disabled: no charge-side real-neutrino support product was supplied"
             output.attrs["lepton_truth_contract"] = "charge-side labels and source matched labels are stored separately; they were required to agree in this adapter"
             output.attrs["synthetic"] = False
 
@@ -474,7 +547,8 @@ def main() -> None:
     parser.add_argument("--output-dir", type=Path, default=EXPERIMENT_DIR / "adapted")
     parser.add_argument("--population", choices=("development", "train_validation", "test"), default="development")
     parser.add_argument("--max-jets", type=int, choices=(8, 20), default=8)
-    parser.add_argument("--chunk-size", type=int, default=128)
+    parser.add_argument("--chunk-size", type=int, default=8192)
+    parser.add_argument("--neutrino-role-support", type=Path, default=None)
     args = parser.parse_args()
     source = args.source.expanduser().resolve()
     manifest_dir = args.manifest_dir.expanduser().resolve()
@@ -489,6 +563,19 @@ def main() -> None:
         raise FileNotFoundError("Source manifest and frozen split membership are required")
     source_manifest_hash = _sha256(source_manifest)
     split_hash = _sha256(membership)
+    source_manifest_data = json.loads(source_manifest.read_text())
+    source_file_sha256 = source_manifest_data.get("new_source", {}).get("sha256")
+    neutrino_role_support = args.neutrino_role_support
+    if neutrino_role_support is None:
+        candidate = manifest_dir / "splits" / "neutrino_role_support_train_validation_realnu_v1.npz"
+        if candidate.is_file():
+            neutrino_role_support = candidate
+    if neutrino_role_support is not None:
+        neutrino_role_support = neutrino_role_support.expanduser().resolve()
+        if args.population == "test":
+            raise ValueError("Real-neutrino training/validation adapters must never materialise sealed-test rows")
+        if not neutrino_role_support.is_file():
+            raise FileNotFoundError(f"Verified neutrino role support product is missing: {neutrino_role_support}")
     rows, event_ids, splits = _selection(manifest_dir, args.population)
     if len(np.unique(rows)) != len(rows) or np.any(np.diff(rows) <= 0):
         raise ValueError("Adapter rows must be strictly increasing and unique")
@@ -509,6 +596,8 @@ def main() -> None:
         source, supervision_path, measured_path, rows, event_ids,
         max_jets=args.max_jets, chunk_size=args.chunk_size,
         source_manifest_hash=source_manifest_hash, split_hash=split_hash,
+        neutrino_role_support_path=neutrino_role_support,
+        source_file_sha256=source_file_sha256,
     )
     _write_training_view(training_path, measured_path, supervision_path)
     with h5py.File(measured_path, "r") as measured, h5py.File(supervision_path, "r") as truth:
@@ -523,6 +612,9 @@ def main() -> None:
             "measured_input_has_labels_or_targets": any(name in measured for name in ("LABELS", "TARGETS")),
             "visible_assignment_reconstructable": int(truth["SUPPORT/VISIBLE_ASSIGNMENT_RECONSTRUCTABLE"][:].sum()),
             "partonic_role_support": truth["PARTONIC/SUPPORT"][:].sum(axis=0).astype(int).tolist(),
+            "neutrino_role_support": truth["SUPPORT/INVISIBLE_ROLE"][:].sum(axis=0).astype(int).tolist(),
+            "neutrino_joint_support": int(truth["SUPPORT/INVISIBLE_ROLE"][:].all(axis=1).sum()),
+            "neutrino_joint_unsupported": int((~truth["SUPPORT/INVISIBLE_ROLE"][:].all(axis=1)).sum()),
             "objective_support": _support_summary(
                 truth["SUPPORT/VISIBLE_ASSIGNMENT_RECONSTRUCTABLE"][:],
                 truth["SUPPORT/INVISIBLE_ROLE"][:],

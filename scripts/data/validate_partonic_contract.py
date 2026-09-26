@@ -11,7 +11,6 @@ import h5py
 import numpy as np
 
 from joint_event_reconstruction.configuration import load_experiment
-from joint_event_reconstruction.runtime_paths import runtime_paths
 from joint_event_reconstruction.topology.compiler import load_topology
 
 
@@ -64,6 +63,7 @@ def validate_experiment(
     *,
     allow_reserved_test: bool = False,
     overrides: list[str] | None = None,
+    source_manifest_path: str | Path | None = None,
 ) -> dict:
     config = load_experiment(experiment_path, overrides or [])
     if not bool(config.model.parent_cfm.enabled):
@@ -102,8 +102,11 @@ def validate_experiment(
         raise FileNotFoundError(
             f"Measured input or parent-truth sidecar is missing: {measured_path}, {target_path}"
         )
-    experiment_root = runtime_paths().project_root / "results/experiments/partonic_ttbar2L_2M_v1"
-    manifest_path = experiment_root / "source_manifest_v1.json"
+    manifest_path = (
+        Path(source_manifest_path).expanduser().resolve()
+        if source_manifest_path is not None
+        else measured_path.parents[2] / "source_manifest_v1.json"
+    )
     if not manifest_path.is_file():
         raise FileNotFoundError(f"Frozen source manifest is missing: {manifest_path}")
     manifest = json.loads(manifest_path.read_text())
@@ -296,16 +299,68 @@ def validate_experiment(
             "SUPPORT/INVISIBLE_ROLE.role_order",
             target_path,
         )
-        if invisible_roles != ["top.nu", "antitop.nu"]:
+        if (
+            _attr_text(target.attrs.get("invisible_role_convention", "")) != "top_antitop"
+            or invisible_roles != ["top.nu", "antitop.nu"]
+        ):
             raise ValueError(
-                f"{target_path}: invisible support role order is incompatible: {invisible_roles}"
+                f"{target_path}: incompatible invisible role convention/order: "
+                f"{target.attrs.get('invisible_role_convention')}, {invisible_roles}"
             )
-        if not bool(manifest.get("bounded_sample", {}).get("neutrino_side_mapping_verified", False)):
-            if np.asarray(invisible_support_dataset[:], dtype=bool).any():
-                raise ValueError(
-                    "Neutrino role support is enabled even though source/top-side mapping "
-                    "remains unverified"
-                )
+        neutrino_target_path = "LABELS/NEUTRINO"
+        if neutrino_target_path not in target:
+            raise KeyError(f"{target_path}: missing real-neutrino truth dataset {neutrino_target_path}")
+        neutrino_dataset = target[neutrino_target_path]
+        if (
+            neutrino_dataset.shape != (event_count, 2)
+            or tuple(neutrino_dataset.dtype.names or ()) != ("px", "py", "pz")
+        ):
+            raise TypeError(
+                f"{target_path}:{neutrino_target_path} must contain px,py,pz for two roles"
+            )
+        if (
+            _attr_text(neutrino_dataset.attrs.get("invisible_role_convention", "")) != "top_antitop"
+            or _json_attr(neutrino_dataset.attrs.get("role_order"), "LABELS/NEUTRINO.role_order", target_path)
+            != ["top.nu", "antitop.nu"]
+            or _attr_text(neutrino_dataset.attrs.get("units", "")) != "GeV"
+            or _attr_text(neutrino_dataset.attrs.get("truth_definition", ""))
+            != "generator top-side neutrino and generator antitop-side neutrino"
+        ):
+            raise ValueError(f"{target_path}:{neutrino_target_path} has incompatible real-neutrino metadata")
+        truth_contract = manifest.get("truth_contract", {})
+        mapping = truth_contract.get("new_source_branch_mapping", {})
+        mapping_is_verified = (
+            mapping.get("order") == "top, antitop"
+            and mapping.get("slot_0") == "neutrino from top (positive-lepton side)"
+            and mapping.get("slot_1") == "antineutrino from antitop (negative-lepton side)"
+            and mapping.get("units") == "GeV"
+            and truth_contract.get("invisible_role_convention") == "top_antitop"
+            and truth_contract.get("invisible_role_order") == ["top.nu", "antitop.nu"]
+            and truth_contract.get("neutrino_truth_definition")
+            == "generator top-side neutrino and generator antitop-side neutrino"
+            and truth_contract.get("units") == "GeV"
+            and truth_contract.get("synthetic") is False
+            and truth_contract.get("support_policy")
+            == "train/validation event identity is valid and each producer-declared TARGETS/NEUTRINO role exists with finite px,py,pz; no explicit producer validity flag is present; no flavor/charge inference is applied"
+        )
+        if not mapping_is_verified:
+            raise ValueError(
+                "Neutrino source manifest does not enforce the producer-declared top/antitop contract"
+            )
+        train_validation_count = int(truth_contract.get("train_validation_event_count", -1))
+        supported_counts = truth_contract.get("supported_event_count_by_role", {})
+        expected_train_validation_count = sum(int(split_counts[key]) for key in ("0", "1"))
+        if (
+            train_validation_count != expected_train_validation_count
+            or int(truth_contract.get("unsupported_neutrino_events", -1)) != 0
+            or any(
+                int(supported_counts.get(role, -1)) != train_validation_count
+                for role in ("top.nu", "antitop.nu")
+            )
+        ):
+            raise ValueError(
+                "Real-neutrino train/validation support does not match valid identities and finite producer truth"
+            )
         for role in ROLES:
             dataset = target[f"PARTONIC/{role}"]
             if dataset.shape != (event_count, 4) or dataset.dtype != np.float32:
@@ -346,6 +401,16 @@ def validate_experiment(
                 invisible_support = np.asarray(
                     invisible_support_dataset[start:stop], dtype=bool
                 )
+                neutrino_records = np.asarray(neutrino_dataset[start:stop])
+                neutrino_values = np.stack(
+                    [neutrino_records[name] for name in ("px", "py", "pz")], axis=-1
+                )
+                neutrino_finite = np.isfinite(neutrino_values).all(axis=-1)
+                if not np.array_equal(invisible_support, neutrino_finite):
+                    raise ValueError(
+                        f"{target_path}: neutrino support differs from finite authoritative role truth "
+                        f"at rows {start}:{stop}"
+                    )
                 if not np.isfinite(values).all():
                     raise ValueError(
                         f"{target_path}: non-finite partonic targets at {start}:{stop}"
@@ -513,6 +578,7 @@ def main() -> None:
     parser.add_argument("--checkpoint")
     parser.add_argument("--allow-reserved-test", action="store_true")
     parser.add_argument("--set", dest="overrides", action="append", default=[])
+    parser.add_argument("--source-manifest", type=Path)
     args = parser.parse_args()
     print(json.dumps(
         validate_experiment(
@@ -520,6 +586,7 @@ def main() -> None:
             args.checkpoint,
             allow_reserved_test=args.allow_reserved_test,
             overrides=args.overrides,
+            source_manifest_path=args.source_manifest,
         ),
         indent=2,
         sort_keys=True,

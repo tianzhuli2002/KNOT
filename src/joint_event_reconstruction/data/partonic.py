@@ -88,6 +88,7 @@ class PartonicTruthStore:
                 "partonic_feature_transform",
                 "partonic_inverse_transform",
                 "source_manifest_sha256",
+                "source_file_sha256",
                 "split_membership_sha256",
                 "split_version",
                 "sidecar_version",

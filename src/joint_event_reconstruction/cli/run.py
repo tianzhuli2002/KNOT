@@ -3,13 +3,19 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import os
+import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from omegaconf import OmegaConf
 
-from joint_event_reconstruction.configuration import load_experiment, load_visible_config
+from joint_event_reconstruction.configuration import (
+    load_experiment,
+    load_visible_config,
+)
 from joint_event_reconstruction.runtime_paths import runtime_paths
 
 if TYPE_CHECKING:
@@ -33,6 +39,72 @@ _COMPONENT_PREFIXES = {
     "partonic": ("event_model.partonic_head.",),
     "partonic_cfm": ("event_model.parent_cfm.",),
 }
+
+
+def _sha256_path(path: str | Path) -> str:
+    digest = hashlib.sha256()
+    with Path(path).expanduser().resolve().open("rb") as stream:
+        for block in iter(lambda: stream.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _source_branch() -> str | None:
+    if os.environ.get("JER_SOURCE_BRANCH"):
+        return os.environ["JER_SOURCE_BRANCH"]
+    result = subprocess.run(
+        ["git", "branch", "--show-current"],
+        cwd=runtime_paths().project_root,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip() or None
+
+
+def _invisible_truth_contract(data) -> dict | None:
+    store = data.structured_collator.invisible_store
+    if store is None:
+        return None
+    metadata = store.metadata
+
+    def attr(name: str):
+        value = metadata.get(name)
+        return value.decode("utf-8") if isinstance(value, bytes) else value
+
+    stat = store.path.stat()
+    return {
+        "invisible_role_convention": attr("invisible_role_convention"),
+        "invisible_role_order": list(store.role_names),
+        "truth_definition": attr("neutrino_truth_definition"),
+        "units": attr("units"),
+        "synthetic": bool(store.synthetic),
+        "source_file_sha256": attr("source_file_sha256"),
+        "source_manifest_sha256": attr("source_manifest_sha256"),
+        "split_membership_sha256": attr("split_membership_sha256"),
+        "split_version": attr("split_version"),
+        "support_sha256": attr("neutrino_role_support_sha256"),
+        "source_path": attr("source_path"),
+        "truth_store": {
+            "path": str(store.path),
+            "size_bytes": int(stat.st_size),
+            "mtime_ns": int(stat.st_mtime_ns),
+            "sha256": _sha256_path(store.path),
+        },
+    }
+
+
+def _training_runtime_metadata(source_sha: str) -> dict:
+    branch = _source_branch()
+    import torch
+
+    gpu_type = torch.cuda.get_device_name(0) if torch.cuda.is_available() else None
+    return {
+        "git_sha": source_sha,
+        "branch": branch,
+        "slurm_job_id": os.environ.get("SLURM_JOB_ID"),
+        "gpu_type": gpu_type,
+    }
 
 
 def _load_repo_script(relative_path: str, module_name: str):
@@ -171,7 +243,7 @@ def _load_initial_components(
     checkpoint = torch.load(path, map_location="cpu", weights_only=False)
     source = checkpoint.get("state_dict")
     if not isinstance(source, dict):
-        raise ValueError(f"Initial checkpoint has no state_dict: {path}")
+        raise TypeError(f"Initial checkpoint has no state_dict: {path}")
 
     saved = checkpoint.get("hyper_parameters", {})
     for key in ("topology_signature", "input_features", "source_type_ids"):
@@ -183,7 +255,7 @@ def _load_initial_components(
     source_signatures = saved.get("architecture_component_signatures")
     target_signatures = module.hparams.get("architecture_component_signatures")
     if not isinstance(source_signatures, dict) or not isinstance(target_signatures, dict):
-        raise ValueError(
+        raise TypeError(
             "Initial checkpoint is missing architecture component signatures"
         )
     incompatible_components = [
@@ -268,7 +340,8 @@ def train(
     if public_config_path is not None:
         public_source = Path(public_config_path).expanduser().resolve()
         (output_dir / "config.public.yaml").write_text(public_source.read_text())
-    (output_dir / "config.resolved.yaml").write_text(OmegaConf.to_yaml(config, resolve=True))
+    resolved_config_text = OmegaConf.to_yaml(config, resolve=True)
+    (output_dir / "config.resolved.yaml").write_text(resolved_config_text)
     (output_dir / "architecture.json").write_text(
         json.dumps(active_architecture(config.model), indent=2, sort_keys=True) + "\n"
     )
@@ -276,7 +349,17 @@ def train(
         json.dumps(encoder_input_contract(config), indent=2, sort_keys=True) + "\n"
     )
     git_sha = runtime_paths().source_sha
+    runtime_metadata = _training_runtime_metadata(git_sha)
+    resolved_config_sha256 = hashlib.sha256(resolved_config_text.encode("utf-8")).hexdigest()
+    public_config_sha256 = (
+        _sha256_path(public_config_path) if public_config_path is not None else None
+    )
     module.hparams["git_sha"] = git_sha
+    module.hparams["branch"] = runtime_metadata["branch"]
+    module.hparams["slurm_job_id"] = runtime_metadata["slurm_job_id"]
+    module.hparams["gpu_type"] = runtime_metadata["gpu_type"]
+    module.hparams["resolved_config_sha256"] = resolved_config_sha256
+    module.hparams["public_config_sha256"] = public_config_sha256
     if config.data.tensor_cache is None:
         # Small synthetic and contract fixtures deliberately run without a
         # materialised tensor cache.  Preserve the same provenance fields as
@@ -308,10 +391,15 @@ def train(
             "roles": list(data.structured_collator.partonic_store.role_names),
             "truth_bindings": dict(data.structured_collator.partonic_store.truth_bindings),
             "source_manifest_sha256": truth_metadata.get("source_manifest_sha256"),
+            "source_file_sha256": truth_metadata.get("source_file_sha256"),
             "split_membership_sha256": truth_metadata.get("split_membership_sha256"),
             "split_version": truth_metadata.get("split_version"),
         }
         module.hparams["partonic_scaler_fit"] = data.partonic_scaler_fit_metadata
+    invisible_contract = _invisible_truth_contract(data)
+    if invisible_contract is not None:
+        module.hparams["invisible_truth_contract"] = invisible_contract
+        module.hparams["invisible_scaler_fit"] = data.invisible_scaler_fit_metadata
     if data.structured_collator.visible_store is not None:
         module.hparams["visible_truth_metadata"] = dict(
             data.structured_collator.visible_store.metadata
@@ -328,6 +416,11 @@ def train(
         json.dumps(
             {
                 "git_sha": git_sha,
+                "branch": runtime_metadata["branch"],
+                "slurm_job_id": runtime_metadata["slurm_job_id"],
+                "gpu_type": runtime_metadata["gpu_type"],
+                "resolved_config_sha256": resolved_config_sha256,
+                "public_config_sha256": public_config_sha256,
                 "experiment_seed": int(config.experiment.seed),
                 "data_subset_seed": int(config.data.subset_seed),
                 "precision": str(config.training.precision),
@@ -337,6 +430,9 @@ def train(
                 "dataset_identity": cache_metadata.get("source_identity"),
                 "split_identity": data.split_metadata,
                 "visible_truth_metadata": module.hparams.get("visible_truth_metadata"),
+                "invisible_truth_contract": invisible_contract,
+                "invisible_scaler": module.scaler_metadata,
+                "invisible_scaler_fit": data.invisible_scaler_fit_metadata,
                 "partonic_truth_contract": module.hparams.get("partonic_truth_contract"),
                 "external_package_versions": module.hparams["external_package_versions"],
             },
@@ -429,10 +525,35 @@ def _validate_checkpoint_data_contract(
                     "Prediction event IDs are outside the checkpoint train/validation "
                     "population and are not a separately identified reserved-test input"
                 )
-    elif bool(config.model.parent_cfm.enabled):
-        raise ValueError(
-            "Partonic CFM checkpoint has no frozen event/split identity metadata"
-        )
+    if bool(config.model.invisible.enabled):
+        invisible_contract = saved_hparams.get("invisible_truth_contract")
+        if not isinstance(invisible_contract, dict):
+            raise ValueError("Invisible checkpoint is missing its source role contract")
+        expected_roles = [role.key for role in data.structured_collator.spec.invisible_roles]
+        if invisible_contract.get("invisible_role_order") != expected_roles:
+            raise ValueError(
+                "Invisible checkpoint role order differs from the topology: "
+                f"checkpoint={invisible_contract.get('invisible_role_order')!r}, "
+                f"topology={expected_roles!r}"
+            )
+        if expected_roles == ["top.nu", "antitop.nu"] and not bool(
+            invisible_contract.get("synthetic", False)
+        ):
+            if (
+                invisible_contract.get("invisible_role_convention") != "top_antitop"
+                or invisible_contract.get("truth_definition")
+                != "generator top-side neutrino and generator antitop-side neutrino"
+                or invisible_contract.get("units") != "GeV"
+            ):
+                raise ValueError("Invisible checkpoint does not declare the real top/antitop neutrino contract")
+            source_contract = (current_split or {}).get("source_contract", {})
+            for key in ("source_manifest_sha256", "split_membership_sha256", "split_version"):
+                if invisible_contract.get(key) != source_contract.get(key):
+                    raise ValueError(
+                        "Invisible checkpoint source/split identity differs from measured input: "
+                        f"{key} checkpoint={invisible_contract.get(key)!r}, "
+                        f"input={source_contract.get(key)!r}"
+                    )
     saved_visible = saved_hparams.get("visible_truth_metadata")
     current_visible = data.structured_collator.visible_store
     if current_visible is not None:
@@ -459,7 +580,7 @@ def _validate_checkpoint_data_contract(
         return
     contract = saved_hparams.get("partonic_truth_contract")
     if not isinstance(contract, dict):
-        raise ValueError("Partonic CFM checkpoint is missing its truth contract")
+        raise TypeError("Partonic CFM checkpoint is missing its truth contract")
     expected_bindings = {
         str(key): str(value)
         for key, value in config.model.parent_cfm.truth_bindings.items()
@@ -541,6 +662,24 @@ def load_trained(config, visible, data, checkpoint_path: str) -> JointEventModul
             )
         ),
     )
+    saved_hparams = checkpoint.get("hyper_parameters", {})
+    for key in (
+        "git_sha",
+        "branch",
+        "slurm_job_id",
+        "gpu_type",
+        "resolved_config_sha256",
+        "public_config_sha256",
+        "cache_metadata",
+        "dataset_identity",
+        "split_identity",
+        "partonic_truth_contract",
+        "partonic_scaler_fit",
+        "invisible_truth_contract",
+        "invisible_scaler_fit",
+    ):
+        if key in saved_hparams:
+            module.hparams[key] = saved_hparams[key]
     module.validate_checkpoint_metadata(checkpoint)
     module.load_state_dict(checkpoint["state_dict"], strict=True)
     return module
@@ -552,7 +691,9 @@ def predict(config, args) -> None:
     import torch
 
     from joint_event_reconstruction.prediction import predict_hdf5
-    from joint_event_reconstruction.prediction_discrete import predict_discrete_flow_hdf5
+    from joint_event_reconstruction.prediction_discrete import (
+        predict_discrete_flow_hdf5,
+    )
     from joint_event_reconstruction.prediction_joint import predict_joint_flow_hdf5
 
     torch.set_float32_matmul_precision("high")
@@ -618,6 +759,35 @@ def predict(config, args) -> None:
 
     with h5py.File(Path(args.output).expanduser().resolve(), "r+") as output:
         output.attrs["prediction_seed"] = prediction_seed
+        truth_contract = module.hparams.get("invisible_truth_contract")
+        if isinstance(truth_contract, dict):
+            output.attrs["invisible_role_convention"] = truth_contract["invisible_role_convention"]
+            output.attrs["invisible_role_order"] = json.dumps(truth_contract["invisible_role_order"])
+            output.attrs["neutrino_truth_definition"] = truth_contract["truth_definition"]
+            output.attrs["invisible_units"] = truth_contract["units"]
+            output.attrs["source_file_sha256"] = truth_contract["source_file_sha256"]
+            output.attrs["source_manifest_sha256"] = truth_contract["source_manifest_sha256"]
+            output.attrs["split_membership_sha256"] = truth_contract["split_membership_sha256"]
+            output.attrs["truth_store_identity"] = json.dumps(
+                truth_contract["truth_store"], sort_keys=True
+            )
+            output.attrs["measured_cache_identity"] = json.dumps(
+                module.hparams.get("cache_metadata", {}), sort_keys=True
+            )
+            output.attrs["training_git_sha"] = str(module.hparams.get("git_sha", ""))
+            output.attrs["training_branch"] = str(module.hparams.get("branch") or "")
+            output.attrs["training_config_sha256"] = str(
+                module.hparams.get("resolved_config_sha256", "")
+            )
+            output.attrs["invisible_scaler_identity"] = hashlib.sha256(
+                json.dumps(module.scaler_metadata, sort_keys=True).encode("utf-8")
+            ).hexdigest()
+        output.attrs["prediction_git_sha"] = runtime_paths().source_sha
+        output.attrs["prediction_branch"] = _source_branch() or ""
+        output.attrs["prediction_slurm_job_id"] = os.environ.get("SLURM_JOB_ID", "")
+        output.attrs["prediction_gpu_type"] = (
+            torch.cuda.get_device_name(0) if torch.cuda.is_available() else "CPU"
+        )
 
 
 def predict_partonic(config, args) -> None:
@@ -971,7 +1141,9 @@ def _main() -> None:
         print(json.dumps(evaluate_any_predictions(args.predictions), indent=2, sort_keys=True))
         return
     if args.command == "evaluate-partonic":
-        from joint_event_reconstruction.prediction_partonic import evaluate_partonic_hdf5
+        from joint_event_reconstruction.prediction_partonic import (
+            evaluate_partonic_hdf5,
+        )
 
         print(json.dumps(
             evaluate_partonic_hdf5(args.predictions, args.truth, args.output),
