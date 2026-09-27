@@ -127,6 +127,15 @@ def initialisation_contract() -> dict:
             raise RuntimeError(
                 f"{mode} invisible initialization differs from the shared Q1 predictor"
             )
+    parent_hashes = {
+        mode: modes[mode]["component_sha256"].get("partonic_cfm")
+        for mode in PARENT_MODES
+    }
+    if None in parent_hashes.values() or len(set(parent_hashes.values())) != 1:
+        raise RuntimeError(
+            "Parent-flow modes must share the approved parent-CFM initial weights: "
+            f"{parent_hashes}"
+        )
     return {
         "manifest_path": str(INITIALISATION_MANIFEST_PATH.resolve()),
         "manifest_sha256": manifest_sha,

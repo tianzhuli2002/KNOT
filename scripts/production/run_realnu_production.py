@@ -23,8 +23,8 @@ ROOT = Path(
     os.environ.get("JER_REALNU_PROJECT_ROOT", Path(__file__).resolve().parents[2])
 ).expanduser().resolve()
 EXPERIMENT_ROOT = ROOT / "results/experiments/partonic_ttbar2L_2M_realnu_v1"
-PRODUCTION_ROOT = EXPERIMENT_ROOT / "production/realnu_top_antitop_20260926"
-ATTEMPT_ROOT = EXPERIMENT_ROOT / "attempts/realnu_production_20260926"
+PRODUCTION_ROOT = EXPERIMENT_ROOT / "production/realnu_top_antitop_20260927_release2"
+ATTEMPT_ROOT = EXPERIMENT_ROOT / "attempts/realnu_production_20260927_release2"
 CONFIG_ROOT = SOURCE_ROOT / "configs/experiments/realnu_v1/production_draft"
 MEASURED_PATH = (
     EXPERIMENT_ROOT
@@ -36,7 +36,7 @@ TRUTH_PATH = (
     "partonic_ttbar2l_train_validation_maxjets8_v1_supervision.h5"
 )
 CACHE_PATH = EXPERIMENT_ROOT / "cache/train_validation_measured_maxjets8_v1.pt"
-INITIALISATION_ROOT = EXPERIMENT_ROOT / "production/initialisations_objective_matched_v4"
+INITIALISATION_ROOT = EXPERIMENT_ROOT / "production/initialisations_objective_matched_v5"
 INITIALISATION_MANIFEST_PATH = INITIALISATION_ROOT / "initialisation_manifest.json"
 SOURCE_MANIFEST_PATH = EXPERIMENT_ROOT / "source_manifest_v1.json"
 SPLIT_PATH = EXPERIMENT_ROOT / "split_membership_v1.npz"

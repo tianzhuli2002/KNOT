@@ -160,6 +160,11 @@ def prepare(config_dir: Path, output_dir: Path) -> dict:
     built = {}
     for name, filename in CONFIGS.items():
         built[name] = _build(name, config_dir / filename, scalers)
+        config, module = built[name]
+        if bool(config.model.invisible.enabled):
+            module.hparams["invisible_scaler_fit"] = scaler_fit["invisible"]
+        if bool(config.model.parent_cfm.enabled):
+            module.hparams["partonic_scaler_fit"] = scaler_fit["partonic"]
 
     transfer = {
         "Q0": (),
@@ -176,6 +181,8 @@ def prepare(config_dir: Path, output_dir: Path) -> dict:
         "J_A": "Q1",
         "J_AN": "Q1",
     }
+    secondary_transfers = {"PCFM_Q": ("partonic_cfm",)}
+    secondary_sources = {"PCFM_Q": "J0"}
     artifacts = {}
     canonical = {
         "Q0": output_dir / "Q0_initial.ckpt",
@@ -185,7 +192,7 @@ def prepare(config_dir: Path, output_dir: Path) -> dict:
         built["Q0"][1],
         {"mode": "Q0", "seed": int(built["Q0"][0].experiment.seed), "copied": []},
     )
-    for name in ("Q1", "PCFM_Q", "J0", "J_A", "J_AN"):
+    for name in ("Q1", "J0", "PCFM_Q", "J_A", "J_AN"):
         config, module = built[name]
         source_name = sources[name]
         source_path = canonical.get(source_name, output_dir / f"{source_name}_initial.ckpt")
@@ -193,10 +200,18 @@ def prepare(config_dir: Path, output_dir: Path) -> dict:
         if copied:
             _load_initial_components(module, source_path, copied)
         copied_sources = [source_name] if copied else []
+        if name in secondary_transfers:
+            secondary_name = secondary_sources[name]
+            _load_initial_components(
+                module,
+                canonical[secondary_name],
+                secondary_transfers[name],
+            )
+            copied_sources.append(secondary_name)
         metadata = {
             "mode": name,
             "seed": int(config.experiment.seed),
-            "copied_components": list(copied),
+            "copied_components": list(copied) + list(secondary_transfers.get(name, ())),
             "source_initialisations": copied_sources,
         }
         target = output_dir / f"{name}_initial.ckpt"
@@ -212,8 +227,11 @@ def prepare(config_dir: Path, output_dir: Path) -> dict:
             "checkpoint": str(canonical[name]),
             "initialisation": (
                 {"mode": name, "seed": int(_config.experiment.seed),
-                 "copied_components": list(transfer[name]),
-                 "source_initialisations": ([] if not transfer[name] else [sources[name]]),
+                 "copied_components": list(transfer[name]) + list(secondary_transfers.get(name, ())),
+                 "source_initialisations": (
+                     ([sources[name]] if transfer[name] else [])
+                     + ([secondary_sources[name]] if name in secondary_sources else [])
+                 ),
                  "parent_cfm_conditioning": (
                      str(_config.model.parent_cfm.conditioning)
                      if bool(_config.model.parent_cfm.enabled)
@@ -233,7 +251,15 @@ def prepare(config_dir: Path, output_dir: Path) -> dict:
             artifacts[name]["component_sha256"].get("invisible")
             != artifacts["Q1"]["component_sha256"].get("invisible")
         ):
-            raise AssertionError(f"{name} invisible initialization differs from the shared Q1 predictor")
+            raise AssertionError(
+                f"{name} invisible initialization differs from the shared Q1 predictor"
+            )
+    parent_hashes = {
+        name: artifacts[name]["component_sha256"].get("partonic_cfm")
+        for name in ("PCFM_Q", "J0", "J_A", "J_AN")
+    }
+    if None in parent_hashes.values() or len(set(parent_hashes.values())) != 1:
+        raise AssertionError(f"Parent-CFM initial states must be shared across all parent modes: {parent_hashes}")
     for name in ("Q0", "Q1"):
         shared = ("visible", "assignment", "invisible")
         for component in shared:
@@ -246,7 +272,7 @@ def prepare(config_dir: Path, output_dir: Path) -> dict:
         "modes": artifacts,
         "q0_q1_shared_initialisation_equal": True,
         "q0_q1_shared_components": ["visible", "assignment", "invisible"],
-        "parent_cfm_initialisation": "mode-specific seeded weights for P0/P1/P2 conditioning",
+        "parent_cfm_initialisation": "shared J0 weights across PCFM_Q, J0, J_A, and J_AN",
     }
     (output_dir / "initialisation_manifest.json").write_text(
         json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
@@ -264,7 +290,7 @@ def main() -> None:
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=Path("results/experiments/partonic_ttbar2L_2M_realnu_v1/production/initialisations_objective_matched_v4"),
+        default=Path("results/experiments/partonic_ttbar2L_2M_realnu_v1/production/initialisations_objective_matched_v5"),
     )
     args = parser.parse_args()
     result = prepare(args.config_dir, args.output_dir)

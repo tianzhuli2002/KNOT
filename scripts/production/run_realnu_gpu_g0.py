@@ -354,7 +354,7 @@ def _preflight() -> dict:
     if set(q1_config["trainable_components"]) - set(q0_config["trainable_components"]) != {"queries"}:
         raise RuntimeError("Q0/Q1 trainable components differ outside the intended query module")
 
-    initialisation_root = EXPERIMENT_ROOT / "production/initialisations_objective_matched_v4"
+    initialisation_root = EXPERIMENT_ROOT / "production/initialisations_objective_matched_v5"
     initialisation_manifest = initialisation_root / "initialisation_manifest.json"
     if not initialisation_manifest.is_file():
         raise FileNotFoundError(f"Realnu initialisation manifest is missing: {initialisation_manifest}")
@@ -378,6 +378,10 @@ def _preflight() -> dict:
         or initialisation.get("q0_q1_shared_components") != ["visible", "assignment", "invisible"]
     ):
         raise RuntimeError("Realnu controlled-initialisation equivalence checks did not pass")
+    if initialisation.get("parent_cfm_initialisation") != (
+        "shared J0 weights across PCFM_Q, J0, J_A, and J_AN"
+    ):
+        raise RuntimeError("Realnu parent-CFM common initialisation is not declared")
     initialisation_checkpoints = {}
     for mode, record in initialisation["modes"].items():
         checkpoint = Path(record.get("checkpoint", "")).expanduser().resolve()
@@ -405,6 +409,15 @@ def _preflight() -> dict:
             != initialisation_checkpoints["Q1"]["component_sha256"].get("invisible")
         ):
             raise RuntimeError(f"{mode} invisible initialization differs from the shared Q1 predictor")
+    parent_initial_hashes = {
+        mode: initialisation_checkpoints[mode]["component_sha256"].get("partonic_cfm")
+        for mode in PARENT_PREDICTION_MODES
+    }
+    if None in parent_initial_hashes.values() or len(set(parent_initial_hashes.values())) != 1:
+        raise RuntimeError(
+            "PCFM_Q, J0, J_A, and J_AN must share the declared parent-CFM initial state: "
+            f"{parent_initial_hashes}"
+        )
     return {
         "status": "passed",
         "source_manifest_sha256": manifest_sha,
@@ -663,6 +676,10 @@ def run(root: Path, expected_sha: str, python_bin: Path, contract_path: Path) ->
                 str(python_bin), "-m", "joint_event_reconstruction.cli.run", "train",
                 "--experiment", str(config), "--device", "cuda",
                 "--set", f"training.output={training_output}",
+                "--initial-checkpoint",
+                preflight["initialisation_checkpoints"][mode]["path"],
+                "--initial-components",
+                *preflight["initialisation_checkpoints"][mode]["components"],
             ]
             _run_command(
                 f"train_{mode}", command, root / mode / "logs/train.log", env, progress

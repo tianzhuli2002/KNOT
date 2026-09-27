@@ -225,6 +225,42 @@ def _selected_component_key(key: str, components: tuple[str, ...]) -> bool:
     )
 
 
+def _scaler_metadata_matches(saved: dict | None, current: dict | None, *, allow_fit_roundoff: bool) -> bool:
+    if not isinstance(saved, dict) or not isinstance(current, dict):
+        return saved == current
+    if set(saved) != set(current):
+        return False
+    for key in saved:
+        if allow_fit_roundoff and key in {"mean", "std"}:
+            import numpy as np
+
+            saved_values = np.asarray(saved[key], dtype=np.float64)
+            current_values = np.asarray(current[key], dtype=np.float64)
+            if saved_values.shape != current_values.shape or not np.allclose(
+                saved_values, current_values, rtol=2e-8, atol=1e-10, equal_nan=False
+            ):
+                return False
+        elif saved[key] != current[key]:
+            return False
+    return True
+
+
+def _require_matching_scaler_fit(saved: dict, module, *, name: str) -> bool:
+    fit_key = f"{name}_scaler_fit"
+    saved_fit = saved.get(fit_key)
+    current_fit = module.hparams.get(fit_key)
+    if current_fit is not None and saved_fit != current_fit:
+        raise ValueError(
+            f"{name.capitalize()} component initialisation uses a different training fit: "
+            f"checkpoint={saved_fit!r}, current={current_fit!r}"
+        )
+    return (
+        isinstance(current_fit, dict)
+        and current_fit.get("population") == "frozen_train_split"
+        and saved_fit == current_fit
+    )
+
+
 def _load_initial_components(
     module: JointEventModule,
     checkpoint_path: str | Path,
@@ -268,13 +304,28 @@ def _load_initial_components(
             "Initial checkpoint has incompatible architecture component signatures: "
             f"{incompatible_components}"
         )
-    if "invisible" in components and checkpoint.get("invisible_scaler") != module.scaler_metadata:
-        raise ValueError("Invisible component initialisation requires identical scaler metadata")
-    if (
-        "partonic_cfm" in components
-        and checkpoint.get("partonic_scaler") != module.partonic_scaler_metadata
-    ):
-        raise ValueError("Parent CFM initialisation requires identical train-fitted scaler metadata")
+    if "invisible" in components:
+        allow_fit_roundoff = _require_matching_scaler_fit(saved, module, name="invisible")
+        if not _scaler_metadata_matches(
+            checkpoint.get("invisible_scaler"),
+            module.scaler_metadata,
+            allow_fit_roundoff=allow_fit_roundoff,
+        ):
+            raise ValueError(
+                "Invisible component initialisation has incompatible scaler metadata; "
+                "role definitions and training-fit identity must match exactly"
+            )
+    if "partonic_cfm" in components:
+        allow_fit_roundoff = _require_matching_scaler_fit(saved, module, name="partonic")
+        if not _scaler_metadata_matches(
+            checkpoint.get("partonic_scaler"),
+            module.partonic_scaler_metadata,
+            allow_fit_roundoff=allow_fit_roundoff,
+        ):
+            raise ValueError(
+                "Parent CFM initialisation has incompatible train-fitted scaler metadata; "
+                "role definitions and training-fit identity must match exactly"
+            )
 
     target = module.state_dict()
     expected = {key for key in target if _selected_component_key(key, components)}
