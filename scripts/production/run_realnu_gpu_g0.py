@@ -26,6 +26,7 @@ ROOT = Path(
 ).expanduser().resolve()
 EXPERIMENT_ROOT = ROOT / "results/experiments/partonic_ttbar2L_2M_realnu_v1"
 CONFIG_ROOT = SOURCE_ROOT / "configs/experiments/realnu_v1/gpu_smoke"
+PRODUCTION_CONFIG_ROOT = SOURCE_ROOT / "configs/experiments/realnu_v1/production_draft"
 RAW_SOURCE_SHA256 = "75e895c0c9ce3984d4c925fa6f850748258e7b1d0e007a757f74cbeaa9cf9196"
 SOURCE_MANIFEST_SHA256 = "5f4d44cad0b6f8857ebb2a4094d40e3901459c5648cb7464cb9af42279502601"
 SPLIT_MEMBERSHIP_SHA256 = "260af7bda73383dc2d5d5adf95f628e71f081642964ea7b875746d7d08225374"
@@ -33,6 +34,7 @@ TRUTH_STORE_SHA256 = "5abc962cb79cb0856a0b3d51b6b093e6bfe4c0d37d465153e6a85d9fa2
 CACHE_FINGERPRINT = "272496afa7d4e4785daed18a26a2904e5b21a7157d3ec871a0835e55c94e424b"
 ROLE_ORDER = ["top.nu", "antitop.nu"]
 PARENT_ROLES = ["top", "antitop"]
+SOURCE_BRANCH = "research/realnu-training-hotpath-v1"
 MODES = {
     "Q0": "q0.public.yaml",
     "Q1": "q1.public.yaml",
@@ -70,15 +72,11 @@ def _git(*args: str) -> str:
 
 
 def _assert_source(expected_sha: str) -> None:
-    observed_sha = _git("rev-parse", "HEAD")
-    observed_branch = _git("branch", "--show-current")
     dirty = _git("status", "--porcelain=v1", "--untracked-files=all")
-    if observed_sha != expected_sha:
-        raise RuntimeError(f"G0 source SHA mismatch: expected {expected_sha}, found {observed_sha}")
-    if observed_branch != "research/partonic-query-cfm-realnu-v1":
-        raise RuntimeError(f"G0 branch mismatch: found {observed_branch!r}")
     if dirty:
-        raise RuntimeError(f"G0 requires a clean source tree; git status reports: {dirty}")
+        raise RuntimeError(
+            f"G0 requires a clean canonical project checkout; git status reports: {dirty}"
+        )
     source_metadata_path = SOURCE_ROOT / "SOURCE_SNAPSHOT.json"
     if not source_metadata_path.is_file():
         raise FileNotFoundError(f"Immutable G0 source snapshot metadata is missing: {source_metadata_path}")
@@ -164,8 +162,9 @@ def _preflight() -> dict:
             or int(config.data.max_events.val) != 128
             or config.data.max_events.test is not None
             or int(config.training.batch_size) != 512
-            or int(config.training.workers) != 4
-            or str(config.training.precision) != "16-mixed"
+            or int(config.training.workers) != 8
+            or str(config.training.precision) != "bf16-mixed"
+            or not bool(config.training.fused_adamw)
         ):
             raise RuntimeError(f"{mode} G0 config does not use the common bounded production setup")
         if config.data.visible_truth is not None and Path(config.data.visible_truth).resolve() != truth_path.resolve():
@@ -197,6 +196,131 @@ def _preflight() -> dict:
                 else None
             ),
         }
+    production_configs: dict[str, dict] = {}
+    production_outputs = set()
+    for mode, filename in MODES.items():
+        config_path = PRODUCTION_CONFIG_ROOT / filename
+        config = load_experiment(config_path)
+        spec = load_topology(config.topology_config, config.data.truth_bindings)
+        output = Path(config.training.output).expanduser().resolve()
+        if output.exists():
+            raise FileExistsError(f"{mode} production output already exists: {output}")
+        production_outputs.add(str(output))
+        if (
+            Path(config.data.input).resolve() != measured_path.resolve()
+            or Path(config.data.inference_input).resolve() != measured_path.resolve()
+            or Path(config.data.tensor_cache).resolve() != cache_path.resolve()
+            or any(value is not None for value in (
+                config.data.max_events.train,
+                config.data.max_events.val,
+                config.data.max_events.test,
+            ))
+            or int(config.training.batch_size) != 512
+            or int(config.training.epochs) != 20
+            or int(config.training.workers) != 8
+            or str(config.training.precision) != "bf16-mixed"
+            or not bool(config.training.fused_adamw)
+        ):
+            raise RuntimeError(f"{mode} production config differs from the fixed full-data release")
+        if mode == "PCFM_Q":
+            if config.data.visible_truth is not None:
+                raise RuntimeError("PCFM_Q must not load visible truth")
+        elif Path(config.data.visible_truth).resolve() != truth_path.resolve():
+            raise RuntimeError(f"{mode} visible truth path is not the authoritative sidecar")
+        if mode in PLAIN_PREDICTION_MODES and (
+            [role.key for role in spec.invisible_roles] != ROLE_ORDER
+            or Path(config.data.invisible.path).resolve() != truth_path.resolve()
+        ):
+            raise RuntimeError(f"{mode} production neutrino truth contract changed")
+        if mode in PARENT_PREDICTION_MODES and (
+            not bool(config.model.parent_cfm.enabled)
+            or str(config.model.parent_cfm.conditioning) != EXPECTED_CONDITIONING[mode]
+            or list(config.model.parent_cfm.roles) != PARENT_ROLES
+            or Path(config.data.partonic.path).resolve() != truth_path.resolve()
+        ):
+            raise RuntimeError(f"{mode} production parent CFM contract changed")
+        production_configs[mode] = {
+            "path": str(config_path.resolve()),
+            "sha256": _sha256(config_path),
+            "output": str(output),
+            "name": str(config.experiment.name),
+            "trainable_components": sorted(str(value) for value in config.training.trainable),
+            "experiment_seed": int(config.experiment.seed),
+            "data_subset_seed": int(config.data.subset_seed),
+            "batch_size": int(config.training.batch_size),
+            "epochs": int(config.training.epochs),
+            "learning_rate": float(config.training.learning_rate),
+            "weight_decay": float(config.training.weight_decay),
+            "precision": str(config.training.precision),
+            "fused_adamw": bool(config.training.fused_adamw),
+            "loss_weights": {
+                key: float(value) for key, value in config.training.loss_weights.items()
+            },
+            "conditioning": (
+                str(config.model.parent_cfm.conditioning)
+                if bool(config.model.parent_cfm.enabled)
+                else None
+            ),
+        }
+    if len(production_outputs) != len(MODES):
+        raise RuntimeError("Production modes do not have six distinct output roots")
+    q0_config = production_configs["Q0"]
+    q1_config = production_configs["Q1"]
+    for key in (
+        "experiment_seed",
+        "data_subset_seed",
+        "batch_size",
+        "epochs",
+        "learning_rate",
+        "weight_decay",
+        "precision",
+        "fused_adamw",
+        "loss_weights",
+    ):
+        if q0_config[key] != q1_config[key]:
+            raise RuntimeError(f"Q0 and Q1 controlled production setting differs: {key}")
+    if set(q1_config["trainable_components"]) - set(q0_config["trainable_components"]) != {"queries"}:
+        raise RuntimeError("Q0/Q1 trainable components differ outside the intended query module")
+
+    initialisation_root = EXPERIMENT_ROOT / "production/initialisations"
+    initialisation_manifest = initialisation_root / "initialisation_manifest.json"
+    if not initialisation_manifest.is_file():
+        raise FileNotFoundError(f"Realnu initialisation manifest is missing: {initialisation_manifest}")
+    initialisation = json.loads(initialisation_manifest.read_text())
+    if set(initialisation.get("modes", {})) != set(MODES):
+        raise RuntimeError("Realnu initialisation manifest does not contain the six release modes")
+    if (
+        initialisation.get("q0_q1_shared_initialisation_equal") is not True
+        or initialisation.get("q0_q1_shared_components") != ["visible", "assignment", "invisible"]
+        or initialisation.get("pcfm_q_j0_parent_cfm_initialisation_equal") is not True
+    ):
+        raise RuntimeError("Realnu controlled-initialisation equivalence checks did not pass")
+    initialisation_checkpoints = {}
+    for mode, record in initialisation["modes"].items():
+        checkpoint = Path(record.get("checkpoint", "")).expanduser().resolve()
+        expected_checkpoint = (initialisation_root / f"{mode}_initial.ckpt").resolve()
+        if checkpoint != expected_checkpoint or not checkpoint.is_file():
+            raise FileNotFoundError(f"{mode} initial checkpoint is missing or mislocated: {checkpoint}")
+        component_hashes = record.get("component_sha256", {})
+        if not component_hashes:
+            raise RuntimeError(f"{mode} initial checkpoint has no component identity hashes")
+        initialisation_checkpoints[mode] = {
+            "path": str(checkpoint),
+            "sha256": _sha256(checkpoint),
+            "components": sorted(component_hashes),
+            "component_sha256": component_hashes,
+        }
+    for component in ("visible", "assignment", "invisible"):
+        if (
+            initialisation_checkpoints["Q0"]["component_sha256"].get(component)
+            != initialisation_checkpoints["Q1"]["component_sha256"].get(component)
+        ):
+            raise RuntimeError(f"Q0/Q1 initial {component} weights differ")
+    if (
+        initialisation_checkpoints["PCFM_Q"]["component_sha256"].get("partonic_cfm")
+        != initialisation_checkpoints["J0"]["component_sha256"].get("partonic_cfm")
+    ):
+        raise RuntimeError("PCFM_Q/J0 initial parent CFM weights differ")
     return {
         "status": "passed",
         "source_manifest_sha256": manifest_sha,
@@ -214,6 +338,14 @@ def _preflight() -> dict:
         "parent_roles": PARENT_ROLES,
         "legacy_flavour_charge_mismatch_policy": "diagnostic only; no support masking",
         "configs": configs,
+        "production_configs": production_configs,
+        "initialisation_manifest": {
+            "path": str(initialisation_manifest.resolve()),
+            "sha256": _sha256(initialisation_manifest),
+            "seed": int(initialisation.get("seed", -1)),
+        },
+        "initialisation_checkpoints": initialisation_checkpoints,
+        "production_outputs_conflict_free": True,
     }
 
 
@@ -381,6 +513,7 @@ def run(root: Path, expected_sha: str, python_bin: Path, contract_path: Path) ->
     if (
         contract.get("schema") != "realnu_g0_execution_contract_v1"
         or contract.get("source_sha") != expected_sha
+        or contract.get("source_branch") != SOURCE_BRANCH
         or Path(contract.get("source_root", "")).resolve() != SOURCE_ROOT
         or Path(contract.get("project_root", "")).resolve() != ROOT
         or Path(contract.get("g0_root", "")).resolve() != root
@@ -392,7 +525,7 @@ def run(root: Path, expected_sha: str, python_bin: Path, contract_path: Path) ->
         "status": "running",
         "root": str(root.resolve()),
         "source_commit": expected_sha,
-        "branch": "research/partonic-query-cfm-realnu-v1",
+        "branch": SOURCE_BRANCH,
         "slurm_job_id": os.environ["SLURM_JOB_ID"],
         "started_utc": datetime.now(UTC).isoformat(),
         "stage": "preflight",
@@ -413,7 +546,7 @@ def run(root: Path, expected_sha: str, python_bin: Path, contract_path: Path) ->
         env["JER_PROJECT_ROOT"] = str(ROOT)
         env["JER_SOURCE_ROOT"] = str(SOURCE_ROOT)
         env["JER_SOURCE_SHA"] = expected_sha
-        env["JER_SOURCE_BRANCH"] = "research/partonic-query-cfm-realnu-v1"
+        env["JER_SOURCE_BRANCH"] = SOURCE_BRANCH
         env["PYTHONPATH"] = f"{SOURCE_ROOT / 'src'}{os.pathsep}{env.get('PYTHONPATH', '')}"
         env.setdefault("OMP_NUM_THREADS", "1")
         env.setdefault("MKL_NUM_THREADS", "1")
@@ -527,7 +660,7 @@ def run(root: Path, expected_sha: str, python_bin: Path, contract_path: Path) ->
             "status": "passed",
             "campaign": "realnu_top_antitop_v1",
             "source_commit": expected_sha,
-            "branch": "research/partonic-query-cfm-realnu-v1",
+            "branch": SOURCE_BRANCH,
             "slurm_job_id": os.environ["SLURM_JOB_ID"],
             "gpu": torch.cuda.get_device_name(0),
             "preflight": preflight,

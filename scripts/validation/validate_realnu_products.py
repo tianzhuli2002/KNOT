@@ -307,7 +307,7 @@ def validate(
                 }
 
     train_event_ids = expected_event_ids[expected_splits == 0]
-    prior_product_path = EXPERIMENT_ROOT / "cpu_validation/full_train_validation_products.json"
+    prior_product_path = experiment_root / "cpu_validation/full_train_validation_products.json"
     prior_product = json.loads(prior_product_path.read_text())
     if (
         prior_product.get("source_sha256") != source_manifest["new_source"]["sha256"]

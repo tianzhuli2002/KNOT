@@ -8,6 +8,7 @@ from torch import nn
 from joint_event_reconstruction.flows.continuous import linear_path
 from joint_event_reconstruction.flows.solvers import integrate
 
+
 class ContinuousFlowMatching(nn.Module):
     def __init__(self, denoiser: nn.Module, *, coupling, active_mask: torch.Tensor):
         super().__init__()
@@ -40,15 +41,21 @@ class ContinuousFlowMatching(nn.Module):
         *,
         visible_fourmomenta: torch.Tensor | None = None,
         met_xy: torch.Tensor | None = None,
+        prepared_context=None,
     ) -> torch.Tensor:
+        arguments = {
+            "visible_fourmomenta": visible_fourmomenta,
+            "met_xy": met_xy,
+        }
+        if prepared_context is not None:
+            arguments["prepared_context"] = prepared_context
         return self.denoiser(
             state,
             time,
             visible,
             mask,
             parent,
-            visible_fourmomenta=visible_fourmomenta,
-            met_xy=met_xy,
+            **arguments,
         ) * self.active_mask.to(dtype=state.dtype)
 
     def loss(
@@ -124,6 +131,12 @@ class ContinuousFlowMatching(nn.Module):
             dtype=visible.dtype,
             generator=generator,
         ) * active
+        prepare_conditioning = getattr(self.denoiser, "prepare_conditioning", None)
+        prepared_context = (
+            prepare_conditioning(visible, mask, parent)
+            if callable(prepare_conditioning)
+            else None
+        )
 
         def velocity_fn(state: torch.Tensor, time: torch.Tensor) -> torch.Tensor:
             return self.velocity(
@@ -134,6 +147,7 @@ class ContinuousFlowMatching(nn.Module):
                 parent,
                 visible_fourmomenta=visible_fourmomenta,
                 met_xy=met_xy,
+                prepared_context=prepared_context,
             )
 
         values, nfe = integrate(initial, velocity_fn, steps=steps, solver=solver)

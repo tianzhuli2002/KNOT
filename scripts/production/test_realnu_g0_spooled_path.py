@@ -14,12 +14,18 @@ from pathlib import Path
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--project-root", type=Path, required=True)
+    parser.add_argument("--source-root", type=Path, required=True)
+    parser.add_argument("--expected-sha", required=True)
     args = parser.parse_args()
     project_root = args.project_root.expanduser().resolve(strict=True)
-    expected_sha = subprocess.check_output(
-        ["git", "-C", str(project_root), "rev-parse", "HEAD"], text=True
-    ).strip()
+    expected_sha = args.expected_sha
     source_root = project_root / "runtime/source" / expected_sha
+    supplied_source_root = args.source_root.expanduser().resolve(strict=True)
+    if supplied_source_root != source_root:
+        raise RuntimeError(
+            f"Source root must be the explicit immutable snapshot {source_root}, "
+            f"found {supplied_source_root}"
+        )
     wrapper = source_root / "scripts/production/run_realnu_gpu_g0.sh"
     if not wrapper.is_file():
         raise FileNotFoundError(f"Immutable G0 wrapper is missing: {wrapper}")
@@ -35,6 +41,7 @@ def main() -> None:
                 {
                     "schema": "realnu_g0_execution_contract_v1",
                     "source_sha": expected_sha,
+                    "source_branch": "research/realnu-training-hotpath-v1",
                     "source_root": str(source_root),
                     "project_root": str(project_root),
                     "g0_root": str(g0_root),

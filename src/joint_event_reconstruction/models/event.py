@@ -7,23 +7,27 @@ from torch import nn
 
 from joint_event_reconstruction.models.compatibility import CompatibilityHead
 from joint_event_reconstruction.models.feedback import SoftReconstructionFeedback
-from joint_event_reconstruction.models.invisible.feedback import InvisiblePosteriorFeedback
+from joint_event_reconstruction.models.invisible.feedback import (
+    InvisiblePosteriorFeedback,
+)
 from joint_event_reconstruction.models.invisible.generator import InvisibleGenerator
 from joint_event_reconstruction.models.invisible.heads import (
     DirectInvisiblePointHead,
     DirectParentFourVectorHead,
 )
-from joint_event_reconstruction.models.partonic import PartonicFourVectorHead
-from joint_event_reconstruction.models.partonic import PartonicCFM
-from joint_event_reconstruction.models.topology_queries import TopologyQueryBlock
 from joint_event_reconstruction.models.joint_flow import JointFlow
-from joint_event_reconstruction.models.recurrent import RecurrentReasoner
+from joint_event_reconstruction.models.partonic import (
+    PartonicCFM,
+    PartonicFourVectorHead,
+)
 from joint_event_reconstruction.models.reconstruction.discrete_flow import (
     DiscreteAssignmentFlow,
 )
 from joint_event_reconstruction.models.reconstruction.structured import (
     StructuredReconstruction,
 )
+from joint_event_reconstruction.models.recurrent import RecurrentReasoner
+from joint_event_reconstruction.models.topology_queries import TopologyQueryBlock
 from joint_event_reconstruction.models.visible.encoder import build_visible_encoder
 from joint_event_reconstruction.topology.assignments import AssignmentSpace
 from joint_event_reconstruction.topology.spec import TopologySpec
@@ -343,6 +347,51 @@ class JointEventModel(nn.Module):
                 include_invisible=bool(compatibility_config.include_invisible),
             )
 
+        parent_conditioning = (
+            None if self.parent_cfm is None else self.parent_cfm.conditioning
+        )
+        self._parent_assignment_root_indices = (
+            tuple(self.spec.roots.index(role) for role in PartonicCFM.ROLES)
+            if parent_conditioning in {"P1", "P2"}
+            else ()
+        )
+        self._p2_invisible_role_indices = (
+            tuple(
+                next(
+                    index
+                    for index, role in enumerate(self.spec.invisible_roles)
+                    if role.node == parent_role
+                )
+                for parent_role in PartonicCFM.ROLES
+            )
+            if parent_conditioning == "P2"
+            else ()
+        )
+        predicts_assignment_context = parent_conditioning in {"P1", "P2"}
+        trains_neutrino_cfm = (
+            self.invisible is not None and self.invisible_loss_weight > 0.0
+        )
+        self.objective_plan = {
+            "visible_encoder": True,
+            "topology_queries": self.topology_queries is not None,
+            "assignment_loss": self.assignment_loss_weight > 0.0,
+            "assignment_scorer": (
+                self.assignment_loss_weight > 0.0
+                or (
+                    trains_neutrino_cfm
+                    and self.invisible.assignment_mode != "none"
+                )
+                or predicts_assignment_context
+            ),
+            "neutrino_cfm_loss": trains_neutrino_cfm,
+            "parent_cfm_loss": (
+                self.parent_cfm is not None
+                and self.parent_cfm_loss_weight > 0.0
+            ),
+            "predicted_assignment_context": predicts_assignment_context,
+            "predicted_neutrino_context": parent_conditioning == "P2",
+        }
+
     def _steps(self, requested: int | None) -> int:
         if requested is not None:
             if requested <= 0:
@@ -416,20 +465,6 @@ class JointEventModel(nn.Module):
 
     def _objective_forward(self, batch: dict, visible: dict) -> dict:
         """Execute only the dependencies of the configured training losses."""
-        parent_conditioning = (
-            None if self.parent_cfm is None else self.parent_cfm.conditioning
-        )
-        assignment_for_invisible = (
-            self.invisible is not None
-            and self.invisible_loss_weight > 0
-            and self.invisible.assignment_mode != "none"
-        )
-        assignment_for_parent = parent_conditioning in {"P1", "P2"}
-        need_assignment = (
-            self.assignment_loss_weight > 0
-            or assignment_for_invisible
-            or assignment_for_parent
-        )
         zero = visible["pooled"].sum() * 0.0
         result = {
             "visible": visible,
@@ -437,20 +472,20 @@ class JointEventModel(nn.Module):
             "recurrent_steps": 0,
             "recurrent_predictions": (),
         }
-        if need_assignment:
+        if self.objective_plan["assignment_scorer"]:
             assignment = self.reconstruction(
                 visible["tokens"],
                 visible["pooled"],
                 batch["structured"],
                 node_context=visible.get("node_context"),
-                calculate_loss=self.assignment_loss_weight > 0,
+                calculate_loss=self.objective_plan["assignment_loss"],
             )
             result.update(assignment)
             if "assignment_loss" in assignment:
                 result["loss"] = (
                     self.assignment_loss_weight * assignment["assignment_loss"]
                 )
-        if self.invisible is not None and self.invisible_loss_weight > 0:
+        if self.objective_plan["neutrino_cfm_loss"]:
             return self._invisible_result(
                 result, batch, visible, result.get("node_context")
             )
@@ -721,7 +756,6 @@ class JointEventModel(nn.Module):
         """Marginalise predicted root assignments over feasible complete states."""
         space = AssignmentSpace.from_structured(structured)
         probabilities = space.state_probabilities(result["assignment_logits"])
-        rows = torch.arange(len(probabilities), device=probabilities.device)
         contexts = []
         for role in PartonicCFM.ROLES:
             if role not in space.roots:
@@ -729,7 +763,7 @@ class JointEventModel(nn.Module):
                     f"P1 assignment context needs compiled root role {role!r}; "
                     f"roots={space.roots}"
                 )
-            root_index = space.roots.index(role)
+            root_index = self._parent_assignment_root_indices[len(contexts)]
             selected = space.root_candidate_indices[:, root_index]
             embeddings = result["candidate_embeddings"][role]
             if embeddings.shape[1] == 0:
@@ -783,13 +817,10 @@ class JointEventModel(nn.Module):
             generator=generator,
         )
         physical = self.invisible.decode_state(samples, batch["met_xy"], self.invisible.scaler)
-        node_to_index = {
-            role.node: index for index, role in enumerate(self.spec.invisible_roles)
-        }
-        if set(("top", "antitop")) - set(node_to_index):
+        if len(self._p2_invisible_role_indices) != len(PartonicCFM.ROLES):
             raise ValueError("P2 cannot map invisible roles to top/antitop parent order")
         ordered = torch.stack(
-            (physical[:, 0, node_to_index["top"]], physical[:, 0, node_to_index["antitop"]]),
+            tuple(physical[:, 0, index] for index in self._p2_invisible_role_indices),
             dim=1,
         )
         return ordered, samples, nfe
@@ -1153,7 +1184,7 @@ class JointEventModel(nn.Module):
                 result["loss"] = result["loss"] + self.partonic_loss_weight * loss
 
         if self.parent_cfm is not None and (
-            not self.training or self.parent_cfm_loss_weight > 0.0
+            not self.training or self.objective_plan["parent_cfm_loss"]
         ):
             target = batch.get("partonic_truth")
             support = batch.get("partonic_support")

@@ -5,11 +5,11 @@ from __future__ import annotations
 import torch
 from torch import nn
 
+from joint_event_reconstruction.models.invisible.couplings import IndependentCoupling
 from joint_event_reconstruction.models.invisible.denoiser import noise_embedding
 from joint_event_reconstruction.models.invisible.flow_matching import (
     ContinuousFlowMatching,
 )
-from joint_event_reconstruction.models.invisible.couplings import IndependentCoupling
 
 
 class PartonicFourVectorHead(nn.Module):
@@ -102,6 +102,20 @@ class PartonicCFMDenoiser(nn.Module):
         self.output_norm = nn.LayerNorm(d_model)
         self.output_projection = nn.Linear(d_model, 8)
 
+    @staticmethod
+    def prepare_conditioning(
+        visible: torch.Tensor,
+        visible_padding_mask: torch.Tensor,
+        parent_context: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        memory = torch.cat((visible, parent_context), dim=1)
+        parent_padding = torch.zeros(
+            (len(visible), parent_context.shape[1]),
+            dtype=torch.bool,
+            device=visible.device,
+        )
+        return memory, torch.cat((visible_padding_mask, parent_padding), dim=1)
+
     def forward(
         self,
         state: torch.Tensor,
@@ -109,6 +123,8 @@ class PartonicCFMDenoiser(nn.Module):
         visible: torch.Tensor,
         visible_padding_mask: torch.Tensor,
         parent_context: torch.Tensor,
+        *,
+        prepared_context: tuple[torch.Tensor, torch.Tensor] | None = None,
         **kwargs,
     ) -> torch.Tensor:
         del kwargs
@@ -124,13 +140,18 @@ class PartonicCFMDenoiser(nn.Module):
             raise ValueError("Partonic CFM conditioning tokens must be [B,C,D]")
         if parent_context.shape[1] < 2:
             raise ValueError("Partonic CFM requires ordered top and antitop query contexts")
+        if prepared_context is None:
+            prepared_context = self.prepare_conditioning(
+                visible, visible_padding_mask, parent_context
+            )
+        memory, memory_padding = prepared_context
         hidden = (
             self.input_projection(state).unsqueeze(1)
             + self.state_embedding
             + self.time_projection(noise_embedding(time, self.d_model)).unsqueeze(1)
         )
         for block in self.blocks:
-            hidden = block(hidden, visible, visible_padding_mask, parent_context)
+            hidden = block(hidden, memory, memory_padding)
         return self.output_projection(self.output_norm(hidden[:, 0]))
 
 
@@ -150,23 +171,15 @@ class _ParentCFMBlock(nn.Module):
     def forward(
         self,
         state: torch.Tensor,
-        visible: torch.Tensor,
-        visible_padding_mask: torch.Tensor,
-        parent_context: torch.Tensor,
+        memory: torch.Tensor,
+        memory_padding_mask: torch.Tensor,
     ) -> torch.Tensor:
-        memory = torch.cat((visible, parent_context), dim=1)
-        parent_padding = torch.zeros(
-            (len(state), parent_context.shape[1]),
-            dtype=torch.bool,
-            device=state.device,
-        )
-        memory_padding = torch.cat((visible_padding_mask, parent_padding), dim=1)
         query = self.cross_norm(state)
         state = state + self.cross_attention(
             query,
             memory,
             memory,
-            key_padding_mask=memory_padding,
+            key_padding_mask=memory_padding_mask,
             need_weights=False,
         )[0]
         return state + self.feedforward(self.feedforward_norm(state))

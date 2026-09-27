@@ -14,6 +14,8 @@ from pathlib import Path
 
 from omegaconf import OmegaConf
 
+SOURCE_BRANCH = "research/realnu-training-hotpath-v1"
+
 
 def sha256(path: Path) -> str:
     digest = hashlib.sha256()
@@ -102,22 +104,29 @@ def main() -> None:
     if not metadata_path.is_file():
         raise FileNotFoundError(f"Immutable source snapshot metadata is missing: {metadata_path}")
     metadata = json.loads(metadata_path.read_text())
-    observed_sha = subprocess.check_output(
+    project_sha = subprocess.check_output(
         ["git", "-C", str(project_root), "rev-parse", "HEAD"], text=True
     ).strip()
     observed_branch = subprocess.check_output(
         ["git", "-C", str(project_root), "branch", "--show-current"], text=True
     ).strip()
-    observed_tree = subprocess.check_output(
-        ["git", "-C", str(project_root), "rev-parse", f"{args.expected_sha}^{{tree}}"], text=True
-    ).strip()
+    try:
+        observed_tree = subprocess.check_output(
+            ["git", "-C", str(project_root), "rev-parse", f"{args.expected_sha}^{{tree}}"],
+            text=True,
+            stderr=subprocess.PIPE,
+        ).strip()
+    except subprocess.CalledProcessError as error:
+        raise RuntimeError(
+            f"Expected release commit is unavailable in the canonical project repository: {args.expected_sha}"
+        ) from error
     dirty = subprocess.check_output(
         ["git", "-C", str(project_root), "status", "--porcelain=v1", "--untracked-files=all"],
         text=True,
     ).strip()
-    if observed_sha != args.expected_sha or observed_branch != "research/partonic-query-cfm-realnu-v1" or dirty:
+    if dirty:
         raise RuntimeError(
-            f"G0 source checkout is not frozen: sha={observed_sha}, branch={observed_branch}, dirty={dirty!r}"
+            f"Canonical project checkout is dirty: sha={project_sha}, branch={observed_branch}, dirty={dirty!r}"
         )
     if (
         metadata.get("schema") != "jer_source_snapshot_v1"
@@ -149,13 +158,28 @@ def main() -> None:
 
     scaler_files = []
     initialisation_checkpoints = []
-    for config_record in resolved["configs"].values():
+    all_config_records = {
+        f"G0_{mode}": record for mode, record in resolved["configs"].items()
+    } | {
+        f"PRODUCTION_{mode}": record
+        for mode, record in resolved["production_configs"].items()
+    }
+    for config_record in all_config_records.values():
         config_path = Path(config_record["path"]).resolve()
         if not config_path.is_file() or sha256(config_path) != config_record["sha256"]:
             raise RuntimeError(f"G0 config changed after preflight: {config_path}")
         checkpoints, scalers = _external_file_references(config_path, project_root, source_root)
         initialisation_checkpoints.extend(checkpoints)
         scaler_files.extend(scalers)
+    initialisation_manifest = resolved["initialisation_manifest"]
+    initialisation_checkpoints.extend(
+        {
+            "config_key": f"initialisation.{mode}",
+            "path": record["path"],
+            "sha256": record["sha256"],
+        }
+        for mode, record in resolved["initialisation_checkpoints"].items()
+    )
 
     measured = Path(resolved["measured_input"]).resolve()
     truth = Path(resolved["truth_store"]).resolve()
@@ -173,6 +197,9 @@ def main() -> None:
         "source_root": str(source_root),
         "project_root": str(project_root),
         "source_sha": args.expected_sha,
+        "source_branch": SOURCE_BRANCH,
+        "project_root_git_sha": project_sha,
+        "project_root_git_branch": observed_branch,
         "python": str(python_bin),
         "g0_runner": str(runner.resolve()),
         "attempt_root": str(attempt_root),
@@ -186,6 +213,8 @@ def main() -> None:
         "invisible_role_order": resolved["invisible_roles"],
         "parent_role_order": resolved["parent_roles"],
         "configs": resolved["configs"],
+        "production_configs": resolved["production_configs"],
+        "initialisation_manifest": initialisation_manifest,
         "initialisation_checkpoints": initialisation_checkpoints,
         "scaler_files": scaler_files,
         "sealed_test_materialised": False,

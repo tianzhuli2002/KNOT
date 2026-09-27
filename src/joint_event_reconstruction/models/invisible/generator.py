@@ -11,7 +11,9 @@ from joint_event_reconstruction.models.invisible.coordinates import (
 from joint_event_reconstruction.models.invisible.couplings import build_flow_coupling
 from joint_event_reconstruction.models.invisible.denoiser import InvisibleDenoiser
 from joint_event_reconstruction.models.invisible.edm import EDMDiffusion
-from joint_event_reconstruction.models.invisible.flow_matching import ContinuousFlowMatching
+from joint_event_reconstruction.models.invisible.flow_matching import (
+    ContinuousFlowMatching,
+)
 from joint_event_reconstruction.models.invisible.standard import StandardDiffusion
 from joint_event_reconstruction.topology.spec import TopologySpec
 
@@ -25,6 +27,23 @@ class InvisibleGenerator(nn.Module):
         self.spec = spec
         self.assignment_mode = str(config.conditioning.assignment)
         self.scaler = scaler
+        self.register_buffer(
+            "scaler_mean",
+            None if scaler is None else torch.tensor(scaler.mean, dtype=torch.float32),
+            persistent=False,
+        )
+        self.register_buffer(
+            "scaler_std",
+            None if scaler is None else torch.tensor(scaler.std, dtype=torch.float32),
+            persistent=False,
+        )
+        self.register_buffer(
+            "scaler_active_mask",
+            None
+            if scaler is None or scaler.active_mask is None
+            else torch.tensor(scaler.active_mask, dtype=torch.bool),
+            persistent=False,
+        )
         role_names = tuple(role.key for role in spec.invisible_roles)
         self.coordinates = build_invisible_coordinates(
             config.coordinates, role_names, getattr(config, "mass_shell", None)
@@ -239,14 +258,22 @@ class InvisibleGenerator(nn.Module):
         return scaler.transform(state)
 
     def decode_state(self, scaled_state, met_xy, scaler):
-        state = scaler.inverse(scaled_state)
+        state = self._inverse_scaled_state(scaled_state, scaler)
         return self.coordinates.decode(state, self._expanded_met(met_xy, state))
 
     def decode_physical_state(self, scaled_state, met_xy, scaler):
-        state = scaler.inverse(scaled_state)
+        state = self._inverse_scaled_state(scaled_state, scaler)
         return self.coordinates.decode_physical(
             state, self._expanded_met(met_xy, state)
         )
+
+    def _inverse_scaled_state(self, scaled_state, scaler):
+        if scaler is self.scaler and self.scaler_mean is not None:
+            state = scaled_state * self.scaler_std + self.scaler_mean
+            if self.scaler_active_mask is not None:
+                state = state * self.scaler_active_mask
+            return state
+        return scaler.inverse(scaled_state)
 
     def coupling_condition(
         self,

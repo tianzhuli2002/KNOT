@@ -14,7 +14,6 @@ from joint_event_reconstruction.m0.data.module import build_token_schema
 from joint_event_reconstruction.models.event import JointEventModel
 from joint_event_reconstruction.topology.compiler import load_topology
 
-
 ARCHITECTURE_SIGNATURE_VERSION = 5
 
 
@@ -450,6 +449,7 @@ class JointEventModule(L.LightningModule):
                     None if self.event_model.parent_cfm is None
                     else self.event_model.parent_cfm.conditioning
                 ),
+                "objective_plan": dict(self.event_model.objective_plan),
                 "parent_cfm_roles": (
                     [] if self.event_model.parent_cfm is None
                     else list(self.event_model.parent_cfm.ROLES)
@@ -552,6 +552,10 @@ class JointEventModule(L.LightningModule):
     def test_step(self, batch, batch_idx):
         return self._step(batch, "test")
 
+    def optimizer_zero_grad(self, epoch, batch_idx, optimizer):
+        del epoch, batch_idx
+        optimizer.zero_grad(set_to_none=True)
+
     def configure_optimizers(self):
         trainable = [parameter for parameter in self.parameters() if parameter.requires_grad]
         if not trainable:
@@ -559,12 +563,23 @@ class JointEventModule(L.LightningModule):
         use_fused = self.fused_adamw and trainable[0].device.type == "cuda"
         if self.fused_adamw and not use_fused:
             self.print("Fused AdamW requested but parameters are on CPU; using regular AdamW.")
-        optimiser = torch.optim.AdamW(
-            trainable,
-            lr=self.learning_rate,
-            weight_decay=self.weight_decay,
-            fused=use_fused,
-        )
+        try:
+            optimiser = torch.optim.AdamW(
+                trainable,
+                lr=self.learning_rate,
+                weight_decay=self.weight_decay,
+                fused=use_fused,
+            )
+        except (TypeError, RuntimeError) as error:
+            if not use_fused:
+                raise
+            self.print(f"Fused AdamW is unavailable ({error}); using regular AdamW.")
+            optimiser = torch.optim.AdamW(
+                trainable,
+                lr=self.learning_rate,
+                weight_decay=self.weight_decay,
+                fused=False,
+            )
         if not self.scheduler_config.enabled:
             return optimiser
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(

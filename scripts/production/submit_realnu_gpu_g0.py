@@ -11,10 +11,7 @@ import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
 PYTHON_DEFAULT = Path("/mnt/iusers01/fatpou01/phy01/w00238tl/miniforge3/bin/python")
-WRAPPER = ROOT / "scripts/production/run_realnu_gpu_g0.sh"
-PREFLIGHT = ROOT / "scripts/production/preflight_realnu_gpu_g0.py"
 
 
 def sha256(path: Path) -> str:
@@ -33,13 +30,14 @@ def atomic_json(path: Path, value: dict) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--project-root", type=Path, required=True)
     parser.add_argument("--source-root", type=Path, required=True)
     parser.add_argument("--expected-sha", required=True)
     parser.add_argument("--attempt-root", type=Path, required=True)
     parser.add_argument("--python", type=Path, default=PYTHON_DEFAULT)
     args = parser.parse_args()
 
-    project_root = ROOT.resolve()
+    project_root = args.project_root.expanduser().resolve(strict=True)
     source_root = args.source_root.expanduser().resolve(strict=True)
     expected_sha = args.expected_sha
     python_bin = args.python.expanduser().resolve(strict=True)
@@ -47,10 +45,14 @@ def main() -> None:
     g0_root = attempt_root / "G0"
     contract_path = attempt_root / "resolved_execution_contract.json"
     submission_path = attempt_root / "submission.json"
-    if not WRAPPER.is_file() or not os.access(WRAPPER, os.X_OK):
-        raise FileNotFoundError(f"G0 Slurm wrapper is missing or not executable: {WRAPPER}")
-    if not PREFLIGHT.is_file():
-        raise FileNotFoundError(f"G0 preflight runner is missing: {PREFLIGHT}")
+    if source_root != project_root / "runtime/source" / expected_sha:
+        raise RuntimeError("G0 source root must be the immutable runtime/source/<SHA> snapshot")
+    wrapper = source_root / "scripts/production/run_realnu_gpu_g0.sh"
+    preflight = source_root / "scripts/production/preflight_realnu_gpu_g0.py"
+    if not wrapper.is_file() or not os.access(wrapper, os.X_OK):
+        raise FileNotFoundError(f"G0 Slurm wrapper is missing or not executable: {wrapper}")
+    if not preflight.is_file():
+        raise FileNotFoundError(f"G0 preflight runner is missing: {preflight}")
 
     preflight_env = os.environ.copy()
     preflight_env.update(
@@ -60,11 +62,11 @@ def main() -> None:
             "JER_REALNU_EXPECTED_SHA": expected_sha,
             "JER_PROJECT_ROOT": str(project_root),
             "JER_SOURCE_ROOT": str(source_root),
-            "PYTHONPATH": str(source_root / "src"),
+            "PYTHONPATH": str(source_root / "src") + os.pathsep + str(source_root / "scripts/production"),
         }
     )
     preflight_command = [
-        str(python_bin), str(PREFLIGHT),
+        str(python_bin), str(preflight),
         "--source-root", str(source_root),
         "--project-root", str(project_root),
         "--expected-sha", expected_sha,
@@ -132,7 +134,7 @@ def main() -> None:
                 f"JER_PYTHON={python_bin}",
             )
         ),
-        str(WRAPPER),
+        str(wrapper),
     ]
     record = {
         "schema": "realnu_g0_submission_v1",

@@ -32,11 +32,9 @@ if [[ ! -f "$runner" ]]; then
     exit 2
 fi
 
-actual_sha="$(git -C "$project_root" rev-parse HEAD)"
-if [[ "$actual_sha" != "$JER_REALNU_EXPECTED_SHA" ]]; then
-    echo "ERROR: source SHA mismatch" >&2
-    echo "expected=$JER_REALNU_EXPECTED_SHA" >&2
-    echo "actual=$actual_sha" >&2
+git -C "$project_root" rev-parse --verify "${JER_REALNU_EXPECTED_SHA}^{commit}" >/dev/null
+if [[ -n "$(git -C "$project_root" status --porcelain=v1 --untracked-files=all)" ]]; then
+    echo "ERROR: canonical project checkout is dirty" >&2
     exit 2
 fi
 
@@ -70,6 +68,7 @@ if (
     metadata.get("commit_sha") != str(expected_sha)
     or metadata.get("tree_sha") != tree_sha
     or contract.get("source_sha") != str(expected_sha)
+    or contract.get("source_branch") != "research/realnu-training-hotpath-v1"
     or Path(contract.get("source_root", "")).resolve() != source_root.resolve()
     or Path(contract.get("project_root", "")).resolve() != project_root.resolve()
     or Path(contract.get("g0_root", "")).resolve() != g0_root.resolve()

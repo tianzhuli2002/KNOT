@@ -201,14 +201,14 @@ inference:
       solver: heun
 training:
   batch_size: 512
-  workers: 4
+  workers: 8
   optimizer:
     type: adamw
-    fused_adamw: false
+    fused_adamw: true
   learning_rate: 0.000361545
   weight_decay: 6.0735294e-05
   epochs: 1
-  precision: 16-mixed
+  precision: bf16-mixed
   trainable:
   - visible
   - assignment
