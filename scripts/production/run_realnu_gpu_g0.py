@@ -91,6 +91,29 @@ def _assert_source(expected_sha: str) -> None:
         raise RuntimeError("Immutable G0 source snapshot does not match the expected source commit")
 
 
+def _assert_j_a_matches_j0_objective(j0_config, j_a_config, *, stage: str) -> None:
+    j0_weights = {
+        str(key): float(value)
+        for key, value in j0_config.training.loss_weights.items()
+    }
+    j_a_weights = {
+        str(key): float(value)
+        for key, value in j_a_config.training.loss_weights.items()
+    }
+    if j_a_weights != j0_weights:
+        raise RuntimeError(
+            f"{stage} J_A must retain J0 loss weights and add predicted soft assignment "
+            f"context; J0={j0_weights}, J_A={j_a_weights}"
+        )
+    j0_trainable = {str(value) for value in j0_config.training.trainable}
+    j_a_trainable = {str(value) for value in j_a_config.training.trainable}
+    if j_a_trainable != j0_trainable:
+        raise RuntimeError(
+            f"{stage} J_A must retain J0 trainable components; "
+            f"J0={sorted(j0_trainable)}, J_A={sorted(j_a_trainable)}"
+        )
+
+
 def _preflight() -> dict:
     manifest_path = EXPERIMENT_ROOT / "source_manifest_v1.json"
     split_path = EXPERIMENT_ROOT / "split_membership_v1.npz"
@@ -196,6 +219,11 @@ def _preflight() -> dict:
                 else None
             ),
         }
+    _assert_j_a_matches_j0_objective(
+        load_experiment(CONFIG_ROOT / MODES["J0"]),
+        load_experiment(CONFIG_ROOT / MODES["J_A"]),
+        stage="G0",
+    )
     production_configs: dict[str, dict] = {}
     production_outputs = set()
     for mode, filename in MODES.items():
@@ -262,6 +290,11 @@ def _preflight() -> dict:
                 else None
             ),
         }
+    _assert_j_a_matches_j0_objective(
+        load_experiment(PRODUCTION_CONFIG_ROOT / MODES["J0"]),
+        load_experiment(PRODUCTION_CONFIG_ROOT / MODES["J_A"]),
+        stage="production",
+    )
     if len(production_outputs) != len(MODES):
         raise RuntimeError("Production modes do not have six distinct output roots")
     q0_config = production_configs["Q0"]
