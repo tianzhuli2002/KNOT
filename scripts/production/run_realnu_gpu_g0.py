@@ -348,7 +348,7 @@ def _preflight() -> dict:
     if set(q1_config["trainable_components"]) - set(q0_config["trainable_components"]) != {"queries"}:
         raise RuntimeError("Q0/Q1 trainable components differ outside the intended query module")
 
-    initialisation_root = EXPERIMENT_ROOT / "production/initialisations_objective_matched_v2"
+    initialisation_root = EXPERIMENT_ROOT / "production/initialisations_objective_matched_v3"
     initialisation_manifest = initialisation_root / "initialisation_manifest.json"
     if not initialisation_manifest.is_file():
         raise FileNotFoundError(f"Realnu initialisation manifest is missing: {initialisation_manifest}")

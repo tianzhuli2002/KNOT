@@ -91,27 +91,46 @@ def _save_initial(path: Path, module, metadata: dict) -> None:
             os.unlink(temporary)
 
 
-def _build(name: str, config_path: Path):
-    # Initial weights depend on the resolved architecture and train-fitted
-    # scalers, not on a materialised tensor cache. Avoid loading the full
-    # multi-million-event cache once per model while creating these artifacts.
+def _fit_scalers(config_path: Path) -> tuple:
+    # Fit the fixed target scalers once on the complete training population.
+    # Smoke-event limits would produce incompatible checkpoint metadata for
+    # the full-data production configs.
     config = load_experiment(config_path, ["data.cache=null"])
+    if any(config.data.max_events[split] is not None for split in ("train", "val", "test")):
+        raise ValueError("Initialisation scalers require the full configured train/validation population")
     L.seed_everything(int(config.experiment.seed), workers=True)
     visible = load_visible_config(config)
     visible.dataset.pin_memory = False
     visible.dataset.persistent_workers = False
     data = build_data(config, visible, device="cpu")
     data.setup("fit")
+    scalers = (data.invisible_scaler, data.point_scaler, data.partonic_scaler)
+    if scalers[0] is None or scalers[2] is None:
+        raise RuntimeError("Full-data initialisation requires invisible and parent target scalers")
+    del data
+    return scalers
+
+
+def _build(name: str, config_path: Path, scalers: tuple):
+    config = load_experiment(config_path, ["data.cache=null"])
+    L.seed_everything(int(config.experiment.seed), workers=True)
+    visible = load_visible_config(config)
+    visible.dataset.pin_memory = False
+    visible.dataset.persistent_workers = False
+    invisible_scaler, point_scaler, partonic_scaler = scalers
     module = JointEventModule(
         config,
         visible,
-        invisible_scaler=data.invisible_scaler,
-        point_scaler=data.point_scaler,
-        partonic_scaler=data.partonic_scaler,
-        parent_cfm_scaler=data.partonic_scaler,
+        invisible_scaler=invisible_scaler if bool(config.model.invisible.enabled) else None,
+        point_scaler=point_scaler if bool(config.model.heads.point_invisible.enabled) else None,
+        partonic_scaler=(
+            partonic_scaler
+            if bool(config.model.heads.partonic.enabled) or bool(config.model.parent_cfm.enabled)
+            else None
+        ),
+        parent_cfm_scaler=partonic_scaler if bool(config.model.parent_cfm.enabled) else None,
         synthetic_data=False,
     )
-    del data
     return config, module
 
 
@@ -122,9 +141,10 @@ def prepare(config_dir: Path, output_dir: Path) -> dict:
     if any((output_dir / f"{name}_initial.ckpt").exists() for name in CONFIGS):
         raise FileExistsError(f"Refusing to overwrite initialisation artifacts in {output_dir}")
 
+    scalers = _fit_scalers(config_dir / CONFIGS["J0"])
     built = {}
     for name, filename in CONFIGS.items():
-        built[name] = _build(name, config_dir / filename)
+        built[name] = _build(name, config_dir / filename, scalers)
 
     transfer = {
         "Q0": (),
@@ -205,7 +225,7 @@ def prepare(config_dir: Path, output_dir: Path) -> dict:
             if artifacts["Q0"]["component_sha256"].get(component) != artifacts["Q1"]["component_sha256"].get(component):
                 raise AssertionError(f"Q0/Q1 initial {component} states differ")
     report = {
-        "source_contract": "real source measured/development inputs; reserved-test events absent",
+        "source_contract": "full real train/validation scaler fit; reserved-test events absent",
         "seed": int(built["Q0"][0].experiment.seed),
         "modes": artifacts,
         "q0_q1_shared_initialisation_equal": True,
