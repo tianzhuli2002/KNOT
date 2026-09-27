@@ -91,26 +91,41 @@ def _assert_source(expected_sha: str) -> None:
         raise RuntimeError("Immutable G0 source snapshot does not match the expected source commit")
 
 
-def _assert_j_a_matches_j0_objective(j0_config, j_a_config, *, stage: str) -> None:
-    j0_weights = {
+def _assert_same_training_objective(
+    reference_config, candidate_config, *, reference_mode: str, candidate_mode: str, stage: str
+) -> None:
+    reference_weights = {
         str(key): float(value)
-        for key, value in j0_config.training.loss_weights.items()
+        for key, value in reference_config.training.loss_weights.items()
     }
-    j_a_weights = {
+    candidate_weights = {
         str(key): float(value)
-        for key, value in j_a_config.training.loss_weights.items()
+        for key, value in candidate_config.training.loss_weights.items()
     }
-    if j_a_weights != j0_weights:
+    if candidate_weights != reference_weights:
         raise RuntimeError(
-            f"{stage} J_A must retain J0 loss weights and add predicted soft assignment "
-            f"context; J0={j0_weights}, J_A={j_a_weights}"
+            f"{stage} {candidate_mode} must retain {reference_mode} loss weights; "
+            f"{reference_mode}={reference_weights}, {candidate_mode}={candidate_weights}"
         )
-    j0_trainable = {str(value) for value in j0_config.training.trainable}
-    j_a_trainable = {str(value) for value in j_a_config.training.trainable}
-    if j_a_trainable != j0_trainable:
+    reference_trainable = {str(value) for value in reference_config.training.trainable}
+    candidate_trainable = {str(value) for value in candidate_config.training.trainable}
+    if candidate_trainable != reference_trainable:
         raise RuntimeError(
-            f"{stage} J_A must retain J0 trainable components; "
-            f"J0={sorted(j0_trainable)}, J_A={sorted(j_a_trainable)}"
+            f"{stage} {candidate_mode} must retain {reference_mode} trainable components; "
+            f"{reference_mode}={sorted(reference_trainable)}, "
+            f"{candidate_mode}={sorted(candidate_trainable)}"
+        )
+    reference_assignment_conditioning = str(
+        reference_config.model.invisible.conditioning.assignment
+    )
+    candidate_assignment_conditioning = str(
+        candidate_config.model.invisible.conditioning.assignment
+    )
+    if candidate_assignment_conditioning != reference_assignment_conditioning:
+        raise RuntimeError(
+            f"{stage} {candidate_mode} must retain {reference_mode} invisible-flow "
+            f"assignment conditioning; {reference_mode}={reference_assignment_conditioning}, "
+            f"{candidate_mode}={candidate_assignment_conditioning}"
         )
 
 
@@ -219,9 +234,18 @@ def _preflight() -> dict:
                 else None
             ),
         }
-    _assert_j_a_matches_j0_objective(
+    _assert_same_training_objective(
         load_experiment(CONFIG_ROOT / MODES["J0"]),
         load_experiment(CONFIG_ROOT / MODES["J_A"]),
+        reference_mode="J0",
+        candidate_mode="J_A",
+        stage="G0",
+    )
+    _assert_same_training_objective(
+        load_experiment(CONFIG_ROOT / MODES["J_A"]),
+        load_experiment(CONFIG_ROOT / MODES["J_AN"]),
+        reference_mode="J_A",
+        candidate_mode="J_AN",
         stage="G0",
     )
     production_configs: dict[str, dict] = {}
@@ -290,9 +314,18 @@ def _preflight() -> dict:
                 else None
             ),
         }
-    _assert_j_a_matches_j0_objective(
+    _assert_same_training_objective(
         load_experiment(PRODUCTION_CONFIG_ROOT / MODES["J0"]),
         load_experiment(PRODUCTION_CONFIG_ROOT / MODES["J_A"]),
+        reference_mode="J0",
+        candidate_mode="J_A",
+        stage="production",
+    )
+    _assert_same_training_objective(
+        load_experiment(PRODUCTION_CONFIG_ROOT / MODES["J_A"]),
+        load_experiment(PRODUCTION_CONFIG_ROOT / MODES["J_AN"]),
+        reference_mode="J_A",
+        candidate_mode="J_AN",
         stage="production",
     )
     if len(production_outputs) != len(MODES):
@@ -315,7 +348,7 @@ def _preflight() -> dict:
     if set(q1_config["trainable_components"]) - set(q0_config["trainable_components"]) != {"queries"}:
         raise RuntimeError("Q0/Q1 trainable components differ outside the intended query module")
 
-    initialisation_root = EXPERIMENT_ROOT / "production/initialisations"
+    initialisation_root = EXPERIMENT_ROOT / "production/initialisations_objective_matched_v1"
     initialisation_manifest = initialisation_root / "initialisation_manifest.json"
     if not initialisation_manifest.is_file():
         raise FileNotFoundError(f"Realnu initialisation manifest is missing: {initialisation_manifest}")
@@ -349,11 +382,18 @@ def _preflight() -> dict:
             != initialisation_checkpoints["Q1"]["component_sha256"].get(component)
         ):
             raise RuntimeError(f"Q0/Q1 initial {component} weights differ")
-    if (
-        initialisation_checkpoints["PCFM_Q"]["component_sha256"].get("partonic_cfm")
-        != initialisation_checkpoints["J0"]["component_sha256"].get("partonic_cfm")
-    ):
-        raise RuntimeError("PCFM_Q/J0 initial parent CFM weights differ")
+    for mode in ("J0", "J_A", "J_AN"):
+        if (
+            initialisation_checkpoints[mode]["component_sha256"].get("invisible")
+            != initialisation_checkpoints["Q1"]["component_sha256"].get("invisible")
+        ):
+            raise RuntimeError(f"{mode} invisible initialization differs from the shared Q1 predictor")
+    for mode in ("J0", "J_A", "J_AN"):
+        if (
+            initialisation_checkpoints["PCFM_Q"]["component_sha256"].get("partonic_cfm")
+            != initialisation_checkpoints[mode]["component_sha256"].get("partonic_cfm")
+        ):
+            raise RuntimeError(f"PCFM_Q/{mode} initial parent CFM weights differ")
     return {
         "status": "passed",
         "source_manifest_sha256": manifest_sha,

@@ -131,8 +131,8 @@ def prepare(config_dir: Path, output_dir: Path) -> dict:
         "Q1": ("visible", "assignment", "invisible"),
         "PCFM_Q": ("visible", "queries"),
         "J0": ("visible", "assignment", "invisible", "queries"),
-        "J_A": ("visible", "assignment", "queries"),
-        "J_AN": ("visible", "assignment", "queries"),
+        "J_A": ("visible", "assignment", "invisible", "queries"),
+        "J_AN": ("visible", "assignment", "invisible", "queries"),
     }
     sources = {
         "Q1": "Q0",
@@ -143,6 +143,8 @@ def prepare(config_dir: Path, output_dir: Path) -> dict:
     }
     additional_sources = {
         "J0": (("PCFM_Q", ("partonic_cfm",)),),
+        "J_A": (("PCFM_Q", ("partonic_cfm",)),),
+        "J_AN": (("PCFM_Q", ("partonic_cfm",)),),
     }
     artifacts = {}
     canonical = {
@@ -200,16 +202,23 @@ def prepare(config_dir: Path, output_dir: Path) -> dict:
                 parameter.numel() for parameter in module.parameters() if parameter.requires_grad
             ),
         }
+    for name in ("J0", "J_A", "J_AN"):
+        if (
+            artifacts[name]["component_sha256"].get("invisible")
+            != artifacts["Q1"]["component_sha256"].get("invisible")
+        ):
+            raise AssertionError(f"{name} invisible initialization differs from the shared Q1 predictor")
     for name in ("Q0", "Q1"):
         shared = ("visible", "assignment", "invisible")
         for component in shared:
             if artifacts["Q0"]["component_sha256"].get(component) != artifacts["Q1"]["component_sha256"].get(component):
                 raise AssertionError(f"Q0/Q1 initial {component} states differ")
-    if (
-        artifacts["PCFM_Q"]["component_sha256"].get("partonic_cfm")
-        != artifacts["J0"]["component_sha256"].get("partonic_cfm")
-    ):
-        raise AssertionError("PCFM_Q/J0 P0 parent-CFM initial states differ")
+    for name in ("J0", "J_A", "J_AN"):
+        if (
+            artifacts["PCFM_Q"]["component_sha256"].get("partonic_cfm")
+            != artifacts[name]["component_sha256"].get("partonic_cfm")
+        ):
+            raise AssertionError(f"PCFM_Q/{name} initial parent-CFM states differ")
 
     report = {
         "source_contract": "real source measured/development inputs; reserved-test events absent",

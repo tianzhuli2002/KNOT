@@ -154,7 +154,7 @@ model:
       - ttbar
   invisible:
     conditioning:
-      assignment: soft
+      assignment: none
     coordinates:
       type: met_residual
     generator:
@@ -212,11 +212,12 @@ training:
   trainable:
   - visible
   - assignment
+  - invisible
   - queries
   - partonic_cfm
   loss_weights:
     assignment: 1.0
-    invisible: 0.0
+    invisible: 1.0
     partonic: 0.0
     partonic_cfm: 1.0
   output: results/experiments/partonic_ttbar2L_2M_realnu_v1/production/realnu_top_antitop_20260926/J_A

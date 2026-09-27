@@ -178,4 +178,4 @@ training:
     invisible: 1.0
     partonic: 0.0
     partonic_cfm: 0.0
-  output: results/experiments/partonic_ttbar2L_2M_realnu_v1/attempts/realnu_top_antitop_20260926_g0/Q0
+  output: results/experiments/partonic_ttbar2L_2M_realnu_v1/attempts/realnu_top_antitop_20260927_g0_hotpath_release/Q0

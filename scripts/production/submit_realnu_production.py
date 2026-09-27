@@ -120,11 +120,22 @@ def initialisation_contract() -> dict:
             != modes["Q1"]["component_sha256"].get(component)
         ):
             raise RuntimeError(f"Q0/Q1 initial {component} checkpoint states differ")
-    if (
-        modes["PCFM_Q"]["component_sha256"].get("partonic_cfm")
-        != modes["J0"]["component_sha256"].get("partonic_cfm")
-    ):
-        raise RuntimeError("PCFM_Q/J0 P0 parent-CFM initial checkpoint states differ")
+    for mode in ("J0", "J_A", "J_AN"):
+        if (
+            modes["PCFM_Q"]["component_sha256"].get("partonic_cfm")
+            != modes[mode]["component_sha256"].get("partonic_cfm")
+        ):
+            raise RuntimeError(
+                f"PCFM_Q/{mode} parent-CFM initial checkpoint states differ"
+            )
+    for mode in ("J0", "J_A", "J_AN"):
+        if (
+            modes[mode]["component_sha256"].get("invisible")
+            != modes["Q1"]["component_sha256"].get("invisible")
+        ):
+            raise RuntimeError(
+                f"{mode} invisible initialization differs from the shared Q1 predictor"
+            )
     return {
         "manifest_path": str(INITIALISATION_MANIFEST_PATH.resolve()),
         "manifest_sha256": manifest_sha,
