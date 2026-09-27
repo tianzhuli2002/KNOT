@@ -91,7 +91,6 @@ def initialisation_contract() -> dict:
         initialisation_manifest.get("q0_q1_shared_initialisation_equal") is not True
         or initialisation_manifest.get("q0_q1_shared_components")
         != ["visible", "assignment", "invisible"]
-        or initialisation_manifest.get("pcfm_q_j0_parent_cfm_initialisation_equal") is not True
     ):
         raise RuntimeError("Realnu production initialisation equivalence contract failed")
 
@@ -120,14 +119,6 @@ def initialisation_contract() -> dict:
             != modes["Q1"]["component_sha256"].get(component)
         ):
             raise RuntimeError(f"Q0/Q1 initial {component} checkpoint states differ")
-    for mode in ("J0", "J_A", "J_AN"):
-        if (
-            modes["PCFM_Q"]["component_sha256"].get("partonic_cfm")
-            != modes[mode]["component_sha256"].get("partonic_cfm")
-        ):
-            raise RuntimeError(
-                f"PCFM_Q/{mode} parent-CFM initial checkpoint states differ"
-            )
     for mode in ("J0", "J_A", "J_AN"):
         if (
             modes[mode]["component_sha256"].get("invisible")

@@ -348,7 +348,7 @@ def _preflight() -> dict:
     if set(q1_config["trainable_components"]) - set(q0_config["trainable_components"]) != {"queries"}:
         raise RuntimeError("Q0/Q1 trainable components differ outside the intended query module")
 
-    initialisation_root = EXPERIMENT_ROOT / "production/initialisations_objective_matched_v1"
+    initialisation_root = EXPERIMENT_ROOT / "production/initialisations_objective_matched_v2"
     initialisation_manifest = initialisation_root / "initialisation_manifest.json"
     if not initialisation_manifest.is_file():
         raise FileNotFoundError(f"Realnu initialisation manifest is missing: {initialisation_manifest}")
@@ -358,7 +358,6 @@ def _preflight() -> dict:
     if (
         initialisation.get("q0_q1_shared_initialisation_equal") is not True
         or initialisation.get("q0_q1_shared_components") != ["visible", "assignment", "invisible"]
-        or initialisation.get("pcfm_q_j0_parent_cfm_initialisation_equal") is not True
     ):
         raise RuntimeError("Realnu controlled-initialisation equivalence checks did not pass")
     initialisation_checkpoints = {}
@@ -388,12 +387,6 @@ def _preflight() -> dict:
             != initialisation_checkpoints["Q1"]["component_sha256"].get("invisible")
         ):
             raise RuntimeError(f"{mode} invisible initialization differs from the shared Q1 predictor")
-    for mode in ("J0", "J_A", "J_AN"):
-        if (
-            initialisation_checkpoints["PCFM_Q"]["component_sha256"].get("partonic_cfm")
-            != initialisation_checkpoints[mode]["component_sha256"].get("partonic_cfm")
-        ):
-            raise RuntimeError(f"PCFM_Q/{mode} initial parent CFM weights differ")
     return {
         "status": "passed",
         "source_manifest_sha256": manifest_sha,

@@ -141,11 +141,6 @@ def prepare(config_dir: Path, output_dir: Path) -> dict:
         "J_A": "Q1",
         "J_AN": "Q1",
     }
-    additional_sources = {
-        "J0": (("PCFM_Q", ("partonic_cfm",)),),
-        "J_A": (("PCFM_Q", ("partonic_cfm",)),),
-        "J_AN": (("PCFM_Q", ("partonic_cfm",)),),
-    }
     artifacts = {}
     canonical = {
         "Q0": output_dir / "Q0_initial.ckpt",
@@ -163,11 +158,6 @@ def prepare(config_dir: Path, output_dir: Path) -> dict:
         if copied:
             _load_initial_components(module, source_path, copied)
         copied_sources = [source_name] if copied else []
-        for extra_source_name, extra_components in additional_sources.get(name, ()):
-            extra_source = output_dir / f"{extra_source_name}_initial.ckpt"
-            _load_initial_components(module, extra_source, extra_components)
-            copied = (*copied, *extra_components)
-            copied_sources.append(extra_source_name)
         metadata = {
             "mode": name,
             "seed": int(config.experiment.seed),
@@ -187,11 +177,12 @@ def prepare(config_dir: Path, output_dir: Path) -> dict:
             "checkpoint": str(canonical[name]),
             "initialisation": (
                 {"mode": name, "seed": int(_config.experiment.seed),
-                 "copied_components": list(transfer[name])
-                 + [component for _source, values in additional_sources.get(name, ()) for component in values],
-                 "source_initialisations": (
-                     ([] if not transfer[name] else [sources[name]])
-                     + [source for source, _ in additional_sources.get(name, ())]
+                 "copied_components": list(transfer[name]),
+                 "source_initialisations": ([] if not transfer[name] else [sources[name]]),
+                 "parent_cfm_conditioning": (
+                     str(_config.model.parent_cfm.conditioning)
+                     if bool(_config.model.parent_cfm.enabled)
+                     else None
                  )}
             ),
             "component_sha256": {
@@ -213,20 +204,13 @@ def prepare(config_dir: Path, output_dir: Path) -> dict:
         for component in shared:
             if artifacts["Q0"]["component_sha256"].get(component) != artifacts["Q1"]["component_sha256"].get(component):
                 raise AssertionError(f"Q0/Q1 initial {component} states differ")
-    for name in ("J0", "J_A", "J_AN"):
-        if (
-            artifacts["PCFM_Q"]["component_sha256"].get("partonic_cfm")
-            != artifacts[name]["component_sha256"].get("partonic_cfm")
-        ):
-            raise AssertionError(f"PCFM_Q/{name} initial parent-CFM states differ")
-
     report = {
         "source_contract": "real source measured/development inputs; reserved-test events absent",
         "seed": int(built["Q0"][0].experiment.seed),
         "modes": artifacts,
         "q0_q1_shared_initialisation_equal": True,
         "q0_q1_shared_components": ["visible", "assignment", "invisible"],
-        "pcfm_q_j0_parent_cfm_initialisation_equal": True,
+        "parent_cfm_initialisation": "mode-specific seeded weights for P0/P1/P2 conditioning",
     }
     (output_dir / "initialisation_manifest.json").write_text(
         json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
