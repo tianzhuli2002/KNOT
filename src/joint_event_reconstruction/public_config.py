@@ -1453,7 +1453,9 @@ def resolve_public_experiment(public: DictConfig, *, source_path: str | Path | N
         )
 
     output_value = training_public.get("output", f"results/{public.experiment.name}")
-    output_path = _path(output_value)
+    # Results live under the shared project root. Only source-owned paths such
+    # as configs/topology are resolved against the immutable source snapshot.
+    output_path = _path(output_value, data_path=True)
     return OmegaConf.create(
         {
             "experiment": _plain(public.experiment),
