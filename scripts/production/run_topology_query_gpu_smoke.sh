@@ -4,10 +4,11 @@ set -euo pipefail
 # Isolated GPU execution gate for the topology-query research branch.  This
 # script deliberately uses only the synthetic truth-labelled fixture and never
 # touches the matched VyPER--JER production root.
-repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-experiment_root="$repo_root/results/experiments/topology_query_joint_20260923"
+source_root="$(realpath -e "${JER_TOPOLOGY_SOURCE_ROOT:?JER_TOPOLOGY_SOURCE_ROOT is required}")"
+project_root="$(realpath -e "${JER_TOPOLOGY_PROJECT_ROOT:?JER_TOPOLOGY_PROJECT_ROOT is required}")"
+experiment_root="$project_root/results/experiments/topology_query_joint_20260923"
 smoke_root="$experiment_root/validation/gpu_smoke_topology_query"
-config="$repo_root/configs/experiments/topology_query_synthetic_full.public.yaml"
+config="$source_root/configs/experiments/topology_query_synthetic_full.public.yaml"
 measured="$experiment_root/synthetic_data/measured_v2.h5"
 partonic="$experiment_root/synthetic_data/partonic_truth_v2.h5"
 python_bin="/mnt/iusers01/fatpou01/phy01/w00238tl/miniforge3/bin/python"
@@ -20,8 +21,8 @@ expected_config_sha256="${EXPECTED_CONFIG_SHA256:?EXPECTED_CONFIG_SHA256 is requ
 expected_measured_sha256="${EXPECTED_MEASURED_SHA256:?EXPECTED_MEASURED_SHA256 is required}"
 expected_partonic_sha256="${EXPECTED_PARTONIC_SHA256:?EXPECTED_PARTONIC_SHA256 is required}"
 
-[[ "$(git -C "$repo_root" rev-parse HEAD)" == "$expected_source_sha" ]]
-[[ -z "$(git -C "$repo_root" status --porcelain --untracked-files=no)" ]]
+[[ "$(git -C "$project_root" rev-parse HEAD)" == "$expected_source_sha" ]]
+[[ -z "$(git -C "$project_root" status --porcelain --untracked-files=no)" ]]
 [[ "$(sha256sum "$config" | cut -d' ' -f1)" == "$expected_config_sha256" ]]
 [[ "$(sha256sum "$measured" | cut -d' ' -f1)" == "$expected_measured_sha256" ]]
 [[ "$(sha256sum "$partonic" | cut -d' ' -f1)" == "$expected_partonic_sha256" ]]
@@ -36,7 +37,9 @@ else
 fi
 mkdir -p "$smoke_root/training" "$smoke_root/predictions" "$smoke_root/evaluation"
 
-export PYTHONPATH="$repo_root/src"
+export JER_PROJECT_ROOT="$project_root"
+export JER_SOURCE_ROOT="$source_root"
+export PYTHONPATH="$source_root/src"
 export JER_SOURCE_SHA="$expected_source_sha"
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
 export MKL_NUM_THREADS="${MKL_NUM_THREADS:-1}"

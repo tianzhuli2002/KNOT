@@ -18,9 +18,14 @@ from joint_event_reconstruction.configuration import load_experiment
 from joint_event_reconstruction.prediction_schema import validate_prediction
 from joint_event_reconstruction.topology.compiler import load_topology
 
-ROOT = Path(__file__).resolve().parents[2]
+SOURCE_ROOT = Path(
+    os.environ.get("JER_REALNU_SOURCE_ROOT", Path(__file__).resolve().parents[2])
+).expanduser().resolve()
+ROOT = Path(
+    os.environ.get("JER_REALNU_PROJECT_ROOT", Path(__file__).resolve().parents[2])
+).expanduser().resolve()
 EXPERIMENT_ROOT = ROOT / "results/experiments/partonic_ttbar2L_2M_realnu_v1"
-CONFIG_ROOT = ROOT / "configs/experiments/realnu_v1/gpu_smoke"
+CONFIG_ROOT = SOURCE_ROOT / "configs/experiments/realnu_v1/gpu_smoke"
 RAW_SOURCE_SHA256 = "75e895c0c9ce3984d4c925fa6f850748258e7b1d0e007a757f74cbeaa9cf9196"
 SOURCE_MANIFEST_SHA256 = "5f4d44cad0b6f8857ebb2a4094d40e3901459c5648cb7464cb9af42279502601"
 SPLIT_MEMBERSHIP_SHA256 = "260af7bda73383dc2d5d5adf95f628e71f081642964ea7b875746d7d08225374"
@@ -74,6 +79,18 @@ def _assert_source(expected_sha: str) -> None:
         raise RuntimeError(f"G0 branch mismatch: found {observed_branch!r}")
     if dirty:
         raise RuntimeError(f"G0 requires a clean source tree; git status reports: {dirty}")
+    source_metadata_path = SOURCE_ROOT / "SOURCE_SNAPSHOT.json"
+    if not source_metadata_path.is_file():
+        raise FileNotFoundError(f"Immutable G0 source snapshot metadata is missing: {source_metadata_path}")
+    source_metadata = json.loads(source_metadata_path.read_text())
+    expected_tree_sha = _git("rev-parse", f"{expected_sha}^{{tree}}")
+    if (
+        source_metadata.get("schema") != "jer_source_snapshot_v1"
+        or source_metadata.get("commit_sha") != expected_sha
+        or source_metadata.get("tree_sha") != expected_tree_sha
+        or (SOURCE_ROOT / ".git").exists()
+    ):
+        raise RuntimeError("Immutable G0 source snapshot does not match the expected source commit")
 
 
 def _preflight() -> dict:
@@ -352,12 +369,24 @@ def _validate_parent_prediction(
         return result
 
 
-def run(root: Path, expected_sha: str, python_bin: Path) -> dict:
+def run(root: Path, expected_sha: str, python_bin: Path, contract_path: Path) -> dict:
     if not os.environ.get("SLURM_JOB_ID"):
         raise RuntimeError("The realnu G0 must run inside its explicitly allocated Slurm GPU job")
     if root.exists():
         raise FileExistsError(f"Refusing to reuse realnu G0 output root: {root}")
     _assert_source(expected_sha)
+    if not contract_path.is_file():
+        raise FileNotFoundError(f"Resolved G0 execution contract is missing: {contract_path}")
+    contract = json.loads(contract_path.read_text())
+    if (
+        contract.get("schema") != "realnu_g0_execution_contract_v1"
+        or contract.get("source_sha") != expected_sha
+        or Path(contract.get("source_root", "")).resolve() != SOURCE_ROOT
+        or Path(contract.get("project_root", "")).resolve() != ROOT
+        or Path(contract.get("g0_root", "")).resolve() != root
+        or Path(contract.get("python", "")).resolve() != python_bin.resolve()
+    ):
+        raise RuntimeError("Resolved G0 execution contract does not match this Slurm job")
     root.mkdir(parents=True)
     progress = {
         "status": "running",
@@ -373,6 +402,8 @@ def run(root: Path, expected_sha: str, python_bin: Path) -> dict:
     _atomic_json(root / "progress.json", progress)
     try:
         preflight = _preflight()
+        if preflight != contract.get("g0_preflight"):
+            raise RuntimeError("G0 preflight changed after submission; refusing to train")
         _atomic_json(root / "preflight.json", preflight)
         progress["completed_stages"].append("preflight")
         progress["updated_utc"] = datetime.now(UTC).isoformat()
@@ -380,9 +411,10 @@ def run(root: Path, expected_sha: str, python_bin: Path) -> dict:
         expected_source = Path(preflight["measured_input"])
         env = os.environ.copy()
         env["JER_PROJECT_ROOT"] = str(ROOT)
+        env["JER_SOURCE_ROOT"] = str(SOURCE_ROOT)
         env["JER_SOURCE_SHA"] = expected_sha
         env["JER_SOURCE_BRANCH"] = "research/partonic-query-cfm-realnu-v1"
-        env["PYTHONPATH"] = f"{ROOT / 'src'}{os.pathsep}{env.get('PYTHONPATH', '')}"
+        env["PYTHONPATH"] = f"{SOURCE_ROOT / 'src'}{os.pathsep}{env.get('PYTHONPATH', '')}"
         env.setdefault("OMP_NUM_THREADS", "1")
         env.setdefault("MKL_NUM_THREADS", "1")
         env.setdefault("OPENBLAS_NUM_THREADS", "1")
@@ -475,7 +507,7 @@ def run(root: Path, expected_sha: str, python_bin: Path) -> dict:
                 f"production_batch_{mode}",
                 [
                     str(python_bin),
-                    str(ROOT / "scripts/validation/validate_realnu_production_batch_gpu.py"),
+                    str(SOURCE_ROOT / "scripts/validation/validate_realnu_production_batch_gpu.py"),
                     "--config", str(CONFIG_ROOT / MODES[mode]),
                     "--output", str(output),
                 ],
@@ -526,10 +558,17 @@ def run(root: Path, expected_sha: str, python_bin: Path) -> dict:
 def main() -> None:
     expected_sha = os.environ.get("JER_REALNU_EXPECTED_SHA")
     output_root = os.environ.get("JER_REALNU_G0_ROOT")
+    contract_path = os.environ.get("JER_REALNU_PREFLIGHT_CONTRACT")
     python_bin = Path(os.environ.get("JER_PYTHON", sys.executable)).expanduser().resolve()
-    if not expected_sha or not output_root:
-        raise SystemExit("JER_REALNU_EXPECTED_SHA and JER_REALNU_G0_ROOT are required")
-    result = run(Path(output_root).expanduser().resolve(), expected_sha, python_bin)
+    if not expected_sha or not output_root or not contract_path:
+        raise SystemExit(
+            "JER_REALNU_EXPECTED_SHA, JER_REALNU_G0_ROOT and "
+            "JER_REALNU_PREFLIGHT_CONTRACT are required"
+        )
+    result = run(
+        Path(output_root).expanduser().resolve(), expected_sha, python_bin,
+        Path(contract_path).expanduser().resolve(),
+    )
     print(json.dumps(result, indent=2, sort_keys=True))
 
 

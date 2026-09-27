@@ -10,7 +10,17 @@ if [[ $# -ne 1 ]]; then
   exit 2
 fi
 
-repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)
+repo_root=$(realpath -e "${JER_PARTONIC_SOURCE_ROOT:?JER_PARTONIC_SOURCE_ROOT is required}")
+expected_sha=${JER_PARTONIC_EXPECTED_SHA:?JER_PARTONIC_EXPECTED_SHA is required}
+actual_sha=$(git -C "$repo_root" rev-parse HEAD)
+if [[ "$actual_sha" != "$expected_sha" ]]; then
+  echo "Partonic source SHA mismatch: expected=$expected_sha actual=$actual_sha" >&2
+  exit 2
+fi
+if [[ -n "$(git -C "$repo_root" status --porcelain --untracked-files=no)" ]]; then
+  echo "Partonic Slurm source checkout is dirty: $repo_root" >&2
+  exit 2
+fi
 cd "$repo_root"
 experiment=$1
 python_bin=${JER_PYTHON:-python}
@@ -27,7 +37,7 @@ PY
 
 "$python_bin" -m joint_event_reconstruction.cli.run show-config \
   --experiment "$experiment" > "${SLURM_SUBMIT_DIR:-$PWD}/partonic_resolved_config_${SLURM_JOB_ID}.yaml"
-"$python_bin" scripts/data/validate_partonic_contract.py \
+"$python_bin" "$repo_root/scripts/data/validate_partonic_contract.py" \
   --experiment "$experiment" \
   > "${SLURM_SUBMIT_DIR:-$PWD}/partonic_preflight_${SLURM_JOB_ID}.json"
 "$python_bin" -m joint_event_reconstruction.cli.run train \
@@ -43,7 +53,7 @@ PY
 )
 checkpoint="$training_output/checkpoints/best-loss.ckpt"
 test -s "$checkpoint"
-"$python_bin" scripts/data/validate_partonic_contract.py \
+"$python_bin" "$repo_root/scripts/data/validate_partonic_contract.py" \
   --experiment "$experiment" \
   --checkpoint "$checkpoint" \
   > "${SLURM_SUBMIT_DIR:-$PWD}/partonic_checkpoint_contract_${SLURM_JOB_ID}.json"

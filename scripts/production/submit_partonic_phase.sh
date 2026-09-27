@@ -110,8 +110,11 @@ PY
 "$python_bin" scripts/data/validate_partonic_contract.py \
   --experiment "$experiment" > /dev/null
 
+expected_source_sha=$(git -C "$repo_root" rev-parse HEAD)
 runner="$repo_root/scripts/production/run_partonic_phase.sh"
-command=(sbatch "${sbatch_args[@]}" "$runner" "$experiment")
+command=(sbatch "${sbatch_args[@]}" --chdir "$repo_root"
+  --export="ALL,JER_PARTONIC_SOURCE_ROOT=$repo_root,JER_PARTONIC_EXPECTED_SHA=$expected_source_sha"
+  "$runner" "$experiment")
 if ((submit == 0)); then
   printf 'Validated; not submitted. Command:'
   printf ' %q' "${command[@]}"
