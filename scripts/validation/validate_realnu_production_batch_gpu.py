@@ -79,8 +79,22 @@ class BatchProbe:
 
 def _dataset_event_hash(data) -> str:
     dataset = data.train_dataset
-    event_source = dataset.payload.get("event_id", dataset.payload["indices"])
-    positions = torch.as_tensor(dataset.positions, dtype=torch.long)
+    subset_positions = np.arange(len(dataset), dtype=np.int64)
+    while isinstance(dataset, torch.utils.data.Subset):
+        subset_indices = np.asarray(dataset.indices, dtype=np.int64)
+        subset_positions = subset_indices[subset_positions]
+        dataset = dataset.dataset
+    payload = getattr(dataset, "payload", None)
+    if payload is None:
+        payload = getattr(dataset, "cache_payload", None)
+    if not hasattr(dataset, "positions") or payload is None:
+        raise TypeError(
+            "Production probe requires the validated cached train dataset; "
+            f"observed {type(dataset).__name__}"
+        )
+    cache_positions = np.asarray(dataset.positions, dtype=np.int64)[subset_positions]
+    event_source = payload.get("event_id", payload["indices"])
+    positions = torch.as_tensor(cache_positions, dtype=torch.long)
     event_ids = event_source.index_select(0, positions).cpu().numpy().astype(np.int64, copy=False)
     if event_ids.shape != (512,):
         raise ValueError(f"Production probe train exposure has {len(event_ids)} events; expected 512")
