@@ -682,8 +682,8 @@ def run(root: Path, expected_sha: str, python_bin: Path, contract_path: Path) ->
                 str(python_bin), "-m", "joint_event_reconstruction.cli.run", "predict",
                 "--experiment", str(config), "--checkpoint", str(checkpoint),
                 "--output", str(output), "--split", "validation", "--device", "cuda",
-                "--set", "inference.top_k_assignments=1",
-                "--set", "inference.posterior_samples=1",
+                "--set", "inference.assignment.top_k=1",
+                "--set", "inference.invisible.samples_per_assignment=1",
                 "--set", "inference.invisible.flow.steps=2",
             ]
             _run_command(
