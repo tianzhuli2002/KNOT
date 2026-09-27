@@ -6,12 +6,11 @@ from pathlib import Path
 
 from omegaconf import DictConfig, OmegaConf
 
-from joint_event_reconstruction.topology.compiler import load_topology
 from joint_event_reconstruction.models.invisible.mass_shell import (
     mass_shell_config as canonical_mass_shell_config,
 )
 from joint_event_reconstruction.runtime_paths import runtime_paths
-
+from joint_event_reconstruction.topology.compiler import load_topology
 
 REPO_ROOT = runtime_paths().source_root
 DEFAULTS_PATH = REPO_ROOT / "configs/defaults.yaml"
@@ -29,7 +28,7 @@ def _path(value: object, *, data_path: bool = False) -> Path:
     if path.is_absolute():
         return path.resolve()
     roots = runtime_paths()
-    repository_prefixes = {"configs", "scripts", "src", "results"}
+    repository_prefixes = {"configs", "scripts", "src"}
     root = (
         roots.source_root
         if not data_path or (path.parts and path.parts[0] in repository_prefixes)

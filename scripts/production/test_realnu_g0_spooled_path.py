@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import subprocess
@@ -11,7 +12,10 @@ from pathlib import Path
 
 
 def main() -> None:
-    project_root = Path(__file__).resolve().parents[2]
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--project-root", type=Path, required=True)
+    args = parser.parse_args()
+    project_root = args.project_root.expanduser().resolve(strict=True)
     expected_sha = subprocess.check_output(
         ["git", "-C", str(project_root), "rev-parse", "HEAD"], text=True
     ).strip()
