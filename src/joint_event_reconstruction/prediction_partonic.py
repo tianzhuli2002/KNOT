@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-import errno
 import hashlib
 import json
 import os
 import tempfile
-import time
 from pathlib import Path
 
 import h5py
@@ -18,19 +16,11 @@ from joint_event_reconstruction.data.partonic import PartonicTruthStore
 
 PARTONIC_PREDICTION_SCHEMA = "joint_event_reconstruction_partonic_cfm_v1"
 PARENT_ROLES = ("top", "antitop")
-_VALIDATION_OPEN_ATTEMPTS = 6
 
 
 def _open_validation_file(path: Path) -> h5py.File:
-    """Retry transient parallel-filesystem lock contention after the writer closes."""
-    for attempt in range(_VALIDATION_OPEN_ATTEMPTS):
-        try:
-            return h5py.File(path, "r")
-        except OSError as error:
-            if error.errno != errno.EAGAIN or attempt + 1 == _VALIDATION_OPEN_ATTEMPTS:
-                raise
-            time.sleep(min(0.1 * (2**attempt), 1.0))
-    raise AssertionError("unreachable")
+    """Read the job-private, closed temporary without shared-filesystem locking."""
+    return h5py.File(path, "r", locking=False)
 
 
 def _sha256(path: Path) -> str:

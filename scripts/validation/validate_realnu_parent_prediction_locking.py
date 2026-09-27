@@ -1,4 +1,4 @@
-"""Check retry of a transient HDF5 EAGAIN while reopening a closed prediction."""
+"""Check a closed parent prediction opens without unsupported filesystem locking."""
 
 from __future__ import annotations
 
@@ -21,23 +21,23 @@ def main() -> None:
         real_open = h5py.File
         calls = 0
 
-        def transient_lock(file, *args, **kwargs):
+        def unsupported_locking(file, mode="r", *args, **kwargs):
             nonlocal calls
-            if Path(file) == path and args == ("r",) and calls == 0:
+            if Path(file) == path and mode == "r":
                 calls += 1
-                raise BlockingIOError(errno.EAGAIN, "transient HDF5 lock contention")
-            calls += 1
-            return real_open(file, *args, **kwargs)
+                if kwargs.get("locking") is not False:
+                    raise BlockingIOError(errno.EAGAIN, "shared filesystem locking is unavailable")
+            return real_open(file, mode, *args, **kwargs)
 
         with (
-            patch.object(h5py, "File", side_effect=transient_lock),
+            patch.object(h5py, "File", side_effect=unsupported_locking),
             _open_validation_file(path) as source,
         ):
             observed = source["EVENT_ID"][:].tolist()
 
-        if observed != [17, 23] or calls != 2:
+        if observed != [17, 23] or calls != 1:
             raise RuntimeError(f"HDF5 validation retry failed: events={observed}, opens={calls}")
-    print("PASS: transient HDF5 EAGAIN retried and prediction reopened")
+    print("PASS: private closed prediction opens with HDF5 locking disabled")
 
 
 if __name__ == "__main__":
