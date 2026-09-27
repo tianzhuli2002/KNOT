@@ -270,6 +270,11 @@ def _load_initial_components(
         )
     if "invisible" in components and checkpoint.get("invisible_scaler") != module.scaler_metadata:
         raise ValueError("Invisible component initialisation requires identical scaler metadata")
+    if (
+        "partonic_cfm" in components
+        and checkpoint.get("partonic_scaler") != module.partonic_scaler_metadata
+    ):
+        raise ValueError("Parent CFM initialisation requires identical train-fitted scaler metadata")
 
     target = module.state_dict()
     expected = {key for key in target if _selected_component_key(key, components)}

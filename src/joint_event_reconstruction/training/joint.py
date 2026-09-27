@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import importlib.metadata
 import json
+from pathlib import Path
 
 import lightning as L
 import torch
@@ -15,6 +16,27 @@ from joint_event_reconstruction.models.event import JointEventModel
 from joint_event_reconstruction.topology.compiler import load_topology
 
 ARCHITECTURE_SIGNATURE_VERSION = 5
+
+
+def resolve_fused_adamw(
+    *,
+    requested: bool,
+    device_type: str,
+    precision: str,
+    gradient_clip: float,
+) -> tuple[bool, str | None]:
+    """Resolve fused AdamW where Lightning AMP gradient clipping is supported."""
+    if not requested:
+        return False, "fused AdamW was not requested"
+    if device_type != "cuda":
+        return False, "fused AdamW is only enabled for CUDA parameters"
+    mixed_precision = str(precision).endswith("-mixed")
+    if mixed_precision and float(gradient_clip) > 0:
+        return (
+            False,
+            "Lightning mixed-precision gradient clipping incompatible with fused AdamW",
+        )
+    return True, None
 
 
 def _resolved(value):
@@ -461,6 +483,7 @@ class JointEventModule(L.LightningModule):
                 "data_subset_seed": int(experiment.data.subset_seed),
                 "precision": str(experiment.training.precision),
                 "fused_adamw_requested": bool(experiment.training.fused_adamw),
+                "gradient_clip": float(experiment.training.gradient_clip),
                 "compile_requested": bool(experiment.training.runtime.compile),
                 "external_package_versions": {
                     "torch": torch.__version__,
@@ -472,6 +495,11 @@ class JointEventModule(L.LightningModule):
         self.learning_rate = float(experiment.training.learning_rate)
         self.weight_decay = float(experiment.training.weight_decay)
         self.fused_adamw = bool(experiment.training.fused_adamw)
+        self.precision = str(experiment.training.precision)
+        self.gradient_clip = float(experiment.training.gradient_clip)
+        self.training_output = Path(str(experiment.training.output)).expanduser().resolve()
+        self._optimizer_execution_record = None
+        self._optimizer_execution_logged = False
         self.compile_requested = bool(experiment.training.runtime.compile)
         compiled = torch.compile(self.event_model) if self.compile_requested else None
         object.__setattr__(self, "_compiled_event_forward", compiled)
@@ -560,9 +588,12 @@ class JointEventModule(L.LightningModule):
         trainable = [parameter for parameter in self.parameters() if parameter.requires_grad]
         if not trainable:
             raise RuntimeError("Experiment freezes every trainable parameter")
-        use_fused = self.fused_adamw and trainable[0].device.type == "cuda"
-        if self.fused_adamw and not use_fused:
-            self.print("Fused AdamW requested but parameters are on CPU; using regular AdamW.")
+        use_fused, fallback_reason = resolve_fused_adamw(
+            requested=self.fused_adamw,
+            device_type=trainable[0].device.type,
+            precision=self.precision,
+            gradient_clip=self.gradient_clip,
+        )
         try:
             optimiser = torch.optim.AdamW(
                 trainable,
@@ -573,13 +604,40 @@ class JointEventModule(L.LightningModule):
         except (TypeError, RuntimeError) as error:
             if not use_fused:
                 raise
-            self.print(f"Fused AdamW is unavailable ({error}); using regular AdamW.")
+            fallback_reason = f"fused AdamW is unavailable: {error}"
             optimiser = torch.optim.AdamW(
                 trainable,
                 lr=self.learning_rate,
                 weight_decay=self.weight_decay,
                 fused=False,
             )
+            use_fused = False
+        record = {
+            "optimizer": "AdamW",
+            "fused_adamw_requested": self.fused_adamw,
+            "fused_adamw_effective": use_fused,
+            "fallback_reason": fallback_reason,
+            "precision": self.precision,
+            "gradient_clip": self.gradient_clip,
+            "device_type": trainable[0].device.type,
+        }
+        self._optimizer_execution_record = record
+        self.hparams["optimizer_execution"] = record
+        self.hparams["fused_adamw_effective"] = use_fused
+        self.hparams["fused_adamw_fallback_reason"] = fallback_reason
+        self.training_output.mkdir(parents=True, exist_ok=True)
+        execution_path = self.training_output / "optimizer_execution.json"
+        execution_path.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
+        if not self._optimizer_execution_logged:
+            trainer = getattr(self, "_trainer", None)
+            if trainer is None or trainer.is_global_zero:
+                print(
+                    "Optimizer execution: "
+                    f"requested_fused={self.fused_adamw}, effective_fused={use_fused}, "
+                    f"reason={fallback_reason or 'supported execution'}",
+                    flush=True,
+                )
+            self._optimizer_execution_logged = True
         if not self.scheduler_config.enabled:
             return optimiser
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(

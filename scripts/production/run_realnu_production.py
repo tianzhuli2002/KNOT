@@ -36,7 +36,7 @@ TRUTH_PATH = (
     "partonic_ttbar2l_train_validation_maxjets8_v1_supervision.h5"
 )
 CACHE_PATH = EXPERIMENT_ROOT / "cache/train_validation_measured_maxjets8_v1.pt"
-INITIALISATION_ROOT = EXPERIMENT_ROOT / "production/initialisations_objective_matched_v3"
+INITIALISATION_ROOT = EXPERIMENT_ROOT / "production/initialisations_objective_matched_v4"
 INITIALISATION_MANIFEST_PATH = INITIALISATION_ROOT / "initialisation_manifest.json"
 SOURCE_MANIFEST_PATH = EXPERIMENT_ROOT / "source_manifest_v1.json"
 SPLIT_PATH = EXPERIMENT_ROOT / "split_membership_v1.npz"
@@ -330,6 +330,7 @@ def load_and_validate_config(mode: str, config_path: Path, expected_output: Path
         or int(config.training.epochs) != 20
         or int(config.training.workers) != 8
         or str(config.training.precision) != "bf16-mixed"
+        or float(config.training.gradient_clip) != 1.0
         or not bool(config.training.fused_adamw)
         or any(value is not None for value in (config.data.max_events.train, config.data.max_events.val, config.data.max_events.test))
     ):
@@ -476,6 +477,21 @@ def run_training(mode: str, expected_sha: str, manifest_path: Path, python_bin: 
         raise FileNotFoundError(f"{mode} training did not create a best-loss checkpoint: {checkpoint_path}")
     checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     hyper = checkpoint.get("hyper_parameters", {})
+    optimizer_execution = hyper.get("optimizer_execution")
+    if (
+        not isinstance(optimizer_execution, dict)
+        or optimizer_execution.get("optimizer") != "AdamW"
+        or optimizer_execution.get("fused_adamw_requested") is not True
+        or optimizer_execution.get("fused_adamw_effective") is not False
+        or optimizer_execution.get("precision") != "bf16-mixed"
+        or float(optimizer_execution.get("gradient_clip", 0.0)) != 1.0
+        or optimizer_execution.get("fallback_reason")
+        != "Lightning mixed-precision gradient clipping incompatible with fused AdamW"
+    ):
+        raise RuntimeError(
+            f"{mode} checkpoint optimizer policy did not preserve gradient clipping: "
+            f"{optimizer_execution}"
+        )
     if int(checkpoint.get("global_step", 0)) <= 0:
         raise RuntimeError(f"{mode} best checkpoint has no completed optimiser step")
     if hyper.get("git_sha") != expected_sha:

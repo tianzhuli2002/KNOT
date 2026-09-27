@@ -30,6 +30,7 @@ CONFIGS = {
     "J_A": "j_a.public.yaml",
     "J_AN": "j_an.public.yaml",
 }
+EXPECTED_TRAIN_COUNT = 1_799_753
 COMPONENTS = {
     "event_model.visible.": "visible",
     "event_model.reconstruction.": "assignment",
@@ -91,13 +92,12 @@ def _save_initial(path: Path, module, metadata: dict) -> None:
             os.unlink(temporary)
 
 
-def _fit_scalers(config_path: Path) -> tuple:
-    # Fit the fixed target scalers once on the complete training population.
-    # Smoke-event limits would produce incompatible checkpoint metadata for
-    # the full-data production configs.
-    config = load_experiment(config_path, ["data.cache=null"])
+def _fit_scalers(config_path: Path) -> tuple[tuple, dict]:
+    # Fit target scalers on frozen training membership only. Reuse the measured
+    # tensor cache; validation and reserved-test rows never enter these fits.
+    config = load_experiment(config_path)
     if any(config.data.max_events[split] is not None for split in ("train", "val", "test")):
-        raise ValueError("Initialisation scalers require the full configured train/validation population")
+        raise ValueError("Initialisation scalers require the full configured training population")
     L.seed_everything(int(config.experiment.seed), workers=True)
     visible = load_visible_config(config)
     visible.dataset.pin_memory = False
@@ -107,8 +107,23 @@ def _fit_scalers(config_path: Path) -> tuple:
     scalers = (data.invisible_scaler, data.point_scaler, data.partonic_scaler)
     if scalers[0] is None or scalers[2] is None:
         raise RuntimeError("Full-data initialisation requires invisible and parent target scalers")
+    scaler_fit = {
+        "invisible": data.invisible_scaler_fit_metadata,
+        "partonic": data.partonic_scaler_fit_metadata,
+    }
+    for name, record in scaler_fit.items():
+        if (
+            record is None
+            or record.get("population") != "frozen_train_split"
+            or int(record.get("event_count", -1)) != EXPECTED_TRAIN_COUNT
+        ):
+            raise RuntimeError(
+                f"{name} scaler must use exactly the frozen training membership: {record}"
+            )
+    if int(scaler_fit["invisible"].get("joint_supported_event_count", -1)) != EXPECTED_TRAIN_COUNT:
+        raise RuntimeError("Invisible scaler training membership is missing supported events")
     del data
-    return scalers
+    return scalers, scaler_fit
 
 
 def _build(name: str, config_path: Path, scalers: tuple):
@@ -141,7 +156,7 @@ def prepare(config_dir: Path, output_dir: Path) -> dict:
     if any((output_dir / f"{name}_initial.ckpt").exists() for name in CONFIGS):
         raise FileExistsError(f"Refusing to overwrite initialisation artifacts in {output_dir}")
 
-    scalers = _fit_scalers(config_dir / CONFIGS["J0"])
+    scalers, scaler_fit = _fit_scalers(config_dir / CONFIGS["J0"])
     built = {}
     for name, filename in CONFIGS.items():
         built[name] = _build(name, config_dir / filename, scalers)
@@ -225,7 +240,8 @@ def prepare(config_dir: Path, output_dir: Path) -> dict:
             if artifacts["Q0"]["component_sha256"].get(component) != artifacts["Q1"]["component_sha256"].get(component):
                 raise AssertionError(f"Q0/Q1 initial {component} states differ")
     report = {
-        "source_contract": "full real train/validation scaler fit; reserved-test events absent",
+        "source_contract": "target scalers fit on frozen training membership only; validation and reserved-test events excluded",
+        "scaler_fit": scaler_fit,
         "seed": int(built["Q0"][0].experiment.seed),
         "modes": artifacts,
         "q0_q1_shared_initialisation_equal": True,
@@ -240,11 +256,15 @@ def prepare(config_dir: Path, output_dir: Path) -> dict:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config-dir", type=Path, default=Path("configs/experiments/realnu_v1"))
+    parser.add_argument(
+        "--config-dir",
+        type=Path,
+        default=Path("configs/experiments/realnu_v1/production_draft"),
+    )
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=Path("results/experiments/partonic_ttbar2L_2M_realnu_v1/cpu_e2e/initialisations"),
+        default=Path("results/experiments/partonic_ttbar2L_2M_realnu_v1/production/initialisations_objective_matched_v4"),
     )
     args = parser.parse_args()
     result = prepare(args.config_dir, args.output_dir)

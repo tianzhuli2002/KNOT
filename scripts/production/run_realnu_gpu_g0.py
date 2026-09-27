@@ -202,6 +202,7 @@ def _preflight() -> dict:
             or int(config.training.batch_size) != 512
             or int(config.training.workers) != 8
             or str(config.training.precision) != "bf16-mixed"
+            or float(config.training.gradient_clip) != 1.0
             or not bool(config.training.fused_adamw)
         ):
             raise RuntimeError(f"{mode} G0 config does not use the common bounded production setup")
@@ -271,6 +272,7 @@ def _preflight() -> dict:
             or int(config.training.epochs) != 20
             or int(config.training.workers) != 8
             or str(config.training.precision) != "bf16-mixed"
+            or float(config.training.gradient_clip) != 1.0
             or not bool(config.training.fused_adamw)
         ):
             raise RuntimeError(f"{mode} production config differs from the fixed full-data release")
@@ -305,6 +307,8 @@ def _preflight() -> dict:
             "weight_decay": float(config.training.weight_decay),
             "precision": str(config.training.precision),
             "fused_adamw": bool(config.training.fused_adamw),
+            "gradient_clip": float(config.training.gradient_clip),
+            "accumulate_grad_batches": int(config.training.accumulate_grad_batches),
             "loss_weights": {
                 key: float(value) for key, value in config.training.loss_weights.items()
             },
@@ -341,6 +345,8 @@ def _preflight() -> dict:
         "weight_decay",
         "precision",
         "fused_adamw",
+        "gradient_clip",
+        "accumulate_grad_batches",
         "loss_weights",
     ):
         if q0_config[key] != q1_config[key]:
@@ -348,13 +354,25 @@ def _preflight() -> dict:
     if set(q1_config["trainable_components"]) - set(q0_config["trainable_components"]) != {"queries"}:
         raise RuntimeError("Q0/Q1 trainable components differ outside the intended query module")
 
-    initialisation_root = EXPERIMENT_ROOT / "production/initialisations_objective_matched_v3"
+    initialisation_root = EXPERIMENT_ROOT / "production/initialisations_objective_matched_v4"
     initialisation_manifest = initialisation_root / "initialisation_manifest.json"
     if not initialisation_manifest.is_file():
         raise FileNotFoundError(f"Realnu initialisation manifest is missing: {initialisation_manifest}")
     initialisation = json.loads(initialisation_manifest.read_text())
     if set(initialisation.get("modes", {})) != set(MODES):
         raise RuntimeError("Realnu initialisation manifest does not contain the six release modes")
+    scaler_fit = initialisation.get("scaler_fit", {})
+    for scaler_name in ("invisible", "partonic"):
+        record = scaler_fit.get(scaler_name, {})
+        if (
+            record.get("population") != "frozen_train_split"
+            or int(record.get("event_count", -1)) != 1_799_753
+        ):
+            raise RuntimeError(
+                f"Initial {scaler_name} scaler was not fit on training membership only"
+            )
+    if int(scaler_fit.get("invisible", {}).get("joint_supported_event_count", -1)) != 1_799_753:
+        raise RuntimeError("Initial invisible scaler has incomplete joint training support")
     if (
         initialisation.get("q0_q1_shared_initialisation_equal") is not True
         or initialisation.get("q0_q1_shared_components") != ["visible", "assignment", "invisible"]
@@ -478,6 +496,24 @@ def _checkpoint_summary(checkpoint_path: Path) -> dict:
     if not val_scores or not all(np.isfinite(score) for score in val_scores):
         raise RuntimeError(f"Checkpoint is missing a finite validation score: {checkpoint_path}")
     hparams = checkpoint.get("hyper_parameters", {})
+    optimizer_execution = hparams.get("optimizer_execution")
+    if not isinstance(optimizer_execution, dict):
+        raise TypeError(
+            f"Checkpoint has no resolved optimizer execution settings: {checkpoint_path}"
+        )
+    if (
+        optimizer_execution.get("optimizer") != "AdamW"
+        or optimizer_execution.get("fused_adamw_requested") is not True
+        or optimizer_execution.get("fused_adamw_effective") is not False
+        or optimizer_execution.get("precision") != "bf16-mixed"
+        or float(optimizer_execution.get("gradient_clip", 0.0)) != 1.0
+        or optimizer_execution.get("fallback_reason")
+        != "Lightning mixed-precision gradient clipping incompatible with fused AdamW"
+    ):
+        raise RuntimeError(
+            f"Checkpoint optimizer policy does not preserve mixed-precision gradient clipping: "
+            f"{checkpoint_path} -> {optimizer_execution}"
+        )
     invisible_contract = hparams.get("invisible_truth_contract")
     if invisible_contract is not None and invisible_contract.get("invisible_role_order") != ROLE_ORDER:
         raise RuntimeError(f"Checkpoint has an incompatible invisible role order: {checkpoint_path}")
@@ -488,6 +524,7 @@ def _checkpoint_summary(checkpoint_path: Path) -> dict:
         "floating_state_tensors": tensor_count,
         "validation_score": min(val_scores),
         "checkpoint_sha256": _sha256(checkpoint_path),
+        "optimizer_execution": optimizer_execution,
         "invisible_role_order": (
             invisible_contract.get("invisible_role_order") if invisible_contract else None
         ),
