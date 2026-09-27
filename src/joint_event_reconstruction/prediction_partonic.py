@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
 import tempfile
+import time
 from pathlib import Path
 
 import h5py
@@ -14,9 +16,21 @@ import torch
 
 from joint_event_reconstruction.data.partonic import PartonicTruthStore
 
-
 PARTONIC_PREDICTION_SCHEMA = "joint_event_reconstruction_partonic_cfm_v1"
 PARENT_ROLES = ("top", "antitop")
+_VALIDATION_OPEN_ATTEMPTS = 6
+
+
+def _open_validation_file(path: Path) -> h5py.File:
+    """Retry transient parallel-filesystem lock contention after the writer closes."""
+    for attempt in range(_VALIDATION_OPEN_ATTEMPTS):
+        try:
+            return h5py.File(path, "r")
+        except OSError as error:
+            if error.errno != errno.EAGAIN or attempt + 1 == _VALIDATION_OPEN_ATTEMPTS:
+                raise
+            time.sleep(min(0.1 * (2**attempt), 1.0))
+    raise AssertionError("unreachable")
 
 
 def _sha256(path: Path) -> str:
@@ -101,7 +115,7 @@ def _conditioning_metadata(conditioning: str) -> dict[str, str | None]:
 
 
 def _validate_prediction_file(path: Path, expected_events: int, samples: int) -> None:
-    with h5py.File(path, "r") as source:
+    with _open_validation_file(path) as source:
         if source.attrs.get("prediction_schema") != PARTONIC_PREDICTION_SCHEMA:
             raise ValueError(f"Invalid partonic prediction schema in {path}")
         if json.loads(str(source.attrs.get("parent_roles", "[]"))) != list(PARENT_ROLES):
@@ -526,7 +540,7 @@ def evaluate_partonic_hdf5(
                         & (target_values <= np.quantile(values, 0.975, axis=1))
                     )
                 ) if len(values) else None,
-                "events": int(len(values)),
+                "events": len(values),
             }
         component_coverage[role] = by_component
     metrics["parent_p4_empirical_interval_coverage"] = component_coverage
@@ -563,7 +577,6 @@ def evaluate_partonic_hdf5(
                 unwrapped = np.arctan2(
                     np.sin(values - centers[:, None]), np.cos(values - centers[:, None])
                 )
-                truth_delta = np.arctan2(np.sin(targets - centers), np.cos(targets - centers))
                 central_values = unwrapped
                 target_interval_values = np.arctan2(
                     np.sin(targets - centers), np.cos(targets - centers)
@@ -574,7 +587,7 @@ def evaluate_partonic_hdf5(
                 target_interval_values = targets
                 residual = values.mean(axis=1) - targets
             observable_metrics[name] = {
-                "events": int(len(values)),
+                "events": len(values),
                 "bias": float(residual.mean()) if len(residual) else None,
                 "rmse": float(np.sqrt(np.square(residual).mean())) if len(residual) else None,
                 "central_68_coverage": float(
@@ -618,7 +631,7 @@ def evaluate_partonic_hdf5(
                     "top_px", "top_py", "top_pz", "top_log1p_mass",
                     "antitop_px", "antitop_py", "antitop_pz", "antitop_log1p_mass",
                 ],
-                "events": int(len(state)),
+                "events": len(state),
                 "correlation": np.nan_to_num(correlation, nan=0.0).tolist(),
                 "undefined_zero_variance_pairs": int(np.isnan(correlation).sum()),
             }
