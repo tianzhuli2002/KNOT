@@ -16,14 +16,14 @@ from joint_event_reconstruction.assignment_semantics import (
     hdf5_support_attributes,
 )
 from joint_event_reconstruction.physics import compose_assignment_state
-from joint_event_reconstruction.prediction_schema import (
-    PREDICTION_SCHEMA,
-    validate_prediction,
-)
 from joint_event_reconstruction.prediction_reductions import (
     POINT_ESTIMATORS,
     physical_four_vectors_from_momenta,
     reduce_joint_posterior,
+)
+from joint_event_reconstruction.prediction_schema import (
+    PREDICTION_SCHEMA,
+    validate_prediction,
 )
 from joint_event_reconstruction.topology.candidates import CandidateRecord
 from joint_event_reconstruction.topology.decoder import ScoredCandidate, decode_complete
@@ -400,6 +400,31 @@ def predict_hdf5(
     with h5py.File(temporary, "w") as destination, torch.inference_mode():
         source_path = Path(data.h5_path).expanduser().resolve()
         source_stat = source_path.stat()
+        invisible_truth_contract = module.hparams.get("invisible_truth_contract")
+        invisible_provenance = {}
+        if isinstance(invisible_truth_contract, dict):
+            role_order = list(invisible_truth_contract.get("invisible_role_order", []))
+            configured_roles = [role.key for role in module.spec.invisible_roles]
+            if role_order != configured_roles:
+                raise ValueError(
+                    "Checkpoint invisible-role provenance differs from prediction model: "
+                    f"checkpoint={role_order}, model={configured_roles}"
+                )
+            invisible_provenance = {
+                "invisible_role_convention": invisible_truth_contract[
+                    "invisible_role_convention"
+                ],
+                "invisible_role_order": json.dumps(role_order),
+                "neutrino_truth_definition": invisible_truth_contract["truth_definition"],
+                "invisible_units": invisible_truth_contract["units"],
+                "source_file_sha256": invisible_truth_contract["source_file_sha256"],
+                "source_manifest_sha256": invisible_truth_contract[
+                    "source_manifest_sha256"
+                ],
+                "split_membership_sha256": invisible_truth_contract[
+                    "split_membership_sha256"
+                ],
+            }
         assignment_mode = (
             module.event_model.invisible.assignment_mode
             if module.event_model.invisible is not None
@@ -465,6 +490,7 @@ def predict_hdf5(
                     module.hparams.visible_encoder_config
                 ),
                 "invisible_role_count": int(module.hparams.invisible_role_count),
+                **invisible_provenance,
                 "topology_query_roles": json.dumps(
                     list(getattr(module.event_model, "query_names", ()))
                 ),
@@ -1098,11 +1124,11 @@ _to_device = to_device
 
 
 __all__ = [
-    "decode_batch",
     "compose_physics",
     "create_prediction_dataset",
+    "decode_batch",
     "node_indices_for_hypothesis",
     "predict_hdf5",
-    "truth_node_indices",
     "to_device",
+    "truth_node_indices",
 ]
