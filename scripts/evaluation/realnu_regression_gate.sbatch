@@ -4,8 +4,8 @@
 #SBATCH --cpus-per-task=12
 #SBATCH --mem=64G
 #SBATCH --time=01:00:00
-#SBATCH --account=fatpou01
-#SBATCH --qos=fatpou01
+#SBATCH --account=gpu-free
+#SBATCH --qos=gpu-free
 #SBATCH --job-name=rn-v3-regression
 #SBATCH --chdir=/net/scratch/w00238tl/JointEventReconstruction_topology_queries_diagnostics
 #SBATCH --output=/net/scratch/w00238tl/JointEventReconstruction_topology_queries/results/experiments/partonic_ttbar2L_2M_realnu_v1/production/realnu_top_antitop_20260927_release2/evaluation_v3_diagnostics/regression/regression_gate_%j.log
