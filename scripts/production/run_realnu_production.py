@@ -112,6 +112,8 @@ def artifact_provenance(
         "gpu_type": gpu_type,
     }
     if training_record is not None:
+        result["checkpoint"] = training_record.get("checkpoint")
+        result["checkpoint_sha256"] = training_record.get("checkpoint_sha256")
         for key in (
             "resolved_config_sha256",
             "invisible_scaler_fit",
@@ -613,6 +615,342 @@ def _read_prediction_ids(path: Path, expected_count: int) -> tuple[np.ndarray, d
     }
 
 
+def validate_prediction_jet_counts(
+    prediction_njet: np.ndarray,
+    model_visible_njet: np.ndarray,
+    source_njet: np.ndarray,
+    event_ids: np.ndarray,
+) -> None:
+    """Require a prediction's jet count to describe its visible input slots."""
+    prediction_njet = np.asarray(prediction_njet, dtype=np.int64)
+    model_visible_njet = np.asarray(model_visible_njet, dtype=np.int64)
+    source_njet = np.asarray(source_njet, dtype=np.int64)
+    event_ids = np.asarray(event_ids, dtype=np.int64)
+    shapes = {
+        prediction_njet.shape,
+        model_visible_njet.shape,
+        source_njet.shape,
+        event_ids.shape,
+    }
+    if len(shapes) != 1 or prediction_njet.ndim != 1:
+        raise ValueError(
+            "Jet-count validation requires equal one-dimensional prediction, "
+            f"model-visible, source, and EVENT_ID arrays; shapes="
+            f"prediction={prediction_njet.shape}, model_visible={model_visible_njet.shape}, "
+            f"source={source_njet.shape}, EVENT_ID={event_ids.shape}"
+        )
+    mismatch = prediction_njet != model_visible_njet
+    if mismatch.any():
+        rows = np.flatnonzero(mismatch)[:10]
+        details = [
+            {
+                "EVENT_ID": int(event_ids[row]),
+                "prediction_njet": int(prediction_njet[row]),
+                "model_visible_njet": int(model_visible_njet[row]),
+                "source_njet": int(source_njet[row]),
+            }
+            for row in rows
+        ]
+        raise RuntimeError(
+            "Prediction jet count differs from model-visible input jets: "
+            f"mismatching_events={int(mismatch.sum())}; first_mismatches={details}"
+        )
+
+
+def validate_maxjets8_adapter(
+    source_njet: np.ndarray,
+    model_visible_njet: np.ndarray,
+    event_ids: np.ndarray,
+    *,
+    model_max_jets: int,
+) -> None:
+    """Check the campaign adapter truncation without defining visible jets."""
+    if model_max_jets != 8:
+        raise RuntimeError(
+            f"The frozen realnu campaign requires maxjets8; found {model_max_jets}"
+        )
+    source_njet = np.asarray(source_njet, dtype=np.int64)
+    model_visible_njet = np.asarray(model_visible_njet, dtype=np.int64)
+    event_ids = np.asarray(event_ids, dtype=np.int64)
+    expected = np.minimum(source_njet, model_max_jets)
+    mismatch = model_visible_njet != expected
+    if mismatch.any():
+        rows = np.flatnonzero(mismatch)[:10]
+        details = [
+            {
+                "EVENT_ID": int(event_ids[row]),
+                "source_njet": int(source_njet[row]),
+                "model_visible_njet": int(model_visible_njet[row]),
+                "expected_min_source_maxjets": int(expected[row]),
+            }
+            for row in rows
+        ]
+        raise RuntimeError(
+            "Measured maxjets8 adapter does not match min(source_njet, 8): "
+            f"mismatching_events={int(mismatch.sum())}; first_mismatches={details}"
+        )
+
+
+def validate_reusable_standard_prediction(
+    prediction_path: Path,
+    *,
+    mode: str,
+    expected_sha: str,
+    manifest: dict,
+    training_record: dict,
+    config,
+) -> dict:
+    """Validate every campaign contract before reusing a standard prediction."""
+    from joint_event_reconstruction.prediction_schema import validate_prediction
+
+    prediction_path = prediction_path.expanduser().resolve()
+    if not prediction_path.is_file():
+        raise FileNotFoundError(
+            f"Reusable {mode} standard prediction is missing: {prediction_path}"
+        )
+    validate_prediction(prediction_path, deep=True)
+    training_checkpoint = Path(training_record["checkpoint"]).expanduser().resolve()
+    if (
+        training_record.get("status") != "passed"
+        or training_record.get("source_commit") != expected_sha
+        or not training_checkpoint.is_file()
+        or sha256(training_checkpoint) != training_record.get("checkpoint_sha256")
+    ):
+        raise RuntimeError(
+            f"{mode} reusable prediction checkpoint provenance is invalid: "
+            f"{training_checkpoint}"
+        )
+    entry = _mode_entry(manifest, mode)
+    checks = {
+        "hdf5_schema": "passed",
+        "event_count": "passed",
+        "event_id_uniqueness": "passed",
+        "sorted_event_id_hash": "passed",
+        "split": "passed",
+        "source_data": "passed",
+        "truth_free_inference": "passed",
+        "checkpoint_path_and_sha256": "passed",
+        "config_provenance": "passed",
+        "prediction_seed": "passed",
+        "role_order": "passed",
+        "required_datasets": "passed",
+        "required_arrays_finite": "passed",
+    }
+    expected_sorted_hash = manifest["inputs"]["validation_sorted_event_id_sha256"]
+    with h5py.File(prediction_path, "r") as prediction:
+        if "EVENT_ID" not in prediction:
+            raise RuntimeError(f"{mode} standard prediction has no EVENT_ID dataset")
+        ids = np.asarray(prediction["EVENT_ID"][:], dtype=np.int64)
+        if ids.shape != (EXPECTED_EVENT_COUNT,) or len(np.unique(ids)) != EXPECTED_EVENT_COUNT:
+            raise RuntimeError(
+                f"{mode} standard prediction EVENT_ID count or uniqueness is invalid: "
+                f"count={len(ids)}, unique={len(np.unique(ids))}"
+            )
+        observed_hash = _event_id_hash(ids, sort=True)
+        if observed_hash != expected_sorted_hash:
+            raise RuntimeError(
+                f"{mode} standard prediction EVENT_ID hash differs from frozen validation: "
+                f"expected={expected_sorted_hash}, found={observed_hash}"
+            )
+        source_data = Path(str(prediction.attrs.get("source_data", ""))).expanduser().resolve()
+        if (
+            str(prediction.attrs.get("split", "")) != "validation"
+            or source_data != Path(manifest["inputs"]["measured_input"]).resolve()
+        ):
+            raise RuntimeError(
+                f"{mode} standard prediction source/split mismatch: "
+                f"source={source_data}, split={prediction.attrs.get('split')}"
+            )
+        if any(
+            bool(prediction.attrs.get(name, True))
+            for name in (
+                "visible_truth_available",
+                "invisible_truth_available",
+                "truth_composites_available",
+            )
+        ):
+            raise RuntimeError(
+                f"{mode} standard prediction records truth available during inference"
+            )
+        if (
+            str(prediction.attrs.get("source_commit", "")) != expected_sha
+            or str(prediction.attrs.get("source_branch", "")) != SOURCE_BRANCH
+            or Path(str(prediction.attrs.get("checkpoint", ""))).resolve()
+            != training_checkpoint
+            or str(prediction.attrs.get("config_sha256", ""))
+            != entry["config_sha256"]
+            or str(prediction.attrs.get("resolved_config_sha256", ""))
+            != training_record.get("resolved_config_sha256")
+            or sha256(training_checkpoint) != training_record.get("checkpoint_sha256")
+            or str(prediction.attrs.get("initial_checkpoint_sha256", ""))
+            != entry["initialisation"]["checkpoint_sha256"]
+        ):
+            raise RuntimeError(f"{mode} standard prediction checkpoint/config provenance mismatch")
+        if int(prediction.attrs.get("prediction_seed", -1)) != int(config.inference.seed):
+            raise RuntimeError(f"{mode} standard prediction seed differs from frozen config")
+        if json.loads(str(prediction.attrs.get("invisible_roles", "[]"))) != ROLE_ORDER:
+            raise RuntimeError(
+                f"{mode} standard prediction role order is not [top.nu, antitop.nu]"
+            )
+        identity = json.loads(str(prediction.attrs.get("source_data_identity", "{}")))
+        if (
+            identity.get("validation_count") != EXPECTED_EVENT_COUNT
+            or identity.get("validation_sorted_event_id_sha256") != expected_sorted_hash
+            or identity.get("reserved_test_rows_materialised") != 0
+            or identity.get("measured_input_sha256")
+            != manifest["inputs"]["measured_input_sha256"]
+        ):
+            raise RuntimeError(
+                f"{mode} standard prediction validation source identity is incomplete or stale"
+            )
+        required_datasets = (
+            "EVENT_ID",
+            "OBSERVED/njet",
+            "OBSERVED/MET",
+            "VISIBLE/root_candidate_indices",
+            "INVISIBLE/samples",
+            "INVISIBLE/four_vectors",
+            "COMPOSITES/top",
+            "COMPOSITES/antitop",
+        )
+        missing = [name for name in required_datasets if name not in prediction]
+        if missing:
+            raise RuntimeError(
+                f"{mode} standard prediction is missing required datasets: {missing}"
+            )
+        finite_datasets = (
+            "OBSERVED/MET",
+            "INVISIBLE/samples",
+            "INVISIBLE/four_vectors",
+            "COMPOSITES/top",
+            "COMPOSITES/antitop",
+        )
+        nonfinite = []
+        for name in finite_datasets:
+            values = np.asarray(prediction[name][:])
+            if not np.isfinite(values).all():
+                nonfinite.append(name)
+        if nonfinite:
+            raise RuntimeError(
+                f"{mode} standard prediction contains non-finite required arrays: {nonfinite}"
+            )
+        if str(prediction.attrs.get("schema_version", "")) != "joint_event_reconstruction_predictions_v1":
+            raise RuntimeError(f"{mode} standard prediction schema version is not supported")
+    return {
+        "checks": checks,
+        "prediction_sha256": sha256(prediction_path),
+        "event_count": EXPECTED_EVENT_COUNT,
+        "sorted_event_id_sha256": expected_sorted_hash,
+        "checkpoint_sha256": training_record["checkpoint_sha256"],
+        "config_sha256": entry["config_sha256"],
+        "prediction_seed": int(config.inference.seed),
+        "roles": ROLE_ORDER,
+    }
+
+
+def validate_reusable_parent_prediction(
+    prediction_path: Path,
+    *,
+    mode: str,
+    expected_sha: str,
+    manifest: dict,
+    training_record: dict,
+    config,
+) -> dict:
+    """Validate a completed truth-free parent prediction before resuming."""
+    from joint_event_reconstruction.prediction_partonic import _validate_prediction_file
+
+    prediction_path = prediction_path.expanduser().resolve()
+    if not prediction_path.is_file():
+        raise FileNotFoundError(
+            f"Reusable {mode} parent prediction is missing: {prediction_path}"
+        )
+    checkpoint = Path(training_record["checkpoint"]).expanduser().resolve()
+    checkpoint_sha = training_record.get("checkpoint_sha256")
+    if (
+        training_record.get("status") != "passed"
+        or training_record.get("source_commit") != expected_sha
+        or not checkpoint.is_file()
+        or sha256(checkpoint) != checkpoint_sha
+    ):
+        raise RuntimeError(f"{mode} parent checkpoint provenance is invalid: {checkpoint}")
+    sample_count = int(config.inference.posterior_samples)
+    _validate_prediction_file(
+        prediction_path, expected_events=EXPECTED_EVENT_COUNT, samples=sample_count
+    )
+    entry = _mode_entry(manifest, mode)
+    expected_sorted_hash = manifest["inputs"]["validation_sorted_event_id_sha256"]
+    with h5py.File(prediction_path, "r") as prediction:
+        ids = np.asarray(prediction["EVENT_ID"][:], dtype=np.int64)
+        if len(np.unique(ids)) != EXPECTED_EVENT_COUNT:
+            raise RuntimeError(f"{mode} parent prediction has duplicate EVENT_ID values")
+        sorted_hash = _event_id_hash(ids, sort=True)
+        if sorted_hash != expected_sorted_hash:
+            raise RuntimeError(f"{mode} parent prediction differs from frozen validation IDs")
+        identity = json.loads(str(prediction.attrs.get("source_data_identity", "{}")))
+        if (
+            str(prediction.attrs.get("source_commit", "")) != expected_sha
+            or str(prediction.attrs.get("source_branch", "")) != SOURCE_BRANCH
+            or str(prediction.attrs.get("mode", "")) != mode
+            or str(prediction.attrs.get("checkpoint_path", "")) != str(checkpoint)
+            or str(prediction.attrs.get("checkpoint_sha256", "")) != checkpoint_sha
+            or str(prediction.attrs.get("config_sha256", "")) != entry["config_sha256"]
+            or str(prediction.attrs.get("resolved_config_sha256", ""))
+            != training_record.get("resolved_config_sha256")
+            or str(prediction.attrs.get("input_path", "")) != str(MEASURED_PATH.resolve())
+            or str(prediction.attrs.get("split", "")) != "validation"
+            or not bool(prediction.attrs.get("truth_free_input", False))
+            or json.loads(str(prediction.attrs.get("parent_roles", "[]"))) != PARENT_ROLES
+            or json.loads(str(prediction.attrs.get("parent_role_order", "[]"))) != PARENT_ROLES
+            or str(prediction.attrs.get("conditioning", ""))
+            != EXPECTED_CONDITIONING[mode]
+            or int(prediction.attrs.get("prediction_seed", -1))
+            != int(config.inference.seed)
+            or int(prediction.attrs.get("samples_per_event", -1)) != sample_count
+            or identity.get("validation_sorted_event_id_sha256") != expected_sorted_hash
+            or identity.get("reserved_test_rows_materialised") != 0
+        ):
+            raise RuntimeError(f"{mode} parent prediction provenance does not match the frozen contract")
+        required = ("PARTONIC/parents", "PARTONIC/ttbar")
+        missing = [name for name in required if name not in prediction]
+        if missing:
+            raise RuntimeError(f"{mode} parent prediction is missing datasets: {missing}")
+        for name in required:
+            if not np.isfinite(np.asarray(prediction[name][:])).all():
+                raise RuntimeError(f"{mode} parent prediction has non-finite {name}")
+        if str(prediction.attrs.get("solver", "")) != str(
+            config.model.parent_cfm.sampling_solver
+        ) or int(prediction.attrs.get("solver_steps", -1)) != int(
+            config.model.parent_cfm.sampling_steps
+        ):
+            raise RuntimeError(f"{mode} parent prediction solver differs from frozen config")
+    return {
+        "checks": {
+            "prediction_schema": "passed",
+            "event_count": "passed",
+            "event_id_uniqueness": "passed",
+            "sorted_event_id_hash": "passed",
+            "truth_free_inference": "passed",
+            "checkpoint_path_and_sha256": "passed",
+            "config_provenance": "passed",
+            "prediction_seed": "passed",
+            "role_order": "passed",
+            "conditioning": "passed",
+            "required_datasets": "passed",
+            "required_arrays_finite": "passed",
+        },
+        "prediction_sha256": sha256(prediction_path),
+        "event_count": EXPECTED_EVENT_COUNT,
+        "sorted_event_id_sha256": expected_sorted_hash,
+        "checkpoint_sha256": checkpoint_sha,
+        "config_sha256": entry["config_sha256"],
+        "prediction_seed": int(config.inference.seed),
+        "roles": PARENT_ROLES,
+        "conditioning": EXPECTED_CONDITIONING[mode],
+        "samples_per_event": sample_count,
+    }
+
+
 def _summary(values: np.ndarray) -> dict:
     values = np.asarray(values, dtype=np.float64)
     if values.size == 0 or not np.isfinite(values).all():
@@ -657,6 +995,7 @@ def evaluate_standard_prediction(
     provenance: dict,
     *,
     expected_event_count: int | None = EXPECTED_EVENT_COUNT,
+    event_limit: int | None = None,
 ) -> dict:
     """Join a completed truth-free prediction to validation truth for metrics only."""
     from joint_event_reconstruction.cli.run import build_data, load_visible_config
@@ -684,24 +1023,34 @@ def evaluate_standard_prediction(
     node_support_parts: dict[str, list[np.ndarray]] = {
         node: [] for node in collator.spec.roots
     }
+    collected_events = 0
+    if event_limit is not None and event_limit <= 0:
+        raise ValueError(f"event_limit must be positive, found {event_limit}")
     for batch in evaluation_data.val_dataloader():
+        batch_size = int(batch["event_index"].shape[0])
+        take = batch_size if event_limit is None else min(
+            batch_size, event_limit - collected_events
+        )
         truth_ids_parts.append(
-            batch["event_index"].detach().cpu().numpy().astype(np.int64)
+            batch["event_index"][:take].detach().cpu().numpy().astype(np.int64)
         )
         neutrino_parts.append(
-            batch["invisible_truth"].detach().cpu().numpy().astype(np.float64)
+            batch["invisible_truth"][:take].detach().cpu().numpy().astype(np.float64)
         )
         neutrino_support_parts.append(
-            batch["invisible_support"].detach().cpu().numpy().astype(bool)
+            batch["invisible_support"][:take].detach().cpu().numpy().astype(bool)
         )
         for node in collator.spec.roots:
             pool = batch["structured"]["pools"][node]
             node_truth_parts[node].append(
-                pool["truth_index"].detach().cpu().numpy().astype(np.int64)
+                pool["truth_index"][:take].detach().cpu().numpy().astype(np.int64)
             )
             node_support_parts[node].append(
-                pool["reconstructable"].detach().cpu().numpy().astype(bool)
+                pool["reconstructable"][:take].detach().cpu().numpy().astype(bool)
             )
+        collected_events += take
+        if event_limit is not None and collected_events >= event_limit:
+            break
     del evaluation_data, visible, collator
     gc.collect()
 
@@ -717,6 +1066,7 @@ def evaluate_standard_prediction(
         validation_mask = split == 1
         validation_ids = measured_ids[validation_mask]
         validation_global_inputs = np.asarray(measured["INPUTS/GLOBAL"][validation_mask])
+        validation_jets = np.asarray(measured["INPUTS/JET"][validation_mask])
     with h5py.File(prediction_path, "r") as prediction:
         prediction_ids = np.asarray(prediction["EVENT_ID"][:], dtype=np.int64)
         prediction_source = Path(
@@ -733,12 +1083,30 @@ def evaluate_standard_prediction(
             prediction["INVISIBLE/four_vectors"][:], dtype=np.float64
         )
         met = np.asarray(prediction["OBSERVED/MET"][:, 1:3], dtype=np.float64)
+    if event_limit is not None:
+        selected = np.isin(prediction_ids, truth_ids)
+        prediction_ids = prediction_ids[selected]
+        root_predictions = root_predictions[selected]
+        njet = njet[selected]
+        samples = samples[selected]
+        four_vectors = four_vectors[selected]
+        met = met[selected]
+        if len(prediction_ids) != event_limit or len(truth_ids) != event_limit:
+            raise RuntimeError(
+                "Bounded standard evaluation did not select the requested common events: "
+                f"requested={event_limit}, prediction={len(prediction_ids)}, truth={len(truth_ids)}"
+            )
     if prediction_source != measured_path or prediction_split != "validation":
         raise RuntimeError("Prediction source or split differs from the truth-side validation input")
     if (
         prediction_ids.ndim != 1
         or len(np.unique(prediction_ids)) != len(prediction_ids)
-        or (expected_event_count is not None and len(prediction_ids) != expected_event_count)
+        or (
+            expected_event_count is not None
+            and event_limit is None
+            and len(prediction_ids) != expected_event_count
+        )
+        or (event_limit is not None and expected_event_count is not None and event_limit > expected_event_count)
     ):
         raise RuntimeError("Standard validation prediction has malformed or unexpected EVENT_IDs")
     if len(np.unique(truth_ids)) != len(truth_ids):
@@ -767,20 +1135,35 @@ def evaluate_standard_prediction(
     ):
         raise RuntimeError("Prediction EVENT_ID values are absent from the measured validation split")
     global_inputs = validation_global_inputs[validation_order[validation_positions]]
+    measured_jets = validation_jets[validation_order[validation_positions]]
     if root_order != truth_root_order or root_predictions.shape[2] != len(root_order):
         raise RuntimeError("Prediction root order differs from the validation truth topology")
     if samples.shape[0] != len(prediction_ids) or samples.shape[3:] != (2, 3):
         raise RuntimeError("Standard validation prediction has malformed neutrino samples")
 
+    raw_source_njet = np.asarray(global_inputs["njet"], dtype=np.float64)
+    if (
+        not np.isfinite(raw_source_njet).all()
+        or not np.allclose(raw_source_njet, np.rint(raw_source_njet), rtol=0.0, atol=1e-6)
+    ):
+        raise RuntimeError("Measured source njet contains non-finite or non-integer values")
+    source_njet = np.rint(raw_source_njet).astype(np.int64)
+    jet_present = np.isfinite(measured_jets["pt"]) & (measured_jets["pt"] > 0)
+    model_visible_njet = jet_present.sum(axis=1).astype(np.int64)
+    model_max_jets = int(measured_jets.shape[1])
+    validate_prediction_jet_counts(njet, model_visible_njet, source_njet, prediction_ids)
+    validate_maxjets8_adapter(
+        source_njet,
+        model_visible_njet,
+        prediction_ids,
+        model_max_jets=model_max_jets,
+    )
     electrons = np.rint(global_inputs["nelectron"]).astype(np.int64)
     muons = np.rint(global_inputs["nmuon"]).astype(np.int64)
     channels = np.full(len(prediction_ids), "other", dtype=object)
     channels[(electrons == 2) & (muons == 0)] = "ee"
     channels[(electrons == 1) & (muons == 1)] = "emu"
     channels[(electrons == 0) & (muons == 2)] = "mumu"
-    if not np.array_equal(njet, np.rint(global_inputs["njet"]).astype(np.int64)):
-        raise RuntimeError("Prediction and measured input jet counts differ")
-
     complete_support = np.ones(len(prediction_ids), dtype=bool)
     root_truth = []
     role_assignment = {}
@@ -799,7 +1182,11 @@ def evaluate_standard_prediction(
             if support.any()
             else None,
         }
-        for variable_name, variable in (("njet", njet), ("channel", channels)):
+        for variable_name, variable in (
+            ("source_njet", source_njet),
+            ("model_visible_njet", model_visible_njet),
+            ("channel", channels),
+        ):
             bins = {}
             for value in np.unique(variable):
                 selected_mask = support & (variable == value)
@@ -824,7 +1211,9 @@ def evaluate_standard_prediction(
     supported_topk = complete_support & topk_correct.any(axis=1)
     assignment = {
         "support_definition": "all root roles reconstructable and have a non-null truth candidate",
+        "selected_events": len(prediction_ids),
         "supported_events": int(complete_support.sum()),
+        "unsupported_events": int((~complete_support).sum()),
         "top1_complete_event_accuracy": (
             float(supported_top1.sum() / complete_support.sum())
             if complete_support.any()
@@ -837,11 +1226,39 @@ def evaluate_standard_prediction(
         ),
         "per_role": role_assignment,
     }
+    for variable_name, variable in (
+        ("source_njet", source_njet),
+        ("model_visible_njet", model_visible_njet),
+    ):
+        assignment[f"complete_event_by_{variable_name}"] = {}
+        assignment[f"support_fraction_by_{variable_name}"] = {}
+        for value in np.unique(variable):
+            selected = variable == value
+            supported = selected & complete_support
+            assignment[f"complete_event_by_{variable_name}"][str(value)] = {
+                "selected_events": int(selected.sum()),
+                "supported_events": int(supported.sum()),
+                "efficiency": (
+                    float((supported & topk_correct[:, 0]).sum() / supported.sum())
+                    if supported.any()
+                    else None
+                ),
+                "topk_coverage": (
+                    float((supported & topk_correct.any(axis=1)).sum() / supported.sum())
+                    if supported.any()
+                    else None
+                ),
+            }
+            assignment[f"support_fraction_by_{variable_name}"][str(value)] = {
+                "selected_events": int(selected.sum()),
+                "supported_events": int(supported.sum()),
+                "fraction": float(supported.sum() / selected.sum()),
+            }
 
     if not truth_neutrino_support.any(axis=0).all():
         raise RuntimeError("Validation truth has an unsupported real-neutrino role")
     posterior = samples[:, 0]
-    conditional = {"njet": {}, "channel": {}}
+    conditional = {"source_njet": {}, "model_visible_njet": {}, "channel": {}}
 
     def posterior_summary(selection: np.ndarray, role_indices: list[int]) -> dict:
         selected_samples = posterior[selection][:, :, role_indices, :]
@@ -885,7 +1302,11 @@ def evaluate_standard_prediction(
         if not mask.any():
             raise RuntimeError(f"No validation truth supports {role}")
         role_metrics[role] = posterior_summary(mask, [role_index])["roles"][role]
-    for variable_name, variable in (("njet", njet), ("channel", channels)):
+    for variable_name, variable in (
+        ("source_njet", source_njet),
+        ("model_visible_njet", model_visible_njet),
+        ("channel", channels),
+    ):
         for value in np.unique(variable):
             selected_mask = both_supported & (variable == value)
             count = int(selected_mask.sum())
@@ -914,6 +1335,20 @@ def evaluate_standard_prediction(
         "prediction_truth_free": True,
         "event_id_sha256": _event_id_hash(prediction_ids),
         "sorted_event_id_sha256": _event_id_hash(prediction_ids, sort=True),
+        "jet_multiplicity": {
+            "physics_stratification": "source_njet",
+            "prediction_input_consistency": "model_visible_njet",
+            "model_max_jets": model_max_jets,
+            "source_njet_max": int(source_njet.max()),
+            "model_visible_njet_max": int(model_visible_njet.max()),
+            "truncated_event_count": int((source_njet > model_max_jets).sum()),
+            "truncated_event_fraction": float((source_njet > model_max_jets).mean()),
+            "truncated_by_source_njet": {
+                str(value): int(((source_njet == value) & (source_njet > model_max_jets)).sum())
+                for value in np.unique(source_njet)
+                if value > model_max_jets
+            },
+        },
         "assignment": assignment,
         "neutrino": {
             "role_order": ROLE_ORDER,
@@ -1256,95 +1691,187 @@ def parent_role_kinematic_metrics(prediction_path: Path, truth_path: Path) -> di
     }
 
 
-def _make_parent_prediction(
-    mode: str, config, checkpoint: Path, output: Path, provenance: dict
+def _evaluate_parent_prediction(
+    mode: str, prediction_path: Path, evaluation_path: Path, provenance: dict
 ) -> dict:
-    import lightning as L
-    import torch
+    from joint_event_reconstruction.prediction_partonic import evaluate_partonic_hdf5
 
-    from joint_event_reconstruction.cli.run import (
-        build_data,
-        load_trained,
-        load_visible_config,
-    )
-    from joint_event_reconstruction.prediction_partonic import (
-        _validate_prediction_file,
-        evaluate_partonic_hdf5,
-        predict_partonic_hdf5,
-    )
-
-    device = "cuda"
-    torch.set_float32_matmul_precision("high")
-    seed = int(config.inference.seed)
-    L.seed_everything(seed, workers=True)
-    visible = load_visible_config(config)
-    data = build_data(config, visible, include_truth=False, device=device)
-    data.setup("predict")
-    if data.structured_collator.invisible_store is not None or data.structured_collator.partonic_store is not None:
-        raise RuntimeError(f"{mode} parent prediction loaded truth into its prediction data module")
-    module = load_trained(config, visible, data, str(checkpoint))
-    prediction_path = output / "parent_validation.h5"
-    samples = int(config.inference.posterior_samples)
-    steps = int(config.model.parent_cfm.sampling_steps)
-    solver = str(config.model.parent_cfm.sampling_solver)
-    predict_partonic_hdf5(
-        module,
-        data,
-        prediction_path,
-        split="validation",
-        samples=samples,
-        steps=steps,
-        solver=solver,
-        seed=seed,
-        device=device,
-        checkpoint_path=checkpoint,
-    )
-    _validate_prediction_file(prediction_path, expected_events=EXPECTED_EVENT_COUNT, samples=samples)
-    with h5py.File(prediction_path, "r") as prediction:
+    _, id_record = _read_prediction_ids(prediction_path, EXPECTED_EVENT_COUNT)
+    if evaluation_path.exists():
+        evaluation = _read_json(evaluation_path)
+        stored_provenance = evaluation.get("provenance", {})
         if (
-            json.loads(str(prediction.attrs.get("parent_roles", "[]"))) != PARENT_ROLES
-            or str(prediction.attrs.get("conditioning", "")) != EXPECTED_CONDITIONING[mode]
-            or not bool(prediction.attrs.get("truth_free_input", False))
-            or Path(str(prediction.attrs.get("input_path", ""))).resolve() != MEASURED_PATH.resolve()
-            or str(prediction.attrs.get("split", "")) != "validation"
+            evaluation.get("status") != "passed"
+            or int(evaluation.get("event_count", -1)) != EXPECTED_EVENT_COUNT
+            or int(evaluation.get("supported_event_count", -1)) != EXPECTED_EVENT_COUNT
+            or stored_provenance.get("checkpoint_sha256")
+            != provenance.get("checkpoint_sha256")
+            or stored_provenance.get("config_sha256") != provenance.get("config_sha256")
+            or stored_provenance.get("source_commit") != provenance.get("source_commit")
         ):
-            raise RuntimeError(f"{mode} parent prediction does not satisfy its truth-free mode contract")
-        if mode == "J_AN":
-            roles = json.loads(str(prediction.attrs.get("invisible_role_order", "[]")))
-            if roles != ROLE_ORDER:
-                raise RuntimeError("J_AN P2 context is not ordered [top.nu, antitop.nu]")
-    stamp_prediction_provenance(prediction_path, provenance)
-    ids, id_record = _read_prediction_ids(prediction_path, EXPECTED_EVENT_COUNT)
-    evaluation_path = output / "parent_evaluation.json"
-    evaluation = evaluate_partonic_hdf5(prediction_path, TRUTH_PATH, evaluation_path)
-    if (
-        int(evaluation.get("event_count", -1)) != EXPECTED_EVENT_COUNT
-        or int(evaluation.get("supported_event_count", -1)) != EXPECTED_EVENT_COUNT
-    ):
-        raise RuntimeError(f"{mode} parent evaluation did not close over validation truth support")
-    evaluation["mttbar_thresholds"] = mttbar_threshold_metrics(
-        prediction_path, TRUTH_PATH
-    )
-    evaluation["parent_role_kinematics"] = parent_role_kinematic_metrics(
-        prediction_path, TRUTH_PATH
-    )
-    evaluation["provenance"] = provenance
-    atomic_json(evaluation_path, evaluation)
-    result = {
+            raise RuntimeError(
+                f"{mode} existing parent evaluation is incomplete or has stale provenance: "
+                f"{evaluation_path}"
+            )
+    else:
+        evaluation = evaluate_partonic_hdf5(prediction_path, TRUTH_PATH, evaluation_path)
+        if (
+            int(evaluation.get("event_count", -1)) != EXPECTED_EVENT_COUNT
+            or int(evaluation.get("supported_event_count", -1)) != EXPECTED_EVENT_COUNT
+        ):
+            raise RuntimeError(
+                f"{mode} parent evaluation did not close over validation truth support"
+            )
+        evaluation["mttbar_thresholds"] = mttbar_threshold_metrics(
+            prediction_path, TRUTH_PATH
+        )
+        evaluation["parent_role_kinematics"] = parent_role_kinematic_metrics(
+            prediction_path, TRUTH_PATH
+        )
+        evaluation["provenance"] = provenance
+        atomic_json(evaluation_path, evaluation)
+    return {
         "prediction": str(prediction_path.resolve()),
         "evaluation": str(evaluation_path.resolve()),
         "roles": PARENT_ROLES,
         "conditioning": EXPECTED_CONDITIONING[mode],
         "truth_free_input": True,
-        "samples_per_event": samples,
-        "solver": solver,
-        "steps": steps,
-        "mttbar_thresholds": evaluation["mttbar_thresholds"],
+        "samples_per_event": int(evaluation.get("samples_per_event", 1)),
+        "solver": str(provenance.get("solver", "")),
+        "steps": int(provenance.get("solver_steps", 0)),
+        "mttbar_thresholds": evaluation.get("mttbar_thresholds", {}),
         **id_record,
     }
-    del module, data, visible, ids
-    gc.collect()
-    torch.cuda.empty_cache()
+
+
+def _make_parent_prediction(
+    mode: str,
+    config,
+    checkpoint: Path,
+    output: Path,
+    provenance: dict,
+    *,
+    expected_sha: str | None = None,
+    manifest: dict | None = None,
+    training_record: dict | None = None,
+) -> dict:
+    from joint_event_reconstruction.prediction_partonic import (
+        _validate_prediction_file,
+        predict_partonic_hdf5,
+    )
+
+    output.mkdir(parents=True, exist_ok=True)
+    prediction_path = output / "parent_validation.h5"
+    evaluation_path = output / "parent_evaluation.json"
+    reused = prediction_path.exists()
+    if reused:
+        if expected_sha is None or manifest is None or training_record is None:
+            raise FileExistsError(
+                f"Refusing to overwrite an existing {mode} parent prediction without "
+                f"its campaign reuse contract: {prediction_path}"
+            )
+        reuse_record = validate_reusable_parent_prediction(
+            prediction_path,
+            mode=mode,
+            expected_sha=expected_sha,
+            manifest=manifest,
+            training_record=training_record,
+            config=config,
+        )
+    else:
+        if evaluation_path.exists():
+            raise FileExistsError(
+                f"Refusing to pair {mode} parent inference with a stale evaluation: "
+                f"{evaluation_path}"
+            )
+        import lightning as L
+        import torch
+
+        from joint_event_reconstruction.cli.run import (
+            build_data,
+            load_trained,
+            load_visible_config,
+        )
+
+        device = "cuda"
+        if not torch.cuda.is_available():
+            raise RuntimeError(f"{mode} parent inference requires an allocated CUDA GPU")
+        torch.set_float32_matmul_precision("high")
+        seed = int(config.inference.seed)
+        L.seed_everything(seed, workers=True)
+        visible = load_visible_config(config)
+        data = build_data(config, visible, include_truth=False, device=device)
+        data.setup("predict")
+        if (
+            data.structured_collator.invisible_store is not None
+            or data.structured_collator.partonic_store is not None
+        ):
+            raise RuntimeError(
+                f"{mode} parent prediction loaded truth into its prediction data module"
+            )
+        module = load_trained(config, visible, data, str(checkpoint))
+        samples = int(config.inference.posterior_samples)
+        steps = int(config.model.parent_cfm.sampling_steps)
+        solver = str(config.model.parent_cfm.sampling_solver)
+        predict_partonic_hdf5(
+            module,
+            data,
+            prediction_path,
+            split="validation",
+            samples=samples,
+            steps=steps,
+            solver=solver,
+            seed=seed,
+            device=device,
+            checkpoint_path=checkpoint,
+        )
+        with h5py.File(prediction_path, "r") as prediction:
+            if (
+                json.loads(str(prediction.attrs.get("parent_roles", "[]"))) != PARENT_ROLES
+                or str(prediction.attrs.get("conditioning", ""))
+                != EXPECTED_CONDITIONING[mode]
+                or not bool(prediction.attrs.get("truth_free_input", False))
+                or Path(str(prediction.attrs.get("input_path", ""))).resolve()
+                != MEASURED_PATH.resolve()
+                or str(prediction.attrs.get("split", "")) != "validation"
+            ):
+                raise RuntimeError(
+                    f"{mode} parent prediction does not satisfy its truth-free mode contract"
+                )
+            if mode == "J_AN" and json.loads(
+                str(prediction.attrs.get("invisible_role_order", "[]"))
+            ) != ROLE_ORDER:
+                raise RuntimeError(
+                    "J_AN P2 context is not ordered [top.nu, antitop.nu]"
+                )
+        stamp_prediction_provenance(prediction_path, provenance)
+        _validate_prediction_file(
+            prediction_path,
+            expected_events=EXPECTED_EVENT_COUNT,
+            samples=int(config.inference.posterior_samples),
+        )
+        if expected_sha is not None and manifest is not None and training_record is not None:
+            reuse_record = validate_reusable_parent_prediction(
+                prediction_path,
+                mode=mode,
+                expected_sha=expected_sha,
+                manifest=manifest,
+                training_record=training_record,
+                config=config,
+            )
+        else:
+            reuse_record = None
+        del module, data, visible
+        gc.collect()
+        torch.cuda.empty_cache()
+
+    result = _evaluate_parent_prediction(
+        mode, prediction_path, evaluation_path, provenance
+    )
+    result["parent_prediction_reused"] = reused
+    if reuse_record is not None:
+        result["reuse_validation_checks"] = reuse_record["checks"]
+        result["parent_prediction_sha256"] = reuse_record["prediction_sha256"]
     return result
 
 
@@ -1439,7 +1966,223 @@ def run_validation(mode: str, expected_sha: str, manifest_path: Path) -> dict:
         raise
 
 
-def run_aggregate(expected_sha: str, manifest_path: Path) -> dict:
+def run_validation_r2(
+    mode: str,
+    expected_sha: str,
+    manifest_path: Path,
+    evaluation_recovery_sha: str,
+) -> dict:
+    """Recover validation with strict reuse of complete standard predictions."""
+    assert_source(expected_sha)
+    manifest = load_run_manifest(manifest_path, expected_sha)
+    entry = _mode_entry(manifest, mode)
+    training_path = Path(entry["training_output"])
+    training_record = _read_json(training_path / "production_training.json")
+    checkpoint = Path(training_record.get("checkpoint", "")).expanduser().resolve()
+    if (
+        training_record.get("status") != "passed"
+        or training_record.get("source_commit") != expected_sha
+        or not checkpoint.is_file()
+        or sha256(checkpoint) != training_record.get("checkpoint_sha256")
+    ):
+        raise RuntimeError(f"{mode} has no unchanged accepted production checkpoint")
+    config, _, _ = load_and_validate_config(
+        mode, Path(entry["config_path"]), training_path
+    )
+    validation_root = training_path / "validation_r2"
+    validation_path = validation_root / "validation.json"
+    if validation_path.is_file():
+        completed = _read_json(validation_path)
+        if (
+            completed.get("status") == "passed"
+            and completed.get("source_commit") == expected_sha
+            and completed.get("evaluation_recovery_sha") == evaluation_recovery_sha
+            and completed.get("checkpoint_sha256") == training_record["checkpoint_sha256"]
+            and completed.get("reserved_test_rows_read") == 0
+        ):
+            return completed
+        raise RuntimeError(
+            f"{mode} R2 validation output exists but does not satisfy the requested recovery: "
+            f"{validation_path}"
+        )
+    validation_root.mkdir(parents=True, exist_ok=True)
+    progress_path = validation_root / "progress.json"
+    previous_progress = _read_json(progress_path) if progress_path.is_file() else {}
+    if previous_progress:
+        for key, expected in (
+            ("mode", mode),
+            ("source_commit", expected_sha),
+            ("evaluation_recovery_sha", evaluation_recovery_sha),
+            ("checkpoint_sha256", training_record["checkpoint_sha256"]),
+        ):
+            if previous_progress.get(key) != expected:
+                raise RuntimeError(
+                    f"{mode} R2 progress file has a conflicting {key}: {progress_path}"
+                )
+    resume_count = int(previous_progress.get("resume_count", 0)) + bool(previous_progress)
+    needs_parent_inference = mode in PARENT_MODES and not (
+        validation_root / "parent/parent_validation.h5"
+    ).is_file()
+    gpu_type = "not used; standard prediction reused"
+    if needs_parent_inference:
+        import torch
+
+        if not torch.cuda.is_available():
+            raise RuntimeError(f"{mode} R2 parent inference requires an allocated CUDA GPU")
+        gpu_type = torch.cuda.get_device_name(0)
+    provenance = artifact_provenance(
+        mode,
+        config,
+        manifest,
+        gpu_type=gpu_type,
+        training_record=training_record,
+    )
+    provenance["evaluation_recovery_sha"] = evaluation_recovery_sha
+    provenance["evaluation_recovery_branch"] = "research/realnu-evaluation-recovery-v2"
+    provenance["solver"] = str(config.model.parent_cfm.sampling_solver) if mode in PARENT_MODES else None
+    provenance["solver_steps"] = int(config.model.parent_cfm.sampling_steps) if mode in PARENT_MODES else None
+    provenance["posterior_samples"] = int(config.inference.posterior_samples)
+    result = {
+        "status": "running",
+        "campaign": manifest["campaign"],
+        "mode": mode,
+        "source_commit": expected_sha,
+        "g0_source_commit": manifest["g0_source_commit"],
+        "run_manifest": str(manifest_path.expanduser().resolve()),
+        "evaluation_recovery_sha": evaluation_recovery_sha,
+        "evaluation_recovery_branch": "research/realnu-evaluation-recovery-v2",
+        "checkpoint": str(checkpoint),
+        "checkpoint_sha256": training_record["checkpoint_sha256"],
+        "config_sha256": entry["config_sha256"],
+        "validation_count": EXPECTED_EVENT_COUNT,
+        "reserved_test_rows_read": 0,
+        "standard_prediction_reused": mode in STANDARD_MODES,
+        "resume_count": int(resume_count),
+        "slurm_job_id": os.environ.get("SLURM_JOB_ID"),
+        "started_utc": datetime.now(UTC).isoformat(),
+        **provenance,
+    }
+    atomic_json(progress_path, result)
+    try:
+        standard = None
+        parent = None
+        if mode in STANDARD_MODES:
+            prediction_path = Path(entry["reused_standard_prediction"])
+            reuse_record = validate_reusable_standard_prediction(
+                prediction_path,
+                mode=mode,
+                expected_sha=expected_sha,
+                manifest=manifest,
+                training_record=training_record,
+                config=config,
+            )
+            evaluation_path = validation_root / "standard/evaluation.json"
+            evaluation_path.parent.mkdir(parents=True, exist_ok=True)
+            if evaluation_path.is_file():
+                evaluation = _read_json(evaluation_path)
+                if (
+                    evaluation.get("status") != "passed"
+                    or evaluation.get("prediction_sha256")
+                    != reuse_record["prediction_sha256"]
+                    or evaluation.get("sorted_event_id_sha256")
+                    != manifest["inputs"]["validation_sorted_event_id_sha256"]
+                    or evaluation.get("source_commit") != expected_sha
+                    or evaluation.get("evaluation_recovery_sha") != evaluation_recovery_sha
+                    or "jet_multiplicity" not in evaluation
+                ):
+                    raise RuntimeError(
+                        f"{mode} R2 standard evaluation exists but is stale: {evaluation_path}"
+                    )
+            else:
+                evaluation = evaluate_standard_prediction(
+                    prediction_path, config, provenance
+                )
+                evaluation["prediction_sha256"] = reuse_record["prediction_sha256"]
+                evaluation["source_commit"] = expected_sha
+                evaluation["evaluation_recovery_sha"] = evaluation_recovery_sha
+                evaluation["standard_prediction_reused"] = True
+                atomic_json(evaluation_path, evaluation)
+            if (
+                evaluation.get("status") != "passed"
+                or evaluation.get("prediction_truth_free") is not True
+                or evaluation.get("events") != EXPECTED_EVENT_COUNT
+                or int(evaluation.get("assignment", {}).get("supported_events", 0)) <= 0
+                or int(evaluation.get("neutrino", {}).get("both_roles_supported", 0)) <= 0
+            ):
+                raise RuntimeError(f"{mode} R2 standard evaluation failed its physics contract")
+            standard = {
+                "prediction": str(prediction_path.resolve()),
+                "evaluation": str(evaluation_path.resolve()),
+                "roles": ROLE_ORDER,
+                "truth_free_input": True,
+                "truth_evaluated_after_prediction": True,
+                "standard_prediction_reused": True,
+                "reused_prediction_path": str(prediction_path.resolve()),
+                "reused_prediction_sha256": reuse_record["prediction_sha256"],
+                "reuse_validation_checks": reuse_record["checks"],
+                "event_count": reuse_record["event_count"],
+                "event_id_sha256": evaluation["event_id_sha256"],
+                "sorted_event_id_sha256": evaluation["sorted_event_id_sha256"],
+            }
+        if mode in PARENT_MODES:
+            parent_root = validation_root / "parent"
+            parent_root.mkdir(parents=True, exist_ok=True)
+            parent = _make_parent_prediction(
+                mode,
+                config,
+                checkpoint,
+                parent_root,
+                provenance,
+                expected_sha=expected_sha,
+                manifest=manifest,
+                training_record=training_record,
+            )
+        if (
+            standard is not None
+            and parent is not None
+            and standard["sorted_event_id_sha256"] != parent["sorted_event_id_sha256"]
+        ):
+            raise RuntimeError(
+                f"{mode} standard and parent R2 predictions use different validation events"
+            )
+        for label, prediction in (("standard", standard), ("parent", parent)):
+            if prediction is not None and prediction["sorted_event_id_sha256"] != manifest[
+                "inputs"
+            ]["validation_sorted_event_id_sha256"]:
+                raise RuntimeError(
+                    f"{mode} {label} R2 product differs from frozen validation EVENT_IDs"
+                )
+        result.update(
+            {
+                "status": "passed",
+                "standard_validation": standard,
+                "parent_validation": parent,
+                "completed_utc": datetime.now(UTC).isoformat(),
+            }
+        )
+        atomic_json(validation_path, result)
+        atomic_json(progress_path, result)
+        return result
+    except Exception as error:
+        failure = {
+            **result,
+            "status": "failed",
+            "error": f"{type(error).__name__}: {error}",
+            "failed_utc": datetime.now(UTC).isoformat(),
+        }
+        failure_path = validation_root / "failure.json"
+        if not failure_path.exists():
+            atomic_json(failure_path, failure)
+        atomic_json(progress_path, failure)
+        raise
+
+
+def run_aggregate(
+    expected_sha: str,
+    manifest_path: Path,
+    *,
+    output_stem: str = "R_VALIDATION",
+) -> dict:
     assert_source(expected_sha)
     manifest = load_run_manifest(manifest_path, expected_sha)
     validations = {}
@@ -1506,15 +2249,37 @@ def run_aggregate(expected_sha: str, manifest_path: Path) -> dict:
                 "training_checkpoint": training["checkpoint"],
                 "training_checkpoint_sha256": training["checkpoint_sha256"],
                 "validation": str(validation_path.resolve()),
+                "slurm_job_id": validation.get("slurm_job_id"),
                 "standard_validation": validation.get("standard_validation"),
                 "standard_metrics": standard_metrics,
                 "parent_validation": validation.get("parent_validation"),
                 "parent_metrics": parent_metrics,
             }
+            if (
+                output_stem == "R_VALIDATION_R2"
+                and mode in STANDARD_MODES
+                and (
+                    standard.get("standard_prediction_reused") is not True
+                    or standard.get("reused_prediction_path")
+                    != str(Path(entry["reused_standard_prediction"]).resolve())
+                    or not standard.get("reused_prediction_sha256")
+                    or any(
+                        value != "passed"
+                        for value in standard.get("reuse_validation_checks", {}).values()
+                    )
+                )
+            ):
+                raise RuntimeError(
+                    f"{mode} R2 did not strictly reuse its original standard prediction"
+                )
             validation_statuses[mode] = "PASS"
         except (OSError, json.JSONDecodeError, RuntimeError, KeyError, TypeError, ValueError, AttributeError) as error:
             failures.append(f"{mode}: {type(error).__name__}: {error}")
-            if validation_failure_path.is_file() or validation_path.is_file():
+            if (
+                validation_failure_path.is_file()
+                or validation_path.is_file()
+                or (Path(entry["validation_output"]) / "failure.json").is_file()
+            ):
                 validation_statuses[mode] = "FAILED"
             else:
                 validation_statuses[mode] = "MISSING"
@@ -1608,8 +2373,9 @@ def run_aggregate(expected_sha: str, manifest_path: Path) -> dict:
     result = {
         "status": "passed" if not failures else "failed",
         "campaign": manifest["campaign"],
-        "requirement": "R_VALIDATION",
+        "requirement": output_stem,
         "source_commit": expected_sha,
+        "evaluation_recovery_sha": manifest.get("evaluation_recovery", {}).get("source_sha"),
         "g0_source_commit": manifest["g0_source_commit"],
         "g0_acceptance_path": manifest["g0_acceptance_path"],
         "g0_acceptance_sha256": manifest["g0_acceptance_sha256"],
@@ -1625,7 +2391,9 @@ def run_aggregate(expected_sha: str, manifest_path: Path) -> dict:
         "validations": validations,
         "validation_jobs": {
             mode: {
-                "job_id": manifest.get("job_ids", {}).get("validation", {}).get(mode),
+                "job_id": validations.get(mode, {}).get("slurm_job_id")
+                or manifest.get("job_ids", {}).get("validation_r2", {}).get(mode)
+                or manifest.get("job_ids", {}).get("validation", {}).get(mode),
                 "status": validation_statuses.get(mode, "MISSING"),
                 "artifact": str(
                     (Path(entry["validation_output"]) / "validation.json").resolve()
@@ -1637,12 +2405,15 @@ def run_aggregate(expected_sha: str, manifest_path: Path) -> dict:
         "failures": failures,
         "completed_utc": datetime.now(UTC).isoformat(),
     }
-    output_path = PRODUCTION_ROOT / "R_VALIDATION.json"
-    if output_path.exists() or (PRODUCTION_ROOT / "R_VALIDATION.md").exists():
-        raise FileExistsError(f"Refusing to overwrite existing R_VALIDATION output under {PRODUCTION_ROOT}")
+    output_path = PRODUCTION_ROOT / f"{output_stem}.json"
+    markdown_path = PRODUCTION_ROOT / f"{output_stem}.md"
+    if output_path.exists() or markdown_path.exists():
+        raise FileExistsError(
+            f"Refusing to overwrite existing {output_stem} output under {PRODUCTION_ROOT}"
+        )
     atomic_json(output_path, result)
     lines = [
-        "# R_VALIDATION: real top/antitop production",
+        f"# {output_stem}: real top/antitop production",
         "",
         f"**Status:** {result['status']}",
         f"**Source commit:** `{expected_sha}`",
@@ -1756,22 +2527,27 @@ def run_aggregate(expected_sha: str, manifest_path: Path) -> dict:
         lines.extend(["", "## Failures", ""])
         lines.extend(f"- {failure}" for failure in failures)
     lines.append("")
-    md_path = PRODUCTION_ROOT / "R_VALIDATION.md"
+    md_path = markdown_path
     md_path.parent.mkdir(parents=True, exist_ok=True)
     temporary = md_path.with_suffix(md_path.suffix + ".tmp")
     temporary.write_text("\n".join(lines))
     temporary.replace(md_path)
     if failures:
-        raise RuntimeError(f"R_VALIDATION failed; see {output_path}")
+        raise RuntimeError(f"{output_stem} failed; see {output_path}")
     return result
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--stage", choices=("train", "validate", "aggregate"), required=True)
+    parser.add_argument(
+        "--stage",
+        choices=("train", "validate", "validate-r2", "aggregate", "aggregate-r2"),
+        required=True,
+    )
     parser.add_argument("--source-sha", required=True)
     parser.add_argument("--run-manifest", type=Path, required=True)
     parser.add_argument("--mode", choices=tuple(MODE_CONFIGS))
+    parser.add_argument("--evaluation-recovery-sha")
     parser.add_argument("--python", type=Path, default=Path(sys.executable))
     args = parser.parse_args()
     expected_sha = args.source_sha
@@ -1779,8 +2555,8 @@ def main() -> None:
     python_bin = args.python.expanduser().resolve()
     if not python_bin.is_file():
         raise FileNotFoundError(f"Production Python interpreter is missing: {python_bin}")
-    if args.stage in {"train", "validate"} and args.mode is None:
-        parser.error("--mode is required for train and validate stages")
+    if args.stage in {"train", "validate", "validate-r2"} and args.mode is None:
+        parser.error("--mode is required for train and validation stages")
     try:
         if args.stage == "train":
             if not os.environ.get("SLURM_JOB_ID"):
@@ -1790,6 +2566,23 @@ def main() -> None:
             if not os.environ.get("SLURM_JOB_ID"):
                 raise RuntimeError("Full realnu validation must run in its allocated Slurm GPU job")
             result = run_validation(args.mode, expected_sha, manifest_path)
+        elif args.stage == "validate-r2":
+            if not os.environ.get("SLURM_JOB_ID"):
+                raise RuntimeError("R2 validation must run in its allocated Slurm job")
+            if not args.evaluation_recovery_sha:
+                parser.error("--evaluation-recovery-sha is required for validate-r2")
+            result = run_validation_r2(
+                args.mode,
+                expected_sha,
+                manifest_path,
+                args.evaluation_recovery_sha,
+            )
+        elif args.stage == "aggregate-r2":
+            if not os.environ.get("SLURM_JOB_ID"):
+                raise RuntimeError("R_VALIDATION_R2 must run in its dependent Slurm job")
+            result = run_aggregate(
+                expected_sha, manifest_path, output_stem="R_VALIDATION_R2"
+            )
         else:
             if not os.environ.get("SLURM_JOB_ID"):
                 raise RuntimeError("R_VALIDATION must run in its dependent Slurm job")
@@ -1809,7 +2602,14 @@ def main() -> None:
                         }
                     )
                     atomic_json(progress_path, progress)
-            failure_name = f"failure_{args.stage}_{args.mode}.json" if args.mode else "failure_R_VALIDATION.json"
+            if args.stage == "aggregate-r2":
+                failure_name = "failure_R_VALIDATION_R2.json"
+            else:
+                failure_name = (
+                    f"failure_{args.stage}_{args.mode}.json"
+                    if args.mode
+                    else "failure_R_VALIDATION.json"
+                )
             failure_path = ATTEMPT_ROOT / failure_name
             if not failure_path.is_file():
                 atomic_json(

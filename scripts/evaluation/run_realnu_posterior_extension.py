@@ -70,6 +70,21 @@ def run(manifest_path: Path, output: Path, samples: int = SAMPLE_COUNT) -> dict:
     ):
         raise RuntimeError("Production manifest does not prove sealed-test exclusion")
     source_root = Path(manifest["source_root"]).resolve()
+    evaluation_source_root = Path(
+        manifest.get("evaluation_recovery", {}).get("source_root", "")
+    ).expanduser().resolve()
+    if not evaluation_source_root.is_dir():
+        raise FileNotFoundError(
+            "The R2 run manifest does not identify the committed evaluation-recovery source: "
+            f"{evaluation_source_root}"
+        )
+    evaluation_source_metadata = read_json(
+        evaluation_source_root / "SOURCE_SNAPSHOT.json"
+    )
+    if evaluation_source_metadata.get("commit_sha") != manifest[
+        "evaluation_recovery"
+    ].get("source_sha"):
+        raise RuntimeError("Evaluation-recovery source snapshot does not match the R2 manifest")
     project_root = source_root.parents[2]
     source_meta = read_json(source_root / "SOURCE_SNAPSHOT.json")
     if source_meta.get("commit_sha") != manifest["source_commit"]:
@@ -89,7 +104,7 @@ def run(manifest_path: Path, output: Path, samples: int = SAMPLE_COUNT) -> dict:
         str(source_root / "src") + os.pathsep + os.environ.get("PYTHONPATH", "")
     )
     sys.path.insert(0, str(source_root / "src"))
-    runner = _import_production_runner(source_root)
+    runner = _import_production_runner(evaluation_source_root)
     runner.load_run_manifest(manifest_path, manifest["source_commit"])
     if not torch.cuda.is_available():
         raise RuntimeError("Allocated posterior-extension job has no CUDA device")
@@ -103,6 +118,7 @@ def run(manifest_path: Path, output: Path, samples: int = SAMPLE_COUNT) -> dict:
         "status": "running",
         "campaign": manifest["campaign"],
         "source_commit": manifest["source_commit"],
+        "evaluation_recovery_sha": manifest["evaluation_recovery"]["source_sha"],
         "run_manifest": str(manifest_path),
         "sample_count": int(samples),
         "sample_prefixes": [1, 4, 8, 16, 32, 64],
