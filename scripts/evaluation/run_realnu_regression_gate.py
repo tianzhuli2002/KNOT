@@ -61,13 +61,13 @@ def _close(name: str, observed: np.ndarray, expected: np.ndarray) -> dict:
     rms = float(np.sqrt(np.mean(np.square(difference)))) if difference.size else 0.0
     if not np.allclose(observed, expected, atol=ATOL, rtol=RTOL):
         raise RuntimeError(
-            f"{name} exceeds cross-device regression tolerance: "
+            f"{name} exceeds regression tolerance: "
             f"max_abs={max_abs:.8g}, rms={rms:.8g}, atol={ATOL}, rtol={RTOL}"
         )
     return {"max_abs": max_abs, "rms": rms, "atol": ATOL, "rtol": RTOL}
 
 
-def _configure_subset(data, event_count: int) -> None:
+def _configure_subset(data, event_count: int, device: str) -> None:
     from torch.utils.data import Subset
 
     if len(data.val_dataset) < event_count:
@@ -75,9 +75,19 @@ def _configure_subset(data, event_count: int) -> None:
             f"Validation dataset has {len(data.val_dataset)} events; requested {event_count}"
         )
     data.val_dataset = Subset(data.val_dataset, range(event_count))
-    data.config.val_num_workers = 0
-    data.config.pin_memory = False
-    data.config.persistent_workers = False
+    if int(data.config.val_batch_size) != 512:
+        raise RuntimeError(f"Regression validation batch size changed: {data.config.val_batch_size}")
+    if device == "cuda" and not bool(data.config.pin_memory):
+        raise RuntimeError("GPU regression inference requires the accepted pinned-memory loader")
+
+
+def _reference_prediction_path(mode: str, production_root: Path) -> Path:
+    training_root = production_root / mode
+    if mode in {"Q0", "Q1"}:
+        return training_root / "validation/standard/validation.h5"
+    if mode == "PCFM_Q":
+        return training_root / "validation/parent/parent_validation.h5"
+    return training_root / "validation_r2/parent/parent_validation.h5"
 
 
 def _run_mode(
@@ -90,6 +100,8 @@ def _run_mode(
     output_root: Path,
     event_count: int,
     cpu_threads: int,
+    device: str,
+    reference_gpu_type: str,
 ) -> dict:
     import lightning as L
     import torch
@@ -102,6 +114,7 @@ def _run_mode(
 
     config_path = runner.MODE_CONFIGS[mode]
     training_root = production_root / mode
+    baseline_path = _reference_prediction_path(mode, production_root)
     config, _, resolved_output = runner.load_and_validate_config(
         mode, config_path, training_root
     )
@@ -122,10 +135,17 @@ def _run_mode(
         raise RuntimeError(f"{mode} config resolves to unexpected output path: {resolved_output}")
 
     L.seed_everything(int(config.inference.seed), workers=True)
-    torch.set_num_threads(cpu_threads)
+    torch.set_num_threads(cpu_threads if device == "cpu" else 1)
     torch.set_float32_matmul_precision("high")
     visible = load_visible_config(config)
-    data = build_data(config, visible, include_truth=False, device="cpu")
+    if device == "cpu":
+        visible.general.mode = "predict"
+        visible.dataset.val_batch_size = 512
+        visible.dataset.val_num_workers = 2
+        visible.dataset.pin_memory = False
+        visible.dataset.persistent_workers = True
+        visible.dataset.prefetch_factor = 2
+    data = build_data(config, visible, include_truth=False, device=device)
     data.setup("predict")
     collator = data.structured_collator
     if any(
@@ -138,7 +158,7 @@ def _run_mode(
             f"{mode} validation population changed: observed={len(data.val_dataset)}, "
             f"expected={EVENT_COUNT}"
         )
-    _configure_subset(data, event_count)
+    _configure_subset(data, event_count, device)
     module = load_trained(config, visible, data, str(checkpoint))
 
     output_path = output_root / f"{mode}_subset.h5"
@@ -155,14 +175,15 @@ def _run_mode(
             split="validation",
             top_k=int(config.inference.top_k_assignments),
             posterior_samples=int(config.inference.posterior_samples),
-            device="cpu",
+            device=device,
             prediction_seed=int(config.inference.seed),
             checkpoint_path=str(checkpoint),
             compatibility_weight=float(config.inference.compatibility_weight),
             point_estimator=str(config.inference.invisible.point_estimator),
         )
-        baseline_path = training_root / "validation/standard/validation.h5"
         with h5py.File(output_path, "r") as produced, h5py.File(baseline_path, "r") as baseline:
+            if str(baseline.attrs.get("gpu_type", "")) != reference_gpu_type:
+                raise RuntimeError(f"{mode} standard baseline execution device changed")
             produced_ids = np.asarray(produced["EVENT_ID"][:], dtype=np.int64)
             baseline_ids = np.asarray(baseline["EVENT_ID"][:event_count], dtype=np.int64)
             if not np.array_equal(produced_ids, baseline_ids):
@@ -231,6 +252,8 @@ def _run_mode(
                 "checkpoint": str(checkpoint),
                 "checkpoint_sha256": record["checkpoint_sha256"],
                 "config_sha256": config_sha,
+                "execution_device": device,
+                "baseline_gpu_type": reference_gpu_type,
                 "roles": NEUTRINO_ROLES,
                 "solver": str(config.inference.invisible.flow.solver),
                 "steps": int(config.inference.invisible.flow.steps),
@@ -253,14 +276,12 @@ def _run_mode(
         steps=steps,
         solver=solver,
         seed=int(config.inference.seed),
-        device="cpu",
+        device=device,
         checkpoint_path=checkpoint,
     )
-    if mode == "PCFM_Q":
-        baseline_path = training_root / "validation/parent/parent_validation.h5"
-    else:
-        baseline_path = training_root / "validation_r2/parent/parent_validation.h5"
     with h5py.File(output_path, "r") as produced, h5py.File(baseline_path, "r") as baseline:
+        if str(baseline.attrs.get("gpu_type", "")) != reference_gpu_type:
+            raise RuntimeError(f"{mode} parent baseline execution device changed")
         produced_ids = np.asarray(produced["EVENT_ID"][:], dtype=np.int64)
         baseline_ids = np.asarray(baseline["EVENT_ID"][:event_count], dtype=np.int64)
         if not np.array_equal(produced_ids, baseline_ids):
@@ -347,6 +368,8 @@ def _run_mode(
             "checkpoint": str(checkpoint),
             "checkpoint_sha256": record["checkpoint_sha256"],
             "config_sha256": config_sha,
+            "execution_device": device,
+            "baseline_gpu_type": reference_gpu_type,
             "roles": PARENT_ROLES,
             "conditioning": str(produced.attrs["conditioning"]),
             "solver": solver,
@@ -390,6 +413,37 @@ def main() -> None:
         raise ValueError(f"Regression outputs may not be written under evaluation_r2: {r2_root}")
     if output_root.exists():
         raise FileExistsError(f"Refusing to overwrite regression gate output: {output_root}")
+
+    import torch
+
+    baseline_gpu_types = {}
+    for mode in MODES:
+        baseline_path = _reference_prediction_path(mode, production_root)
+        if not baseline_path.is_file():
+            raise FileNotFoundError(f"{mode} accepted prediction is missing: {baseline_path}")
+        with h5py.File(baseline_path, "r") as baseline:
+            gpu_type = str(baseline.attrs.get("gpu_type", ""))
+        if gpu_type not in {"NVIDIA L40S", "CPU multicore"}:
+            raise RuntimeError(
+                f"{mode} accepted prediction has unsupported execution device: {gpu_type!r}"
+            )
+        baseline_gpu_types[mode] = gpu_type
+
+    device_by_mode = {
+        mode: "cuda" if gpu_type == "NVIDIA L40S" else "cpu"
+        for mode, gpu_type in baseline_gpu_types.items()
+    }
+    if any(device == "cuda" for device in device_by_mode.values()):
+        if not torch.cuda.is_available():
+            raise RuntimeError("REALNU-v1 regression reproduction requires the accepted L40S device")
+        allocated_gpu = torch.cuda.get_device_name(0)
+        if allocated_gpu != "NVIDIA L40S":
+            raise RuntimeError(
+                f"Regression device differs from accepted L40S baseline: {allocated_gpu}"
+            )
+    else:
+        allocated_gpu = None
+    torch.set_num_interop_threads(1)
 
     run_manifest_path = r2_root / "manifests/run_manifest_r2.json"
     run_manifest = json.loads(run_manifest_path.read_text())
@@ -448,8 +502,6 @@ def main() -> None:
             stream.write(f"{index},{int(event_id)},{float(mass):.9g},{channel_text}\n")
 
     records = []
-    import torch
-
     for mode in MODES:
         record = _run_mode(
             mode,
@@ -460,6 +512,8 @@ def main() -> None:
             output_root=output_root,
             event_count=args.events,
             cpu_threads=args.cpu_threads,
+            device=device_by_mode[mode],
+            reference_gpu_type=baseline_gpu_types[mode],
         )
         with h5py.File(record["output"], "r") as result:
             predicted_ids = np.asarray(result["EVENT_ID"][:], dtype=np.int64)
@@ -482,6 +536,9 @@ def main() -> None:
         "diagnostics_source_sha": os.environ["JER_SOURCE_SHA"],
         "new_diagnostics_sha": os.environ["JER_SOURCE_SHA"],
         "diagnostics_branch": "research/realnu-cfm-query-diagnostics-v2",
+        "allocated_gpu": allocated_gpu,
+        "execution_device_by_mode": device_by_mode,
+        "baseline_gpu_type_by_mode": baseline_gpu_types,
         "event_count": args.events,
         "event_id_ordered_sha256": _array_hash(selected_ids),
         "event_id_sorted_sha256": _array_hash(np.sort(selected_ids)),

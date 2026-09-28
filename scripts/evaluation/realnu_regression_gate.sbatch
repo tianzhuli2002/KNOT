@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-#SBATCH --partition=multicore
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=32G
-#SBATCH --time=04:00:00
+#SBATCH --partition=gpuL
+#SBATCH --gres=gpu:l40s:1
+#SBATCH --cpus-per-task=12
+#SBATCH --mem=64G
+#SBATCH --time=01:00:00
 #SBATCH --account=fatpou01
 #SBATCH --qos=fatpou01
 #SBATCH --job-name=rn-v3-regression
@@ -31,8 +32,8 @@ export JER_REALNU_PROJECT_ROOT="$project_root"
 export JER_REALNU_SOURCE_ROOT="$source_root"
 export JER_REALNU_EXPECTED_SHA=cb2b60445499f78421503d4fccc4a43cae1444fd
 export PYTHONPATH="$source_root/src:$source_root/scripts/production${PYTHONPATH:+:$PYTHONPATH}"
-export OMP_NUM_THREADS=6
-export MKL_NUM_THREADS=6
+export OMP_NUM_THREADS=1
+export MKL_NUM_THREADS=1
 export OPENBLAS_NUM_THREADS=1
 export NUMEXPR_NUM_THREADS=1
 
