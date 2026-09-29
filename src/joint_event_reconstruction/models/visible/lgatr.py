@@ -99,12 +99,16 @@ class LGATrVisibleEncoder(nn.Module):
         multivectors = torch.cat((event_mv, object_mv), dim=1)
         scalars = _scalar_input(physical, self.event_state, self.n_object_types)
         attention_mask, full_padding = _attention_mask(physical.padding_mask)
-        _, encoded = self.network(multivectors, scalars, attn_mask=attention_mask)
+        geometric, encoded = self.network(multivectors, scalars, attn_mask=attention_mask)
         encoded = encoded.masked_fill(full_padding.unsqueeze(-1), 0.0)
+        geometric = geometric.masked_fill(
+            full_padding.unsqueeze(-1).unsqueeze(-1), 0.0
+        )
         return {
             "pooled": encoded[:, 0],
             "tokens": encoded[:, 1:],
             "padding_mask": physical.padding_mask,
+            "geometric_tokens": geometric,
         }
 
 

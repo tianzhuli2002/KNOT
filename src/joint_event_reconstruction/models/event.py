@@ -282,6 +282,10 @@ class JointEventModel(nn.Module):
                 scaler=parent_cfm_scaler,
                 conditioning=conditioning,
                 use_topology_queries=use_topology_queries,
+                velocity_backbone=str(
+                    parent_cfm_config.get("velocity_backbone", "conventional")
+                ),
+                geometry_encoder_config=getattr(self.visible, "config", None),
             )
         if parent_cfm_shared_encoder_gradients not in {"both", "assignment_only"}:
             raise ValueError(
@@ -889,6 +893,11 @@ class JointEventModel(nn.Module):
                 )
         else:
             parent_global = visible["encoder_pooled"]
+        geometric_context = (
+            visible.get("geometric_tokens")
+            if self.parent_cfm.velocity_backbone == "geometric"
+            else None
+        )
         if self.parent_cfm_shared_encoder_gradients == "assignment_only":
             visible_context = visible["tokens"].detach()
             visible_mask = visible["padding_mask"]
@@ -898,6 +907,8 @@ class JointEventModel(nn.Module):
                 assignment_context = assignment_context.detach()
             if predicted_neutrino is not None:
                 predicted_neutrino = predicted_neutrino.detach()
+            if geometric_context is not None:
+                geometric_context = geometric_context.detach()
         else:
             visible_context = visible["tokens"]
             visible_mask = visible["padding_mask"]
@@ -918,6 +929,7 @@ class JointEventModel(nn.Module):
             source_state=parent_source_state,
             assignment_context=assignment_context,
             predicted_neutrino_momentum=predicted_neutrino,
+            geometric_context=geometric_context,
         )
         batch_size = len(visible_context)
         sample_indices = torch.arange(samples, device=visible_context.device).expand(batch_size, -1)
@@ -1235,6 +1247,11 @@ class JointEventModel(nn.Module):
                     result, batch, visible
                 )
                 result["partonic_cfm_neutrino_nfe"] = nfe
+            geometric_context = (
+                visible.get("geometric_tokens")
+                if self.parent_cfm.velocity_backbone == "geometric"
+                else None
+            )
             if self.parent_cfm_shared_encoder_gradients == "assignment_only":
                 measured = visible["tokens"].detach()
                 measured_global = (
@@ -1248,6 +1265,8 @@ class JointEventModel(nn.Module):
                     assignment_context = assignment_context.detach()
                 if predicted_neutrino is not None:
                     predicted_neutrino = predicted_neutrino.detach()
+                if geometric_context is not None:
+                    geometric_context = geometric_context.detach()
             else:
                 measured = visible["tokens"]
                 measured_global = (
@@ -1273,6 +1292,7 @@ class JointEventModel(nn.Module):
                 parent_queries,
                 assignment_context=assignment_context,
                 predicted_neutrino_momentum=predicted_neutrino,
+                geometric_context=geometric_context,
             )
             result["partonic_cfm_training"] = cfm
             result["partonic_cfm_loss"] = cfm["loss"]

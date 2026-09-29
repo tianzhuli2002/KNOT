@@ -82,32 +82,116 @@ class PartonicCFMDenoiser(nn.Module):
         layers: int,
         d_feedforward: int,
         dropout: float,
+        *,
+        velocity_backbone: str = "conventional",
+        geometry_encoder_config=None,
     ) -> None:
         super().__init__()
         if d_model <= 0 or n_heads <= 0 or d_model % n_heads:
             raise ValueError("Partonic CFM width must be positive and divisible by n_heads")
         if layers <= 0 or d_feedforward <= 0:
             raise ValueError("Partonic CFM layers and feedforward width must be positive")
+        if velocity_backbone not in {"conventional", "geometric"}:
+            raise ValueError(
+                "Partonic CFM velocity_backbone must be conventional or geometric"
+            )
         self.d_model = int(d_model)
-        self.input_projection = nn.Linear(8, d_model)
-        self.time_projection = nn.Sequential(
-            nn.Linear(d_model, d_model), nn.SiLU(), nn.Linear(d_model, d_model)
-        )
-        self.state_embedding = nn.Parameter(torch.empty(1, 1, d_model))
-        nn.init.normal_(self.state_embedding, mean=0.0, std=0.02)
-        self.blocks = nn.ModuleList(
-            _ParentCFMBlock(d_model, n_heads, d_feedforward, dropout)
-            for _ in range(layers)
-        )
-        self.output_norm = nn.LayerNorm(d_model)
-        self.output_projection = nn.Linear(d_model, 8)
+        self.velocity_backbone = str(velocity_backbone)
+        self.geometry_network = None
+        if self.velocity_backbone == "conventional":
+            self.input_projection = nn.Linear(8, d_model)
+            self.time_projection = nn.Sequential(
+                nn.Linear(d_model, d_model), nn.SiLU(), nn.Linear(d_model, d_model)
+            )
+            self.state_embedding = nn.Parameter(torch.empty(1, 1, d_model))
+            nn.init.normal_(self.state_embedding, mean=0.0, std=0.02)
+            self.blocks = nn.ModuleList(
+                _ParentCFMBlock(d_model, n_heads, d_feedforward, dropout)
+                for _ in range(layers)
+            )
+            self.output_norm = nn.LayerNorm(d_model)
+            self.output_projection = nn.Linear(d_model, 8)
+        else:
+            if geometry_encoder_config is None:
+                raise ValueError(
+                    "Geometric parent CFM requires the full L-GATr visible encoder config"
+                )
+            try:
+                import lgatr
+            except ImportError as exc:
+                raise ImportError(
+                    "Geometric parent CFM requires the optional L-GATr dependency"
+                ) from exc
+            symmetry = geometry_encoder_config.symmetry_breaking
+            beam = str(symmetry.beam)
+            add_time = bool(symmetry.time)
+            self.geometry_momentum_scale_gev = float(
+                geometry_encoder_config.momentum_scale_gev
+            )
+            if self.geometry_momentum_scale_gev <= 0:
+                raise ValueError("Geometric parent momentum scale must be positive")
+            n_spurions = int(lgatr.get_num_spurions(beam, add_time))
+            self.register_buffer(
+                "geometry_spurions",
+                lgatr.get_spurions(beam, add_time),
+                persistent=False,
+            )
+            hidden = geometry_encoder_config.hidden
+            geometry_heads = int(geometry_encoder_config.n_heads)
+            self.geometry_network = lgatr.ConditionalLGATr(
+                num_blocks=int(layers),
+                in_mv_channels=1 + n_spurions,
+                mv_channels_cond=1,
+                out_mv_channels=1,
+                hidden_mv_channels=int(hidden.multivector_channels),
+                in_s_channels=2 * d_model,
+                s_channels_cond=d_model,
+                out_s_channels=1,
+                hidden_s_channels=int(hidden.scalar_channels),
+                attention={"num_heads": geometry_heads},
+                crossattention={"num_heads": geometry_heads},
+                mlp={},
+                dropout_prob=float(dropout),
+                checkpoint_blocks=False,
+                naive_amp=False,
+                compile=False,
+            )
 
-    @staticmethod
     def prepare_conditioning(
+        self,
         visible: torch.Tensor,
         visible_padding_mask: torch.Tensor,
         parent_context: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+        *,
+        geometric_context: torch.Tensor | None = None,
+        target_mean: torch.Tensor | None = None,
+        target_std: torch.Tensor | None = None,
+    ):
+        if self.velocity_backbone == "geometric":
+            if geometric_context is None or target_mean is None or target_std is None:
+                raise ValueError(
+                    "Geometric parent CFM conditioning requires H_geom and its production scaler"
+                )
+            if (
+                geometric_context.ndim != 4
+                or geometric_context.shape[:2] != visible.shape[:2]
+                or geometric_context.shape[-2:] != (1, 16)
+            ):
+                raise ValueError(
+                    "Parent H_geom must align with scalar event tokens as [B,N,1,16]"
+                )
+            if visible_padding_mask.shape != visible.shape[:2]:
+                raise ValueError("Geometric parent mask does not align with H_geom")
+            if parent_context.shape[:1] != visible.shape[:1] or parent_context.shape[1] < 2:
+                raise ValueError("Geometric parent conditioning needs ordered top/antitop context")
+            return (
+                visible,
+                visible_padding_mask,
+                parent_context,
+                geometric_context,
+                target_mean,
+                target_std,
+            )
         memory = torch.cat((visible, parent_context), dim=1)
         parent_padding = torch.zeros(
             (len(visible), parent_context.shape[1]),
@@ -124,10 +208,19 @@ class PartonicCFMDenoiser(nn.Module):
         visible_padding_mask: torch.Tensor,
         parent_context: torch.Tensor,
         *,
-        prepared_context: tuple[torch.Tensor, torch.Tensor] | None = None,
+        prepared_context=None,
         **kwargs,
     ) -> torch.Tensor:
         del kwargs
+        if self.velocity_backbone == "geometric":
+            return self._geometric_velocity(
+                state,
+                time,
+                visible,
+                visible_padding_mask,
+                parent_context,
+                prepared_context,
+            )
         if state.ndim != 2 or state.shape[1] != 8:
             raise ValueError(f"Joint parent state must be [B,8], found {tuple(state.shape)}")
         if time.shape != (len(state),):
@@ -153,6 +246,132 @@ class PartonicCFMDenoiser(nn.Module):
         for block in self.blocks:
             hidden = block(hidden, memory, memory_padding)
         return self.output_projection(self.output_norm(hidden[:, 0]))
+
+    def _geometric_velocity(
+        self,
+        state: torch.Tensor,
+        time: torch.Tensor,
+        visible: torch.Tensor,
+        visible_padding_mask: torch.Tensor,
+        parent_context: torch.Tensor,
+        prepared_context,
+    ) -> torch.Tensor:
+        if state.ndim != 2 or state.shape[-1] != 8 or time.shape != (len(state),):
+            raise ValueError("Geometric parent state/time must be [B*M,8] and [B*M]")
+        if prepared_context is None:
+            raise ValueError("Geometric parent velocity requires prepared static event context")
+        (
+            visible,
+            visible_padding_mask,
+            parent_context,
+            geometric_context,
+            target_mean,
+            target_std,
+        ) = prepared_context
+        if visible.ndim != 3 or visible.shape[-1] != self.d_model:
+            raise ValueError("Geometric parent scalar context must be [B,N,D]")
+        if visible_padding_mask.shape != visible.shape[:2] or visible_padding_mask.dtype != torch.bool:
+            raise ValueError("Geometric parent padding mask must be boolean [B,N]")
+        if geometric_context.shape[:2] != visible.shape[:2] or geometric_context.shape[-2:] != (1, 16):
+            raise ValueError("Geometric parent H_geom must be [B,N,1,16]")
+        batch = len(visible)
+        if batch == 0 or len(state) % batch:
+            raise ValueError("Geometric parent state batch is not an integer event-sample multiple")
+        sample_count = len(state) // batch
+        if parent_context.shape[0] != batch or parent_context.shape[1] < 2:
+            raise ValueError("Geometric parent context must start with top/antitop role tokens")
+
+        # Leading B,M axes let L-GATr broadcast each cached event across its
+        # posterior samples without copying the static geometric representation.
+        scaled = state.reshape(batch, sample_count, 2, 4)
+        physical_features = (
+            scaled * target_std.to(dtype=scaled.dtype)
+            + target_mean.to(dtype=scaled.dtype)
+        )
+        physical_four_vectors = four_vectors_from_partonic_features(physical_features)
+        momenta = physical_four_vectors / self.geometry_momentum_scale_gev
+        geometric_state = _package_embed_vector(momenta, self.geometry_spurions)
+
+        time_features = noise_embedding(
+            time.reshape(batch, sample_count).reshape(-1), self.d_model
+        ).reshape(batch, sample_count, self.d_model)
+        role_context = parent_context[:, :2].unsqueeze(1).expand(
+            -1, sample_count, -1, -1
+        )
+        time_context = time_features.unsqueeze(2).expand(-1, -1, 2, -1)
+        state_scalars = torch.cat((role_context, time_context), dim=-1)
+
+        extra_context = parent_context[:, 2:]
+        condition_geometry = geometric_context
+        condition_scalars = visible
+        condition_padding = visible_padding_mask
+        if extra_context.shape[1]:
+            condition_geometry = torch.cat(
+                (
+                    condition_geometry,
+                    geometric_context.new_zeros(
+                        (batch, extra_context.shape[1], 1, 16)
+                    ),
+                ),
+                dim=1,
+            )
+            condition_scalars = torch.cat((condition_scalars, extra_context), dim=1)
+            condition_padding = torch.cat(
+                (
+                    condition_padding,
+                    torch.zeros(
+                        batch,
+                        extra_context.shape[1],
+                        dtype=torch.bool,
+                        device=condition_padding.device,
+                    ),
+                ),
+                dim=1,
+            )
+        condition_geometry = condition_geometry.unsqueeze(1).expand(
+            -1, sample_count, -1, -1, -1
+        )
+        condition_scalars = condition_scalars.unsqueeze(1).expand(
+            -1, sample_count, -1, -1
+        )
+        attention_mask = (~condition_padding)[:, None, None, None, :]
+        output_mv, output_s = self.geometry_network(
+            geometric_state,
+            condition_geometry,
+            scalars=state_scalars,
+            scalars_cond=condition_scalars,
+            crossattn_kwargs={"attn_mask": attention_mask},
+        )
+        if output_s is None or output_s.shape[-1] != 1:
+            raise RuntimeError("Geometric parent velocity requires one scalar mass output per role")
+        try:
+            import lgatr
+        except ImportError as exc:
+            raise ImportError("Geometric parent CFM requires the optional L-GATr dependency") from exc
+        vector_velocity = lgatr.extract_vector(output_mv.squeeze(-2))[..., 1:]
+        scale = target_std.to(dtype=vector_velocity.dtype)[..., :3].view(1, 1, 2, 3)
+        momentum_velocity = vector_velocity * self.geometry_momentum_scale_gev / scale
+        mass_velocity = output_s.squeeze(-1)
+        return torch.cat((momentum_velocity, mass_velocity.unsqueeze(-1)), dim=-1).reshape(
+            len(state), 8
+        )
+
+
+def _package_embed_vector(
+    vectors: torch.Tensor, spurions: torch.Tensor
+) -> torch.Tensor:
+    try:
+        import lgatr
+    except ImportError as exc:
+        raise ImportError("Geometric parent CFM requires the optional L-GATr dependency") from exc
+    embedded = lgatr.embed_vector(vectors).unsqueeze(-2)
+    if spurions.shape[0] == 0:
+        return embedded
+    spurion_shape = (1,) * (vectors.ndim - 1) + tuple(spurions.shape)
+    expanded = spurions.to(device=vectors.device, dtype=embedded.dtype).reshape(
+        spurion_shape
+    ).expand(*vectors.shape[:-1], *spurions.shape)
+    return torch.cat((embedded, expanded), dim=-2)
 
 
 class _ParentCFMBlock(nn.Module):
@@ -208,6 +427,8 @@ class PartonicCFM(nn.Module):
         scaler,
         conditioning: str = "P0",
         use_topology_queries: bool = True,
+        velocity_backbone: str = "conventional",
+        geometry_encoder_config=None,
     ) -> None:
         super().__init__()
         if conditioning not in self.MODE_CONDITION_COUNTS:
@@ -217,6 +438,7 @@ class PartonicCFM(nn.Module):
         self.scaler = scaler
         self.conditioning = str(conditioning)
         self.use_topology_queries = bool(use_topology_queries)
+        self.velocity_backbone = str(velocity_backbone)
         self.d_model = int(d_model)
         self.register_buffer(
             "target_mean", torch.tensor(scaler.mean, dtype=torch.float32), persistent=True
@@ -232,7 +454,13 @@ class PartonicCFM(nn.Module):
         nn.init.normal_(self.condition_kind_embedding, mean=0.0, std=0.02)
         nn.init.normal_(self.parent_role_embedding, mean=0.0, std=0.02)
         denoiser = PartonicCFMDenoiser(
-            d_model, n_heads, layers, d_feedforward, dropout
+            d_model,
+            n_heads,
+            layers,
+            d_feedforward,
+            dropout,
+            velocity_backbone=self.velocity_backbone,
+            geometry_encoder_config=geometry_encoder_config,
         )
         self.flow = ContinuousFlowMatching(
             denoiser,
@@ -308,6 +536,7 @@ class PartonicCFM(nn.Module):
         generator: torch.Generator | None = None,
         source_state: torch.Tensor | None = None,
         flow_time: torch.Tensor | None = None,
+        geometric_context: torch.Tensor | None = None,
     ) -> dict:
         if target_four_vectors.shape != (len(visible), 2, 4):
             raise ValueError("Partonic CFM targets must be [B,2,4] in (top, antitop), (E,px,py,pz) order")
@@ -329,6 +558,16 @@ class PartonicCFM(nn.Module):
             assignment_context,
             predicted_neutrino_momentum,
         )
+        prepared_context = None
+        if self.velocity_backbone == "geometric":
+            prepared_context = self.flow.denoiser.prepare_conditioning(
+                visible,
+                visible_padding_mask,
+                parent_context,
+                geometric_context=geometric_context,
+                target_mean=self.target_mean,
+                target_std=self.target_std,
+            )
         result = self.flow.loss(
             scaled,
             visible,
@@ -338,6 +577,7 @@ class PartonicCFM(nn.Module):
             source_state=source_state,
             flow_time=flow_time,
             support_mask=support,
+            prepared_context=prepared_context,
         )
         result["target_scaled"] = scaled
         result["support_mask"] = support
@@ -358,6 +598,7 @@ class PartonicCFM(nn.Module):
         assignment_context: torch.Tensor | None = None,
         predicted_neutrino_momentum: torch.Tensor | None = None,
         source_state: torch.Tensor | None = None,
+        geometric_context: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor | int | str]:
         if samples <= 0:
             raise ValueError("Partonic posterior sample count must be positive")
@@ -372,9 +613,23 @@ class PartonicCFM(nn.Module):
             predicted_neutrino_momentum,
         )
         batch = len(visible)
-        repeated_visible = visible.repeat_interleave(samples, dim=0)
-        repeated_mask = visible_padding_mask.repeat_interleave(samples, dim=0)
-        repeated_parent = parent_context.repeat_interleave(samples, dim=0)
+        prepared_context = None
+        if self.velocity_backbone == "geometric":
+            prepared_context = self.flow.denoiser.prepare_conditioning(
+                visible,
+                visible_padding_mask,
+                parent_context,
+                geometric_context=geometric_context,
+                target_mean=self.target_mean,
+                target_std=self.target_std,
+            )
+            flow_visible = visible
+            flow_mask = visible_padding_mask
+            flow_parent = parent_context
+        else:
+            flow_visible = visible.repeat_interleave(samples, dim=0)
+            flow_mask = visible_padding_mask.repeat_interleave(samples, dim=0)
+            flow_parent = parent_context.repeat_interleave(samples, dim=0)
         initial_state = None
         if source_state is not None:
             expected_shape = (batch, samples, 8)
@@ -390,13 +645,14 @@ class PartonicCFM(nn.Module):
             initial_state = source_state.reshape(batch * samples, 8)
         scaled, nfe = self.flow.sample(
             (batch * samples, 8),
-            repeated_visible,
-            repeated_mask,
-            repeated_parent,
+            flow_visible,
+            flow_mask,
+            flow_parent,
             steps=steps,
             solver=solver,
             generator=generator,
             initial_state=initial_state,
+            prepared_context=prepared_context,
         )
         scaled = scaled.reshape(batch, samples, 2, 4)
         features = scaled * self.target_std + self.target_mean

@@ -134,6 +134,8 @@ def active_architecture(model) -> dict:
         parent_payload.pop("target_path", None)
         parent_payload.pop("sampling_steps", None)
         parent_payload.pop("sampling_solver", None)
+        if str(parent_payload.get("velocity_backbone", "conventional")) == "conventional":
+            parent_payload.pop("velocity_backbone", None)
         # Preserve architecture identities for existing query-conditioned
         # checkpoints, whose resolved config predates this opt-in switch.
         if bool(parent_payload.get("use_topology_queries", True)):

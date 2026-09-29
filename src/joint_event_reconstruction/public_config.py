@@ -797,6 +797,7 @@ def _resolve_parent_cfm(public, latent: dict) -> dict:
         "enabled": False,
         "conditioning": "P0",
         "use_topology_queries": True,
+        "velocity_backbone": "conventional",
         "roles": ["top", "antitop"],
         "truth_bindings": {
             "top": "partonic_after_fsr_top",
@@ -818,7 +819,8 @@ def _resolve_parent_cfm(public, latent: dict) -> dict:
     _unknown(
         public,
         {
-            "enabled", "conditioning", "use_topology_queries", "roles", "truth_bindings", "target_path",
+            "enabled", "conditioning", "use_topology_queries", "velocity_backbone",
+            "roles", "truth_bindings", "target_path",
             "n_heads", "layers", "d_feedforward", "dropout",
             "p2_neutrino_steps", "p2_neutrino_solver", "sampling_steps",
             "sampling_solver",
@@ -828,8 +830,19 @@ def _resolve_parent_cfm(public, latent: dict) -> dict:
     enabled = bool(public.get("enabled", False))
     conditioning = str(public.get("conditioning", "P0"))
     use_topology_queries = public.get("use_topology_queries", True)
+    velocity_backbone = str(public.get("velocity_backbone", "conventional"))
     if not isinstance(use_topology_queries, bool):
         raise ValueError("model.parent_cfm.use_topology_queries must be boolean")
+    if velocity_backbone not in {"conventional", "geometric"}:
+        raise ValueError(
+            "model.parent_cfm.velocity_backbone must be conventional or geometric"
+        )
+    if velocity_backbone == "geometric" and (
+        not use_topology_queries or conditioning != "P0"
+    ):
+        raise ValueError(
+            "Geometric parent CFM is the PCFM_Q P0 path and requires topology queries"
+        )
     if conditioning not in {"P0", "P1", "P2"}:
         raise ValueError("model.parent_cfm.conditioning must be P0, P1 or P2")
     roles = [str(value) for value in public.get("roles", ["top", "antitop"])]
@@ -873,6 +886,7 @@ def _resolve_parent_cfm(public, latent: dict) -> dict:
         "enabled": enabled,
         "conditioning": conditioning,
         "use_topology_queries": use_topology_queries,
+        "velocity_backbone": velocity_backbone,
         "roles": roles,
         "truth_bindings": bindings,
         "target_path": None if target_path is None else str(target_path),
@@ -910,6 +924,10 @@ def _resolve_model(public, defaults) -> dict:
     heads = _resolve_optional_heads(public.get("heads"))
     topology_queries = _resolve_topology_queries(public.get("topology_queries"), latent)
     parent_cfm = _resolve_parent_cfm(public.get("parent_cfm"), latent)
+    if parent_cfm["velocity_backbone"] == "geometric" and encoder["type"] != "lgatr":
+        raise ValueError(
+            "Geometric parent CFM requires model.encoder.type=lgatr to expose H_geom"
+        )
 
     mode = str(public.mode)
     if mode not in {"factorized", "joint"}:

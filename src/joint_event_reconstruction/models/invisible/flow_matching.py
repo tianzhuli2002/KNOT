@@ -71,6 +71,7 @@ class ContinuousFlowMatching(nn.Module):
         flow_time: torch.Tensor | None = None,
         visible_fourmomenta: torch.Tensor | None = None,
         met_xy: torch.Tensor | None = None,
+        prepared_context=None,
         support_mask: torch.Tensor | None = None,
     ) -> dict:
         if source_state is None:
@@ -113,6 +114,7 @@ class ContinuousFlowMatching(nn.Module):
             parent,
             visible_fourmomenta=visible_fourmomenta,
             met_xy=met_xy,
+            prepared_context=prepared_context,
         )
         squared_error = (prediction - target_velocity).square()
         active = self.active_mask.to(device=target.device, dtype=target.dtype)
@@ -153,6 +155,7 @@ class ContinuousFlowMatching(nn.Module):
         initial_state: torch.Tensor | None = None,
         visible_fourmomenta: torch.Tensor | None = None,
         met_xy: torch.Tensor | None = None,
+        prepared_context=None,
     ) -> tuple[torch.Tensor, int]:
         active = self.active_mask.to(device=visible.device, dtype=visible.dtype)
         if initial_state is None:
@@ -172,12 +175,13 @@ class ContinuousFlowMatching(nn.Module):
             if initial_state.dtype != visible.dtype or not torch.isfinite(initial_state).all():
                 raise ValueError("Explicit CFM initial_state must be finite and match visible dtype")
             initial = initial_state * active
-        prepare_conditioning = getattr(self.denoiser, "prepare_conditioning", None)
-        prepared_context = (
-            prepare_conditioning(visible, mask, parent)
-            if callable(prepare_conditioning)
-            else None
-        )
+        if prepared_context is None:
+            prepare_conditioning = getattr(self.denoiser, "prepare_conditioning", None)
+            prepared_context = (
+                prepare_conditioning(visible, mask, parent)
+                if callable(prepare_conditioning)
+                else None
+            )
 
         def velocity_fn(state: torch.Tensor, time: torch.Tensor) -> torch.Tensor:
             return self.velocity(

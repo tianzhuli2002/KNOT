@@ -202,6 +202,7 @@ def predict_partonic_hdf5(
         raise ValueError("Partonic samples/steps must be positive and solver must be euler or heun")
     conditioning = module.event_model.parent_cfm.conditioning
     use_topology_queries = module.event_model.parent_cfm.use_topology_queries
+    velocity_backbone = module.event_model.parent_cfm.velocity_backbone
     parent_role_conditioning = (
         "topology_query_states"
         if use_topology_queries
@@ -239,6 +240,7 @@ def predict_partonic_hdf5(
                 sort_keys=True,
             )
             output.attrs["parent_role_conditioning"] = parent_role_conditioning
+            output.attrs["parent_velocity_backbone"] = velocity_backbone
             output.attrs["solver"] = solver
             output.attrs["solver_steps"] = int(steps)
             output.attrs["nfe"] = 2 * int(steps) if solver == "heun" else int(steps)
@@ -361,6 +363,7 @@ def predict_partonic_hdf5(
         "samples_per_event": samples,
         "conditioning": conditioning,
         "parent_role_conditioning": parent_role_conditioning,
+        "parent_velocity_backbone": velocity_backbone,
         "solver": solver,
         "steps": steps,
         "nfe": 2 * steps if solver == "heun" else steps,

@@ -319,7 +319,8 @@ def validate_experiment(config: DictConfig) -> None:
     _exact_keys(
         model.parent_cfm,
         {
-            "enabled", "conditioning", "use_topology_queries", "roles", "truth_bindings", "target_path",
+            "enabled", "conditioning", "use_topology_queries", "velocity_backbone",
+            "roles", "truth_bindings", "target_path",
             "n_heads", "layers", "d_feedforward", "dropout",
             "p2_neutrino_steps", "p2_neutrino_solver", "sampling_steps",
             "sampling_solver",
@@ -332,6 +333,13 @@ def validate_experiment(config: DictConfig) -> None:
         raise ValueError("model.parent_cfm.conditioning must be P0, P1 or P2")
     if not isinstance(model.parent_cfm.use_topology_queries, bool):
         raise ValueError("model.parent_cfm.use_topology_queries must be boolean")
+    if str(model.parent_cfm.velocity_backbone) not in {"conventional", "geometric"}:
+        raise ValueError("model.parent_cfm.velocity_backbone is invalid")
+    if str(model.parent_cfm.velocity_backbone) == "geometric":
+        if visible_type != "lgatr":
+            raise ValueError("Geometric parent CFM requires the full L-GATr visible encoder")
+        if not model.parent_cfm.use_topology_queries or model.parent_cfm.conditioning != "P0":
+            raise ValueError("Geometric parent CFM requires the PCFM_Q P0 scalar context")
     if list(model.parent_cfm.roles) != ["top", "antitop"]:
         raise ValueError("Partonic CFM roles must be ordered [top, antitop]")
     if set(model.parent_cfm.truth_bindings) != {"top", "antitop"}:
