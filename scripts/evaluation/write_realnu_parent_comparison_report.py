@@ -376,6 +376,30 @@ def write_report(
                     f"| {item['samples']} | {item['aggregate_nfe_per_event']} | "
                     f"{item['median_seconds_per_event']:.6g} | {item['events_per_second']:.6g} |"
                 )
+        else:
+            equal_nfe = ((32, 1), (16, 2), (8, 4), (4, 8))
+            measured = [
+                runtime["cases"][f"heun_steps_{steps}_samples_{samples}"]
+                for steps, samples in equal_nfe
+                if f"heun_steps_{steps}_samples_{samples}" in runtime["cases"]
+            ]
+            if measured:
+                lines.extend([
+                    "",
+                    "### Measured equal-NFE CPU costs",
+                    "",
+                    "These timings compare the same total Heun NFE×M work per event. Accuracy is not shown here; policy selection remains pending the paired solver scan.",
+                    "",
+                    "| Solver | Steps | M | NFE×M/event | CPU seconds/event | Events/s |",
+                    "|---|---:|---:|---:|---:|---:|",
+                ])
+                for item in measured:
+                    lines.append(
+                        f"| Heun | {item['steps']} | {item['samples']} | "
+                        f"{item['aggregate_nfe_per_event']} | "
+                        f"{item['median_seconds_per_event']:.6g} | "
+                        f"{item['events_per_second']:.6g} |"
+                    )
     lines.extend(["", "## Point-estimator and posterior metrics", ""])
     if summaries:
         lines.extend([
