@@ -110,7 +110,8 @@ def _bootstrap_csv(paths: dict[str, Path], csv_path: Path, copied_dir: Path) -> 
         if record.get("sealed_test_used") is not False:
             raise ValueError(f"Paired comparison does not establish sealed_test_used=false: {path}")
         target = copied_dir / f"{label}.json"
-        shutil.copyfile(path, target)
+        if path.expanduser().resolve() != target.resolve():
+            shutil.copyfile(path, target)
         estimator_pairs = record["estimators"]
         comparison_map = record["comparisons"]
         for pair_name, observables in comparison_map.items():
@@ -572,7 +573,7 @@ def write_report(
                 f"top/antitop φ residual RMS {q_covariance['formal_top_phi_covariance_rms_rad']:.3g}/"
                 f"{q_covariance['formal_antitop_phi_covariance_rms_rad']:.3g} rad and "
                 f"mttbar RMS {q_covariance['formal_mttbar_covariance_rms_gev']:.3g} GeV; "
-                "other trained models remain pending"
+                "compare the other trained-model rows where available"
             )
         else:
             covariance_answer = "see formal residual rows for the trained models listed"
@@ -585,8 +586,12 @@ def write_report(
         "PCFM_noQ versus PCFM_Q": "pending a full paired prediction and bootstrap" if "PCFM_noQ" not in summaries else "see paired bootstrap table",
         "PCFM_geom absolute-direction improvement": "pending geometry training and matched paired evaluation" if "PCFM_geom" not in summaries else "see paired bootstrap and rotation tables",
         "PCFM_geom mttbar and 345–400 GeV improvement": "pending geometry training and matched paired evaluation" if "PCFM_geom" not in summaries else "see paired bootstrap table",
-        "Architecture versus estimator effects": "pending paired architecture and within-model estimator bootstraps" if not bootstrap_rows else "reported separately by architecture and estimator comparison labels above",
-        "Preferred estimator": "pending the paired estimator comparison and selected solver/M",
+        "Architecture versus estimator effects": (
+            "paired architecture comparisons remain pending; available within-model estimator comparisons are shown above"
+            if not all(name in summaries for name in MODELS)
+            else "reported separately by architecture and estimator comparison labels above"
+        ),
+        "Preferred estimator": "no globally preferred estimator is selected; report all four estimators because their effects vary by observable and truth-mttbar region",
         "Posterior samples needed": "pending the Q M=1,2,4,8,16,32 convergence study" if solver is None else "see solver convergence analysis",
         "Compute cost": "exact NFE×M is recorded; measured CPU time-vs-M awaits the runtime profile" if runtime is None else "see NFE work and measured runtime profile",
         "Next baseline": "defer until all available checkpoints share the same inference policy and paired validation IDs",
