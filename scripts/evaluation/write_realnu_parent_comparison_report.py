@@ -162,7 +162,9 @@ def _rotation_rows(paths: dict[str, Path], output_dir: Path) -> list[dict]:
         record = _load_json(path)
         if record.get("sealed_test_used") is not False or record.get("truth_free_conditioning") is not True:
             raise ValueError(f"Rotation summary is not validation-only and truth-free: {path}")
-        shutil.copyfile(path, output_dir / f"{label}_rotation.json")
+        destination = output_dir / f"{label}_rotation.json"
+        if path.expanduser().resolve() != destination.resolve():
+            shutil.copyfile(path, destination)
         angle_key = min(record["per_angle"], key=lambda value: abs(float(value) - 0.5 * 3.141592653589793))
         angle = record["per_angle"][angle_key]
         fixed = angle["input_rotation_same_source"]
