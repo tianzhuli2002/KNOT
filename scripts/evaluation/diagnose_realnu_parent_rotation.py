@@ -133,6 +133,50 @@ def _rotate_parents(parents: torch.Tensor, angle: float) -> torch.Tensor:
     return expected
 
 
+def _parent_observables(parents: torch.Tensor) -> dict[str, torch.Tensor]:
+    if parents.ndim != 3 or parents.shape[1:] != (2, 4):
+        raise ValueError(f"Parent four-vectors must have shape [B,2,4], got {tuple(parents.shape)}")
+    if not torch.isfinite(parents).all():
+        raise ValueError("Parent rotation diagnostic received non-finite four-vectors")
+    spatial2 = parents[..., 1:4].square().sum(dim=-1)
+    mass = (parents[..., 0].square() - spatial2).clamp_min(0.0).sqrt()
+    pt = torch.linalg.vector_norm(parents[..., 1:3], dim=-1)
+    phi = torch.atan2(parents[..., 2], parents[..., 1])
+    pair = parents.sum(dim=1)
+    mttbar = (
+        pair[:, 0].square() - pair[:, 1:4].square().sum(dim=-1)
+    ).clamp_min(0.0).sqrt()
+    return {
+        "top_phi": phi[:, 0],
+        "antitop_phi": phi[:, 1],
+        "top_pt": pt[:, 0],
+        "antitop_pt": pt[:, 1],
+        "top_mass": mass[:, 0],
+        "antitop_mass": mass[:, 1],
+        "mttbar": mttbar,
+    }
+
+
+def _observable_differences(
+    reference: torch.Tensor, candidate: torch.Tensor
+) -> dict[str, torch.Tensor]:
+    reference_observables = _parent_observables(reference)
+    candidate_observables = _parent_observables(candidate)
+    result = {
+        "top_phi": _angle_difference(
+            candidate_observables["top_phi"], reference_observables["top_phi"]
+        ),
+        "antitop_phi": _angle_difference(
+            candidate_observables["antitop_phi"], reference_observables["antitop_phi"]
+        ),
+    }
+    for name in (
+        "top_pt", "antitop_pt", "top_mass", "antitop_mass", "mttbar"
+    ):
+        result[name] = candidate_observables[name] - reference_observables[name]
+    return result
+
+
 def _rotate_source(
     source: torch.Tensor,
     angle: float,
@@ -464,49 +508,70 @@ def run(
                 parent_source_state=co_rotated_source,
             )["parents"][:, 0]
             expected_parent = _rotate_parents(base_parents, angle)
-            co_rotated_pair = co_rotated[:, 0] + co_rotated[:, 1]
-            expected_pair = expected_parent[:, 0] + expected_parent[:, 1]
-            co_rotated_mttbar = (
-                co_rotated_pair[:, 0].square()
-                - co_rotated_pair[:, 1:].square().sum(dim=-1)
-            ).clamp_min(0).sqrt()
-            expected_mttbar = (
-                expected_pair[:, 0].square()
-                - expected_pair[:, 1:].square().sum(dim=-1)
-            ).clamp_min(0).sqrt()
+            fixed_changes = _observable_differences(base_parents, fixed)
+            covariance_changes = _observable_differences(expected_parent, co_rotated)
+            expected_response = torch.full_like(
+                fixed_changes["top_phi"], float(angle)
+            )
             sensitivity = {
                 "input_rotation_same_source": {
+                    "expected_phi_response_rad": float(angle),
                     "top_phi_shift_rad": _summary(
-                        _angle_difference(
-                            torch.atan2(fixed[:, 0, 2], fixed[:, 0, 1]),
-                            torch.atan2(base_parents[:, 0, 2], base_parents[:, 0, 1]),
-                        ).cpu().numpy()
+                        fixed_changes["top_phi"].cpu().numpy()
                     ),
                     "antitop_phi_shift_rad": _summary(
+                        fixed_changes["antitop_phi"].cpu().numpy()
+                    ),
+                    "top_phi_response_error_rad": _summary(
                         _angle_difference(
-                            torch.atan2(fixed[:, 1, 2], fixed[:, 1, 1]),
-                            torch.atan2(base_parents[:, 1, 2], base_parents[:, 1, 1]),
+                            fixed_changes["top_phi"], expected_response
                         ).cpu().numpy()
+                    ),
+                    "antitop_phi_response_error_rad": _summary(
+                        _angle_difference(
+                            fixed_changes["antitop_phi"], expected_response
+                        ).cpu().numpy()
+                    ),
+                    "top_pt_change_gev": _summary(
+                        fixed_changes["top_pt"].cpu().numpy()
+                    ),
+                    "antitop_pt_change_gev": _summary(
+                        fixed_changes["antitop_pt"].cpu().numpy()
+                    ),
+                    "top_mass_change_gev": _summary(
+                        fixed_changes["top_mass"].cpu().numpy()
+                    ),
+                    "antitop_mass_change_gev": _summary(
+                        fixed_changes["antitop_mass"].cpu().numpy()
+                    ),
+                    "mttbar_change_gev": _summary(
+                        fixed_changes["mttbar"].cpu().numpy()
                     ),
                 },
                 "formal_co_rotated_source_covariance": {
                     "parent_four_vector_residual_gev": _summary(
                         (co_rotated - expected_parent).cpu().numpy()
                     ),
+                    "top_pt_residual_gev": _summary(
+                        covariance_changes["top_pt"].cpu().numpy()
+                    ),
+                    "antitop_pt_residual_gev": _summary(
+                        covariance_changes["antitop_pt"].cpu().numpy()
+                    ),
+                    "top_mass_residual_gev": _summary(
+                        covariance_changes["top_mass"].cpu().numpy()
+                    ),
+                    "antitop_mass_residual_gev": _summary(
+                        covariance_changes["antitop_mass"].cpu().numpy()
+                    ),
                     "top_phi_residual_rad": _summary(
-                        _angle_difference(
-                            torch.atan2(co_rotated[:, 0, 2], co_rotated[:, 0, 1]),
-                            torch.atan2(expected_parent[:, 0, 2], expected_parent[:, 0, 1]),
-                        ).cpu().numpy()
+                        covariance_changes["top_phi"].cpu().numpy()
                     ),
                     "antitop_phi_residual_rad": _summary(
-                        _angle_difference(
-                            torch.atan2(co_rotated[:, 1, 2], co_rotated[:, 1, 1]),
-                            torch.atan2(expected_parent[:, 1, 2], expected_parent[:, 1, 1]),
-                        ).cpu().numpy()
+                        covariance_changes["antitop_phi"].cpu().numpy()
                     ),
                     "mttbar_residual_gev": _summary(
-                        (co_rotated_mttbar - expected_mttbar).cpu().numpy()
+                        covariance_changes["mttbar"].cpu().numpy()
                     ),
                     "source_action": _source_prior_action(angle, mean, std),
                 },

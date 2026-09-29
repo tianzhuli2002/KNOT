@@ -165,28 +165,50 @@ def _rotation_rows(paths: dict[str, Path], output_dir: Path) -> list[dict]:
         destination = output_dir / f"{label}_rotation.json"
         if path.expanduser().resolve() != destination.resolve():
             shutil.copyfile(path, destination)
-        angle_key = min(record["per_angle"], key=lambda value: abs(float(value) - 0.5 * 3.141592653589793))
-        angle = record["per_angle"][angle_key]
-        fixed = angle["input_rotation_same_source"]
-        covariance = angle["formal_co_rotated_source_covariance"]
-        geom_rotation = record.get("geometric_context_rotation", {}).get(angle_key)
-        rows.append({
-            "model": label,
-            "model_status": record.get("diagnostic_model_status", "trained checkpoint"),
-            "angle_rad": float(angle_key),
-            "sample_events": int(record["sample_events"]),
-            "fixed_source_top_phi_shift_rms_rad": fixed["top_phi_shift_rad"]["rms"],
-            "fixed_source_antitop_phi_shift_rms_rad": fixed["antitop_phi_shift_rad"]["rms"],
-            "formal_top_phi_covariance_rms_rad": covariance["top_phi_residual_rad"]["rms"],
-            "formal_antitop_phi_covariance_rms_rad": covariance["antitop_phi_residual_rad"]["rms"],
-            "formal_mttbar_covariance_rms_gev": covariance["mttbar_residual_gev"]["rms"],
-            "geometric_token_rotation_rms": None if geom_rotation is None else geom_rotation["rms"],
-            "scaler_relative_transverse_std_difference": record["scaler_transverse"]["relative_std_difference"],
-            "source_prior_max_covariance_deviation": max(
-                role["max_abs_covariance_minus_identity"]
-                for role in record["source_prior_rotation_action"][-1]["roles"]
-            ),
-        })
+        model_status = record.get("diagnostic_model_status", "trained checkpoint")
+        for angle_key, angle in sorted(record["per_angle"].items(), key=lambda item: float(item[0])):
+            fixed = angle["input_rotation_same_source"]
+            covariance = angle["formal_co_rotated_source_covariance"]
+            geom_rotation = record.get("geometric_context_rotation", {}).get(angle_key)
+            source_action = next(
+                action for action in record["source_prior_rotation_action"]
+                if abs(float(action["angle_rad"]) - float(angle_key)) < 1e-12
+            )
+
+            def rms(summary: dict | None) -> float | None:
+                return None if summary is None else float(summary["rms"])
+
+            rows.append({
+                "model": label,
+                "model_status": model_status,
+                "angle_rad": float(angle_key),
+                "sample_events": int(record["sample_events"]),
+                "fixed_expected_phi_response_rad": fixed.get("expected_phi_response_rad"),
+                "fixed_top_phi_response_mean_rad": fixed["top_phi_shift_rad"]["mean"],
+                "fixed_top_phi_response_rms_rad": fixed["top_phi_shift_rad"]["rms"],
+                "fixed_top_phi_response_error_rms_rad": rms(fixed.get("top_phi_response_error_rad")),
+                "fixed_antitop_phi_response_mean_rad": fixed["antitop_phi_shift_rad"]["mean"],
+                "fixed_antitop_phi_response_rms_rad": fixed["antitop_phi_shift_rad"]["rms"],
+                "fixed_antitop_phi_response_error_rms_rad": rms(fixed.get("antitop_phi_response_error_rad")),
+                "fixed_top_pt_change_rms_gev": rms(fixed.get("top_pt_change_gev")),
+                "fixed_antitop_pt_change_rms_gev": rms(fixed.get("antitop_pt_change_gev")),
+                "fixed_top_mass_change_rms_gev": rms(fixed.get("top_mass_change_gev")),
+                "fixed_antitop_mass_change_rms_gev": rms(fixed.get("antitop_mass_change_gev")),
+                "fixed_mttbar_change_rms_gev": rms(fixed.get("mttbar_change_gev")),
+                "formal_top_phi_covariance_rms_rad": covariance["top_phi_residual_rad"]["rms"],
+                "formal_antitop_phi_covariance_rms_rad": covariance["antitop_phi_residual_rad"]["rms"],
+                "formal_top_pt_covariance_rms_gev": rms(covariance.get("top_pt_residual_gev")),
+                "formal_antitop_pt_covariance_rms_gev": rms(covariance.get("antitop_pt_residual_gev")),
+                "formal_top_mass_covariance_rms_gev": rms(covariance.get("top_mass_residual_gev")),
+                "formal_antitop_mass_covariance_rms_gev": rms(covariance.get("antitop_mass_residual_gev")),
+                "formal_mttbar_covariance_rms_gev": covariance["mttbar_residual_gev"]["rms"],
+                "geometric_token_rotation_rms": None if geom_rotation is None else geom_rotation["rms"],
+                "scaler_relative_transverse_std_difference": record["scaler_transverse"]["relative_std_difference"],
+                "source_prior_max_covariance_deviation": max(
+                    role["max_abs_covariance_minus_identity"]
+                    for role in source_action["roles"]
+                ),
+            })
     return rows
 
 
@@ -221,8 +243,17 @@ def write_report(
     rotation_csv = rotation_dir / "rotation_diagnostics.csv"
     rotation_fields = (
         "model", "model_status", "angle_rad", "sample_events",
-        "fixed_source_top_phi_shift_rms_rad", "fixed_source_antitop_phi_shift_rms_rad",
+        "fixed_expected_phi_response_rad",
+        "fixed_top_phi_response_mean_rad", "fixed_top_phi_response_rms_rad",
+        "fixed_top_phi_response_error_rms_rad",
+        "fixed_antitop_phi_response_mean_rad", "fixed_antitop_phi_response_rms_rad",
+        "fixed_antitop_phi_response_error_rms_rad",
+        "fixed_top_pt_change_rms_gev", "fixed_antitop_pt_change_rms_gev",
+        "fixed_top_mass_change_rms_gev", "fixed_antitop_mass_change_rms_gev",
+        "fixed_mttbar_change_rms_gev",
         "formal_top_phi_covariance_rms_rad", "formal_antitop_phi_covariance_rms_rad",
+        "formal_top_pt_covariance_rms_gev", "formal_antitop_pt_covariance_rms_gev",
+        "formal_top_mass_covariance_rms_gev", "formal_antitop_mass_covariance_rms_gev",
         "formal_mttbar_covariance_rms_gev", "geometric_token_rotation_rms",
         "scaler_relative_transverse_std_difference", "source_prior_max_covariance_deviation",
     )
@@ -457,18 +488,43 @@ def write_report(
     lines.extend(["", "## Rotation and absolute direction", ""])
     if rotation_rows:
         lines.extend([
-            "Fixed-source response tests measured-event orientation sensitivity; formal covariance tests co-rotate both the measured event and the source state.",
+            "The fixed-source test rotates the measured event while keeping the latent source fixed. Its response error is the wrapped observed φ shift minus the applied angle. The formal test co-rotates both the event and source, then compares with the rotated baseline output.",
             "",
-            "| Model / status | N | fixed-source top Δφ RMS [rad] | fixed-source antitop Δφ RMS [rad] | formal top residual RMS [rad] | formal antitop residual RMS [rad] | formal mttbar RMS [GeV] | H_geom RMS |",
+            "### Fixed-source orientation response",
+            "",
+            "| Model / status | α [rad] | N | Role | observed mean Δφ [rad] | expected Δφ [rad] | response-error RMS [rad] | pT-change RMS [GeV] | mass-change RMS [GeV] | mttbar-change RMS [GeV] |",
+            "|---|---:|---:|---|---:|---:|---:|---:|---:|---:|",
+        ])
+        for row in rotation_rows:
+            for role, phi_key, error_key, pt_key, mass_key in (
+                ("top", "top", "fixed_top_phi_response_error_rms_rad", "fixed_top_pt_change_rms_gev", "fixed_top_mass_change_rms_gev"),
+                ("antitop", "antitop", "fixed_antitop_phi_response_error_rms_rad", "fixed_antitop_pt_change_rms_gev", "fixed_antitop_mass_change_rms_gev"),
+            ):
+                lines.append(
+                    f"| {row['model']} ({row['model_status']}) | {row['angle_rad']:.4f} | "
+                    f"{row['sample_events']:,} | {role} | "
+                    f"{_fmt(row[f'fixed_{phi_key}_phi_response_mean_rad'], 4)} | "
+                    f"{_fmt(row['fixed_expected_phi_response_rad'], 4)} | "
+                    f"{_fmt(row[error_key], 4)} | {_fmt(row[pt_key], 4)} | "
+                    f"{_fmt(row[mass_key], 4)} | {_fmt(row['fixed_mttbar_change_rms_gev'], 4)} |"
+                )
+        lines.extend([
+            "",
+            "### Formal co-rotated-source covariance",
+            "",
+            "| Model / status | α [rad] | N | top/antitop φ residual RMS [rad] | top/antitop pT residual RMS [GeV] | top/antitop mass residual RMS [GeV] | mttbar residual RMS [GeV] | H_geom RMS |",
             "|---|---:|---:|---:|---:|---:|---:|---:|",
         ])
         for row in rotation_rows:
             lines.append(
-                f"| {row['model']} ({row['model_status']}) | {row['sample_events']:,} | "
-                f"{_fmt(row['fixed_source_top_phi_shift_rms_rad'], 4)} | "
-                f"{_fmt(row['fixed_source_antitop_phi_shift_rms_rad'], 4)} | "
-                f"{_fmt(row['formal_top_phi_covariance_rms_rad'], 4)} | "
+                f"| {row['model']} ({row['model_status']}) | {row['angle_rad']:.4f} | "
+                f"{row['sample_events']:,} | "
+                f"{_fmt(row['formal_top_phi_covariance_rms_rad'], 4)} / "
                 f"{_fmt(row['formal_antitop_phi_covariance_rms_rad'], 4)} | "
+                f"{_fmt(row['formal_top_pt_covariance_rms_gev'], 4)} / "
+                f"{_fmt(row['formal_antitop_pt_covariance_rms_gev'], 4)} | "
+                f"{_fmt(row['formal_top_mass_covariance_rms_gev'], 4)} / "
+                f"{_fmt(row['formal_antitop_mass_covariance_rms_gev'], 4)} | "
                 f"{_fmt(row['formal_mttbar_covariance_rms_gev'], 4)} | "
                 f"{_fmt(row['geometric_token_rotation_rms'], 4)} |"
             )
@@ -484,7 +540,12 @@ def write_report(
     else:
         lines.append("Model rotation diagnostics are pending.")
     lines.extend(["", "## Evidence-gated answers", ""])
-    q_rotation = next((row for row in rotation_rows if row["model"] == "PCFM_Q"), None)
+    q_rotation_candidates = [row for row in rotation_rows if row["model"] == "PCFM_Q"]
+    q_rotation = min(
+        q_rotation_candidates,
+        key=lambda row: abs(row["angle_rad"] - 0.5 * 3.141592653589793),
+        default=None,
+    )
     trained_rotation_rows = [
         row for row in rotation_rows if "untrained" not in row["model_status"].lower()
     ]
@@ -493,13 +554,18 @@ def write_report(
         if q_rotation is None
         else (
             "PCFM_Q has no measurable fixed-source orientation response at π/2: "
-            f"top/antitop Δφ RMS {q_rotation['fixed_source_top_phi_shift_rms_rad']:.3g}/"
-            f"{q_rotation['fixed_source_antitop_phi_shift_rms_rad']:.3g} rad"
+            f"top/antitop Δφ RMS {q_rotation['fixed_top_phi_response_rms_rad']:.3g}/"
+            f"{q_rotation['fixed_antitop_phi_response_rms_rad']:.3g} rad"
         )
     )
     covariance_answer = "pending"
     if trained_rotation_rows:
-        q_covariance = next((row for row in trained_rotation_rows if row["model"] == "PCFM_Q"), None)
+        q_covariance_candidates = [row for row in trained_rotation_rows if row["model"] == "PCFM_Q"]
+        q_covariance = min(
+            q_covariance_candidates,
+            key=lambda row: abs(row["angle_rad"] - 0.5 * 3.141592653589793),
+            default=None,
+        )
         if q_covariance is not None:
             covariance_answer = (
                 "PCFM_Q does not satisfy exact co-rotated-source covariance: "
@@ -555,7 +621,7 @@ def write_report(
         "rotation_csv": str(rotation_csv),
         "model_summaries": sorted(summaries),
         "paired_comparisons": list(bootstrap_paths),
-        "rotation_models": [row["model"] for row in rotation_rows],
+        "rotation_models": sorted({row["model"] for row in rotation_rows}),
     }
 
 
