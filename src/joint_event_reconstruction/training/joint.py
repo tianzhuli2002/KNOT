@@ -134,6 +134,10 @@ def active_architecture(model) -> dict:
         parent_payload.pop("target_path", None)
         parent_payload.pop("sampling_steps", None)
         parent_payload.pop("sampling_solver", None)
+        # Preserve architecture identities for existing query-conditioned
+        # checkpoints, whose resolved config predates this opt-in switch.
+        if bool(parent_payload.get("use_topology_queries", True)):
+            parent_payload.pop("use_topology_queries", None)
         if str(parent_payload.get("conditioning", "P0")) != "P2":
             parent_payload.pop("p2_neutrino_steps", None)
             parent_payload.pop("p2_neutrino_solver", None)
@@ -470,6 +474,10 @@ class JointEventModule(L.LightningModule):
                 "parent_cfm_conditioning": (
                     None if self.event_model.parent_cfm is None
                     else self.event_model.parent_cfm.conditioning
+                ),
+                "parent_cfm_use_topology_queries": (
+                    None if self.event_model.parent_cfm is None
+                    else self.event_model.parent_cfm.use_topology_queries
                 ),
                 "objective_plan": dict(self.event_model.objective_plan),
                 "parent_cfm_roles": (

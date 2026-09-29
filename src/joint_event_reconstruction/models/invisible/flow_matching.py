@@ -67,14 +67,43 @@ class ContinuousFlowMatching(nn.Module):
         *,
         generator: torch.Generator | None = None,
         condition: torch.Tensor | None = None,
+        source_state: torch.Tensor | None = None,
+        flow_time: torch.Tensor | None = None,
         visible_fourmomenta: torch.Tensor | None = None,
         met_xy: torch.Tensor | None = None,
         support_mask: torch.Tensor | None = None,
     ) -> dict:
-        source = self.source(target, generator=generator, condition=condition)
-        time = torch.rand(
-            len(target), device=target.device, dtype=target.dtype, generator=generator
-        )
+        if source_state is None:
+            source = self.source(target, generator=generator, condition=condition)
+        else:
+            if source_state.shape != target.shape or source_state.device != target.device:
+                raise ValueError(
+                    "Explicit CFM source_state must match target shape and device: "
+                    f"source={tuple(source_state.shape)}@{source_state.device}, "
+                    f"target={tuple(target.shape)}@{target.device}"
+                )
+            if source_state.dtype != target.dtype or not torch.isfinite(source_state).all():
+                raise ValueError("Explicit CFM source_state must be finite and match target dtype")
+            source = self.coupling.pair(
+                source_state * self.active_mask.to(dtype=target.dtype),
+                target,
+                condition,
+            )
+        if flow_time is None:
+            time = torch.rand(
+                len(target), device=target.device, dtype=target.dtype, generator=generator
+            )
+        else:
+            if flow_time.shape != (len(target),) or flow_time.device != target.device:
+                raise ValueError("Explicit CFM flow_time must be [B] on the target device")
+            if (
+                flow_time.dtype != target.dtype
+                or not torch.isfinite(flow_time).all()
+                or (flow_time < 0).any()
+                or (flow_time > 1).any()
+            ):
+                raise ValueError("Explicit CFM flow_time must be finite, target-dtype, and in [0,1]")
+            time = flow_time
         state, target_velocity = linear_path(source, target, time)
         prediction = self.velocity(
             state,
@@ -121,16 +150,28 @@ class ContinuousFlowMatching(nn.Module):
         steps: int,
         solver: str,
         generator: torch.Generator | None = None,
+        initial_state: torch.Tensor | None = None,
         visible_fourmomenta: torch.Tensor | None = None,
         met_xy: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, int]:
         active = self.active_mask.to(device=visible.device, dtype=visible.dtype)
-        initial = torch.randn(
-            shape,
-            device=visible.device,
-            dtype=visible.dtype,
-            generator=generator,
-        ) * active
+        if initial_state is None:
+            initial = torch.randn(
+                shape,
+                device=visible.device,
+                dtype=visible.dtype,
+                generator=generator,
+            ) * active
+        else:
+            if tuple(initial_state.shape) != tuple(shape) or initial_state.device != visible.device:
+                raise ValueError(
+                    "Explicit CFM initial_state must match requested shape and device: "
+                    f"source={tuple(initial_state.shape)}@{initial_state.device}, "
+                    f"requested={tuple(shape)}@{visible.device}"
+                )
+            if initial_state.dtype != visible.dtype or not torch.isfinite(initial_state).all():
+                raise ValueError("Explicit CFM initial_state must be finite and match visible dtype")
+            initial = initial_state * active
         prepare_conditioning = getattr(self.denoiser, "prepare_conditioning", None)
         prepared_context = (
             prepare_conditioning(visible, mask, parent)

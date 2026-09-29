@@ -207,6 +207,7 @@ class PartonicCFM(nn.Module):
         *,
         scaler,
         conditioning: str = "P0",
+        use_topology_queries: bool = True,
     ) -> None:
         super().__init__()
         if conditioning not in self.MODE_CONDITION_COUNTS:
@@ -215,6 +216,7 @@ class PartonicCFM(nn.Module):
             raise ValueError("Partonic CFM requires a train-fitted scaler ordered as (top, antitop)")
         self.scaler = scaler
         self.conditioning = str(conditioning)
+        self.use_topology_queries = bool(use_topology_queries)
         self.d_model = int(d_model)
         self.register_buffer(
             "target_mean", torch.tensor(scaler.mean, dtype=torch.float32), persistent=True
@@ -240,15 +242,32 @@ class PartonicCFM(nn.Module):
 
     def _conditioning_tokens(
         self,
-        parent_queries: torch.Tensor,
+        visible: torch.Tensor,
+        parent_queries: torch.Tensor | None,
         assignment_context: torch.Tensor | None,
         predicted_neutrino_momentum: torch.Tensor | None,
     ) -> torch.Tensor:
-        if parent_queries.ndim != 3 or parent_queries.shape[1:] != (2, self.d_model):
-            raise ValueError(
-                "Parent query contexts must be [B,2,D] in (top, antitop) order; "
-                f"found {tuple(parent_queries.shape)}"
-            )
+        if self.use_topology_queries:
+            if (
+                parent_queries is None
+                or parent_queries.ndim != 3
+                or parent_queries.shape[1:] != (2, self.d_model)
+            ):
+                observed = None if parent_queries is None else tuple(parent_queries.shape)
+                raise ValueError(
+                    "Parent query contexts must be [B,2,D] in (top, antitop) order; "
+                    f"found {observed}"
+                )
+            if parent_queries.shape[0] != len(visible):
+                raise ValueError("Parent query context batch differs from measured event batch")
+        else:
+            if parent_queries is not None:
+                raise ValueError("No-query parent CFM cannot receive topology-query states")
+            if visible.ndim != 3 or visible.shape[-1] != self.d_model:
+                raise ValueError("No-query parent CFM measured context must be [B,N,D]")
+            # Learned parent_role_embedding supplies semantic role identity.
+            # The measured event remains available through the visible memory.
+            parent_queries = visible.new_zeros((len(visible), 2, self.d_model))
         expected_assignment = self.conditioning in {"P1", "P2"}
         expected_neutrino = self.conditioning == "P2"
         if expected_assignment != (assignment_context is not None):
@@ -282,11 +301,13 @@ class PartonicCFM(nn.Module):
         support: torch.Tensor,
         visible: torch.Tensor,
         visible_padding_mask: torch.Tensor,
-        parent_queries: torch.Tensor,
+        parent_queries: torch.Tensor | None,
         *,
         assignment_context: torch.Tensor | None = None,
         predicted_neutrino_momentum: torch.Tensor | None = None,
         generator: torch.Generator | None = None,
+        source_state: torch.Tensor | None = None,
+        flow_time: torch.Tensor | None = None,
     ) -> dict:
         if target_four_vectors.shape != (len(visible), 2, 4):
             raise ValueError("Partonic CFM targets must be [B,2,4] in (top, antitop), (E,px,py,pz) order")
@@ -303,7 +324,10 @@ class PartonicCFM(nn.Module):
             len(visible), 8
         )
         parent_context = self._conditioning_tokens(
-            parent_queries, assignment_context, predicted_neutrino_momentum
+            visible,
+            parent_queries,
+            assignment_context,
+            predicted_neutrino_momentum,
         )
         result = self.flow.loss(
             scaled,
@@ -311,6 +335,8 @@ class PartonicCFM(nn.Module):
             visible_padding_mask,
             parent_context,
             generator=generator,
+            source_state=source_state,
+            flow_time=flow_time,
             support_mask=support,
         )
         result["target_scaled"] = scaled
@@ -323,7 +349,7 @@ class PartonicCFM(nn.Module):
         self,
         visible: torch.Tensor,
         visible_padding_mask: torch.Tensor,
-        parent_queries: torch.Tensor,
+        parent_queries: torch.Tensor | None,
         *,
         samples: int,
         steps: int,
@@ -331,7 +357,8 @@ class PartonicCFM(nn.Module):
         generator: torch.Generator | None = None,
         assignment_context: torch.Tensor | None = None,
         predicted_neutrino_momentum: torch.Tensor | None = None,
-    ) -> dict[str, torch.Tensor | int]:
+        source_state: torch.Tensor | None = None,
+    ) -> dict[str, torch.Tensor | int | str]:
         if samples <= 0:
             raise ValueError("Partonic posterior sample count must be positive")
         if steps <= 0:
@@ -339,12 +366,28 @@ class PartonicCFM(nn.Module):
         if solver not in {"euler", "heun"}:
             raise ValueError("Partonic CFM solver must be euler or heun")
         parent_context = self._conditioning_tokens(
-            parent_queries, assignment_context, predicted_neutrino_momentum
+            visible,
+            parent_queries,
+            assignment_context,
+            predicted_neutrino_momentum,
         )
         batch = len(visible)
         repeated_visible = visible.repeat_interleave(samples, dim=0)
         repeated_mask = visible_padding_mask.repeat_interleave(samples, dim=0)
         repeated_parent = parent_context.repeat_interleave(samples, dim=0)
+        initial_state = None
+        if source_state is not None:
+            expected_shape = (batch, samples, 8)
+            if tuple(source_state.shape) != expected_shape:
+                raise ValueError(
+                    "Explicit parent source_state must be [B,samples,8] in joint role order; "
+                    f"expected {expected_shape}, found {tuple(source_state.shape)}"
+                )
+            if source_state.device != visible.device or source_state.dtype != visible.dtype:
+                raise ValueError("Explicit parent source_state must match measured context device and dtype")
+            if not torch.isfinite(source_state).all():
+                raise ValueError("Explicit parent source_state contains non-finite values")
+            initial_state = source_state.reshape(batch * samples, 8)
         scaled, nfe = self.flow.sample(
             (batch * samples, 8),
             repeated_visible,
@@ -353,6 +396,7 @@ class PartonicCFM(nn.Module):
             steps=steps,
             solver=solver,
             generator=generator,
+            initial_state=initial_state,
         )
         scaled = scaled.reshape(batch, samples, 2, 4)
         features = scaled * self.target_std + self.target_mean
@@ -364,6 +408,11 @@ class PartonicCFM(nn.Module):
             "pair": pair,
             "nfe": nfe,
             "conditioning": self.conditioning,
+            "parent_role_conditioning": (
+                "topology_query_states"
+                if self.use_topology_queries
+                else "learned_semantic_role_embeddings"
+            ),
         }
 
 

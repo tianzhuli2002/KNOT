@@ -79,7 +79,9 @@ def _loader(data, split: str):
     return result
 
 
-def _conditioning_metadata(conditioning: str) -> dict[str, str | None]:
+def _conditioning_metadata(
+    conditioning: str, *, use_topology_queries: bool = True
+) -> dict[str, str | None]:
     assignment = (
         "predicted_soft_complete_assignment_marginal_with_null_embeddings"
         if conditioning in {"P1", "P2"}
@@ -90,7 +92,7 @@ def _conditioning_metadata(conditioning: str) -> dict[str, str | None]:
         if conditioning == "P2"
         else "none"
     )
-    return {
+    result = {
         "assignment_context": assignment,
         "invisible_context": invisible,
         "hypothesis_index_semantics": (
@@ -102,6 +104,9 @@ def _conditioning_metadata(conditioning: str) -> dict[str, str | None]:
             else "-1 denotes no invisible sample conditioning"
         ),
     }
+    if not use_topology_queries:
+        result["parent_role_context"] = "learned_top_antitop_role_embeddings"
+    return result
 
 
 def _validate_prediction_file(path: Path, expected_events: int, samples: int) -> None:
@@ -196,6 +201,12 @@ def predict_partonic_hdf5(
     if samples <= 0 or steps <= 0 or solver not in {"euler", "heun"}:
         raise ValueError("Partonic samples/steps must be positive and solver must be euler or heun")
     conditioning = module.event_model.parent_cfm.conditioning
+    use_topology_queries = module.event_model.parent_cfm.use_topology_queries
+    parent_role_conditioning = (
+        "topology_query_states"
+        if use_topology_queries
+        else "learned_semantic_role_embeddings"
+    )
     source_path = Path(data.h5_path).expanduser().resolve()
     checkpoint = Path(checkpoint_path).expanduser().resolve()
     target = Path(output_path).expanduser().resolve()
@@ -222,8 +233,12 @@ def predict_partonic_hdf5(
             output.attrs["state_order"] = "top_px,top_py,top_pz,top_log1p_mass,antitop_px,antitop_py,antitop_pz,antitop_log1p_mass"
             output.attrs["conditioning"] = conditioning
             output.attrs["conditioning_contract"] = json.dumps(
-                _conditioning_metadata(conditioning), sort_keys=True
+                _conditioning_metadata(
+                    conditioning, use_topology_queries=use_topology_queries
+                ),
+                sort_keys=True,
             )
+            output.attrs["parent_role_conditioning"] = parent_role_conditioning
             output.attrs["solver"] = solver
             output.attrs["solver_steps"] = int(steps)
             output.attrs["nfe"] = 2 * int(steps) if solver == "heun" else int(steps)
@@ -345,6 +360,7 @@ def predict_partonic_hdf5(
         "events": count,
         "samples_per_event": samples,
         "conditioning": conditioning,
+        "parent_role_conditioning": parent_role_conditioning,
         "solver": solver,
         "steps": steps,
         "nfe": 2 * steps if solver == "heun" else steps,

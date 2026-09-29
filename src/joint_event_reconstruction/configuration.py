@@ -319,7 +319,7 @@ def validate_experiment(config: DictConfig) -> None:
     _exact_keys(
         model.parent_cfm,
         {
-            "enabled", "conditioning", "roles", "truth_bindings", "target_path",
+            "enabled", "conditioning", "use_topology_queries", "roles", "truth_bindings", "target_path",
             "n_heads", "layers", "d_feedforward", "dropout",
             "p2_neutrino_steps", "p2_neutrino_solver", "sampling_steps",
             "sampling_solver",
@@ -330,13 +330,18 @@ def validate_experiment(config: DictConfig) -> None:
         raise ValueError("model.parent_cfm.enabled must be boolean")
     if str(model.parent_cfm.conditioning) not in {"P0", "P1", "P2"}:
         raise ValueError("model.parent_cfm.conditioning must be P0, P1 or P2")
+    if not isinstance(model.parent_cfm.use_topology_queries, bool):
+        raise ValueError("model.parent_cfm.use_topology_queries must be boolean")
     if list(model.parent_cfm.roles) != ["top", "antitop"]:
         raise ValueError("Partonic CFM roles must be ordered [top, antitop]")
     if set(model.parent_cfm.truth_bindings) != {"top", "antitop"}:
         raise ValueError("Partonic CFM truth_bindings must define top and antitop")
     if model.parent_cfm.enabled:
-        if not model.topology_queries.enabled:
-            raise ValueError("Partonic CFM requires enabled topology queries")
+        if model.parent_cfm.use_topology_queries and not model.topology_queries.enabled:
+            raise ValueError("Partonic CFM use_topology_queries requires enabled topology queries")
+        if not model.parent_cfm.use_topology_queries:
+            if model.parent_cfm.conditioning != "P0":
+                raise ValueError("No-query parent CFM currently supports P0 conditioning only")
         _positive_int(model.parent_cfm.n_heads, "model.parent_cfm.n_heads")
         if int(model.latent.d_model) % int(model.parent_cfm.n_heads):
             raise ValueError("model.parent_cfm.n_heads must divide model.latent.d_model")

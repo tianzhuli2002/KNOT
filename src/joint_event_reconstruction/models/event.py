@@ -240,14 +240,20 @@ class JointEventModel(nn.Module):
         self.parent_cfm_loss_weight = float(parent_cfm_loss_weight)
         self.parent_cfm_config = parent_cfm_config
         if parent_cfm_config is not None and bool(parent_cfm_config.get("enabled", False)):
-            if self.topology_queries is None:
-                raise ValueError("Partonic CFM requires the shared topology-query module")
-            if self.topology_queries.parent_role_names != ("top", "antitop"):
-                raise ValueError(
-                    "Partonic CFM queries must be declared in (top, antitop) order "
-                    "with kind=parent"
-                )
+            use_topology_queries = bool(
+                parent_cfm_config.get("use_topology_queries", True)
+            )
+            if use_topology_queries:
+                if self.topology_queries is None:
+                    raise ValueError("Partonic CFM requires the shared topology-query module")
+                if self.topology_queries.parent_role_names != ("top", "antitop"):
+                    raise ValueError(
+                        "Partonic CFM queries must be declared in (top, antitop) order "
+                        "with kind=parent"
+                    )
             conditioning = str(parent_cfm_config.get("conditioning", "P0"))
+            if not use_topology_queries and conditioning != "P0":
+                raise ValueError("No-query parent CFM currently supports P0 conditioning only")
             if conditioning in {"P1", "P2"} and set(spec.roots) != {"top", "antitop"}:
                 raise ValueError(
                     "P1/P2 require exactly the compiled root nodes top and antitop "
@@ -275,6 +281,7 @@ class JointEventModel(nn.Module):
                 dropout=float(parent_cfm_config.get("dropout", dropout)),
                 scaler=parent_cfm_scaler,
                 conditioning=conditioning,
+                use_topology_queries=use_topology_queries,
             )
         if parent_cfm_shared_encoder_gradients not in {"both", "assignment_only"}:
             raise ValueError(
@@ -721,6 +728,11 @@ class JointEventModel(nn.Module):
 
     def encode_visible(self, batch: dict) -> dict:
         encoded = self.visible(batch)
+        if self.parent_cfm is not None and not self.parent_cfm.use_topology_queries:
+            # Keep the encoder event token separately only for parent noQ.
+            # Other task paths continue to receive the existing query output
+            # in ``pooled``, and default configs retain their old output keys.
+            encoded["encoder_pooled"] = encoded["pooled"]
         if self.topology_queries is not None:
             query = self.topology_queries(
                 encoded["pooled"], encoded["tokens"], encoded["padding_mask"]
@@ -833,6 +845,7 @@ class JointEventModel(nn.Module):
         steps: int,
         solver: str,
         generator: torch.Generator | None = None,
+        parent_source_state: torch.Tensor | None = None,
     ) -> dict:
         """Truth-free P0/P1/P2 parent sampling with explicit upstream indices."""
         if self.parent_cfm is None:
@@ -866,13 +879,21 @@ class JointEventModel(nn.Module):
                 assignment, batch, visible, generator=generator
             )
             neutrino_sample_id.zero_()
-        parent_queries = visible.get("parent_role_context")
-        if tuple(visible.get("parent_role_names", ())) != PartonicCFM.ROLES:
-            raise RuntimeError("Prediction parent queries are not ordered as (top, antitop)")
+        parent_queries = None
+        parent_global = visible["pooled"]
+        if self.parent_cfm.use_topology_queries:
+            parent_queries = visible.get("parent_role_context")
+            if tuple(visible.get("parent_role_names", ())) != PartonicCFM.ROLES:
+                raise RuntimeError(
+                    "Prediction parent queries are not ordered as (top, antitop)"
+                )
+        else:
+            parent_global = visible["encoder_pooled"]
         if self.parent_cfm_shared_encoder_gradients == "assignment_only":
             visible_context = visible["tokens"].detach()
             visible_mask = visible["padding_mask"]
-            parent_queries = parent_queries.detach()
+            if parent_queries is not None:
+                parent_queries = parent_queries.detach()
             if assignment_context is not None:
                 assignment_context = assignment_context.detach()
             if predicted_neutrino is not None:
@@ -881,7 +902,7 @@ class JointEventModel(nn.Module):
             visible_context = visible["tokens"]
             visible_mask = visible["padding_mask"]
         # Retain the global measured-event query context as a token.
-        visible_context = torch.cat((visible["pooled"].unsqueeze(1), visible_context), dim=1)
+        visible_context = torch.cat((parent_global.unsqueeze(1), visible_context), dim=1)
         visible_mask = torch.cat(
             (torch.zeros((len(visible_mask), 1), dtype=torch.bool, device=visible_mask.device), visible_mask),
             dim=1,
@@ -894,6 +915,7 @@ class JointEventModel(nn.Module):
             steps=steps,
             solver=solver,
             generator=generator,
+            source_state=parent_source_state,
             assignment_context=assignment_context,
             predicted_neutrino_momentum=predicted_neutrino,
         )
@@ -1194,12 +1216,14 @@ class JointEventModel(nn.Module):
                         "Partonic CFM training requires explicit after-FSR truth and support"
                     )
                 return result
-            parent_queries = visible.get("parent_role_context")
-            parent_names = tuple(visible.get("parent_role_names", ()))
-            if parent_names != PartonicCFM.ROLES or parent_queries is None:
-                raise RuntimeError(
-                    "Partonic CFM requires ordered shared (top, antitop) query contexts"
-                )
+            parent_queries = None
+            if self.parent_cfm.use_topology_queries:
+                parent_queries = visible.get("parent_role_context")
+                parent_names = tuple(visible.get("parent_role_names", ()))
+                if parent_names != PartonicCFM.ROLES or parent_queries is None:
+                    raise RuntimeError(
+                        "Partonic CFM requires ordered shared (top, antitop) query contexts"
+                    )
             assignment_context = None
             if self.parent_cfm.conditioning in {"P1", "P2"}:
                 assignment_context = self._parent_assignment_context(
@@ -1213,15 +1237,24 @@ class JointEventModel(nn.Module):
                 result["partonic_cfm_neutrino_nfe"] = nfe
             if self.parent_cfm_shared_encoder_gradients == "assignment_only":
                 measured = visible["tokens"].detach()
-                measured_global = visible["pooled"].detach()
-                parent_queries = parent_queries.detach()
+                measured_global = (
+                    visible["pooled"]
+                    if self.parent_cfm.use_topology_queries
+                    else visible["encoder_pooled"]
+                ).detach()
+                if parent_queries is not None:
+                    parent_queries = parent_queries.detach()
                 if assignment_context is not None:
                     assignment_context = assignment_context.detach()
                 if predicted_neutrino is not None:
                     predicted_neutrino = predicted_neutrino.detach()
             else:
                 measured = visible["tokens"]
-                measured_global = visible["pooled"]
+                measured_global = (
+                    visible["pooled"]
+                    if self.parent_cfm.use_topology_queries
+                    else visible["encoder_pooled"]
+                )
             measured = torch.cat((measured_global.unsqueeze(1), measured), dim=1)
             measured_mask = torch.cat(
                 (

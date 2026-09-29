@@ -314,7 +314,11 @@ class InvisibleGenerator(nn.Module):
         *,
         role_context: torch.Tensor | None = None,
         event_mask: torch.Tensor | None = None,
+        source_state: torch.Tensor | None = None,
+        flow_time: torch.Tensor | None = None,
     ) -> dict:
+        if (source_state is not None or flow_time is not None) and self.formulation_name != "flow_matching":
+            raise ValueError("Explicit source/time inputs are supported only for Flow Matching")
         context, mask = self.visible_context(visible)
         flow_support = None
         if event_mask is not None:
@@ -345,6 +349,10 @@ class InvisibleGenerator(nn.Module):
                 context = context[event_mask]
                 mask = mask[event_mask]
                 parent_context = parent_context[event_mask]
+                if source_state is not None:
+                    source_state = source_state[event_mask]
+                if flow_time is not None:
+                    flow_time = flow_time[event_mask]
                 if role_context is not None:
                     role_context = role_context[event_mask]
         # Event-filtered couplings use one consistent subset for the target
@@ -375,6 +383,8 @@ class InvisibleGenerator(nn.Module):
                 visible_fourmomenta=visible_fourmomenta,
                 met_xy=met_xy,
                 support_mask=flow_support,
+                source_state=source_state,
+                flow_time=flow_time,
             )
         else:
             result = self.formulation.loss(
@@ -436,6 +446,7 @@ class InvisibleGenerator(nn.Module):
         budget: int | None = None,
         sampler: str | None = None,
         generator: torch.Generator | None = None,
+        source_state: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, int]:
         if samples <= 0:
             raise ValueError("Posterior sample count must be positive")
@@ -454,6 +465,21 @@ class InvisibleGenerator(nn.Module):
         parent = parent_context.repeat_interleave(samples, dim=0)
         state_dim = self.coordinates.state_dim
         shape = (batch * samples, state_tokens, state_dim)
+        initial_state = None
+        if source_state is not None:
+            if self.formulation_name != "flow_matching":
+                raise ValueError("Explicit source states are supported only for Flow Matching")
+            expected_shape = (batch, samples, state_tokens, state_dim)
+            if tuple(source_state.shape) != expected_shape:
+                raise ValueError(
+                    "Explicit invisible source_state must be [B,samples,T,D]; "
+                    f"expected={expected_shape}, found={tuple(source_state.shape)}"
+                )
+            if source_state.device != context.device or source_state.dtype != context.dtype:
+                raise ValueError("Explicit invisible source_state must match visible context device and dtype")
+            if not torch.isfinite(source_state).all():
+                raise ValueError("Explicit invisible source_state contains non-finite values")
+            initial_state = source_state.reshape(shape)
         selected_budget = self.inference_budget if budget is None else int(budget)
         if selected_budget <= 0:
             raise ValueError("Invisible inference budget must be positive")
@@ -492,6 +518,7 @@ class InvisibleGenerator(nn.Module):
                 steps=selected_budget,
                 solver=selected_sampler,
                 generator=generator,
+                initial_state=initial_state,
                 visible_fourmomenta=visible_fourmomenta,
                 met_xy=met_xy,
             )
