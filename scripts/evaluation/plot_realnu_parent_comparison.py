@@ -258,7 +258,9 @@ def _write_report(records: list[tuple[str, dict]], output_dir: Path) -> Path:
     return target
 
 
-def _perfect_reco(event_table: Path, event_ids: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+def _perfect_reco(
+    event_table: Path, event_ids: np.ndarray
+) -> tuple[np.ndarray, np.ndarray, int]:
     with h5py.File(event_table, "r") as table:
         if table.attrs.get("schema") != "realnu_event_metrics_v1":
             raise ValueError("Perfect-reco plotting requires the accepted event metrics table")
@@ -279,7 +281,10 @@ def _perfect_reco(event_table: Path, event_ids: np.ndarray) -> tuple[np.ndarray,
             table["models/Q1/constituent_oracles/perfect_reco/parents"][:][rows],
             dtype=np.float64,
         )
-    return truth, _mass(perfect_parents)
+    finite_rows = np.isfinite(perfect_parents).all(axis=(-1, -2))
+    if not finite_rows.any():
+        raise ValueError("Perfect-reco mttbar reference has no finite parent pairs")
+    return truth, _mass(perfect_parents[finite_rows]), int(finite_rows.sum())
 
 
 def _validate_population(event_table: Path, event_ids: np.ndarray, *, allow_subset: bool) -> None:
@@ -300,7 +305,7 @@ def _plot_spectrum(
     event_table: Path,
 ) -> list[Path]:
     event_ids = np.asarray(records[0][2]["EVENT_ID"], dtype=np.int64)
-    truth, perfect = _perfect_reco(event_table, event_ids)
+    truth, perfect, perfect_support = _perfect_reco(event_table, event_ids)
     reconstructed = [
         np.asarray(arrays[f"pred__{estimator}__mttbar"], dtype=np.float64)
         for _, _, arrays in records
@@ -313,7 +318,8 @@ def _plot_spectrum(
     upper = max(1000.0, np.ceil(upper / 100.0) * 100.0)
     edges = np.linspace(0.0, upper, 101)
     counts = {"Parton truth": np.histogram(truth, bins=edges)[0]}
-    counts["Perfect reco"] = np.histogram(perfect, bins=edges)[0]
+    perfect_label = f"Perfect reco ({perfect_support:,}/{len(event_ids):,} finite)"
+    counts[perfect_label] = np.histogram(perfect, bins=edges)[0]
     for (label, _, _), values in zip(records, reconstructed, strict=True):
         counts[label] = np.histogram(values, bins=edges)[0]
     centers = 0.5 * (edges[:-1] + edges[1:])
@@ -322,13 +328,13 @@ def _plot_spectrum(
         gridspec_kw={"height_ratios": (3.1, 1.0)}, constrained_layout=True,
     )
     axis.stairs(counts["Parton truth"], edges, color="black", linewidth=2.0, label="Parton truth")
-    axis.stairs(counts["Perfect reco"], edges, color="#666666", linestyle="--", label="Perfect reco")
+    axis.stairs(counts[perfect_label], edges, color="#666666", linestyle="--", label=perfect_label)
     perfect_ratio = np.divide(
-        counts["Perfect reco"], counts["Parton truth"],
+        counts[perfect_label], counts["Parton truth"],
         out=np.full(len(centers), np.nan, dtype=np.float64),
         where=counts["Parton truth"] > 0,
     )
-    ratio_axis.plot(centers, perfect_ratio, color="#666666", linestyle="--", linewidth=1.3, label="Perfect reco")
+    ratio_axis.plot(centers, perfect_ratio, color="#666666", linestyle="--", linewidth=1.3, label=perfect_label)
     for index, (label, _, _) in enumerate(records):
         axis.stairs(counts[label], edges, color=_color(label, index), linewidth=1.6, label=label)
         ratio = np.divide(
@@ -348,14 +354,17 @@ def _plot_spectrum(
     axis.set_xlim(0.0, upper)
     axis.legend(frameon=False, ncol=2)
     ratio_axis.legend(frameon=False, ncol=2)
-    axis.set_title(f"Validation $m_{{t\\bar{{t}}}}$ spectrum — {LABELS[estimator]}")
+    axis.set_title(
+        f"Validation $m_{{t\\bar{{t}}}}$ spectrum — {LABELS[estimator]}\n"
+        f"Perfect-reco reference uses {perfect_support:,}/{len(event_ids):,} finite events"
+    )
     ratio_axis.grid(axis="y", alpha=0.25)
     full_path = _save(figure, output_dir / "mttbar_spectrum_full")
 
     threshold_edges = np.arange(300.0, 555.0, 5.0)
     threshold_counts = {
         "Parton truth": np.histogram(truth, bins=threshold_edges)[0],
-        "Perfect reco": np.histogram(perfect, bins=threshold_edges)[0],
+        perfect_label: np.histogram(perfect, bins=threshold_edges)[0],
     }
     for (label, _, _), values in zip(records, reconstructed, strict=True):
         threshold_counts[label] = np.histogram(values, bins=threshold_edges)[0]
@@ -365,15 +374,18 @@ def _plot_spectrum(
         gridspec_kw={"height_ratios": (3.1, 1.0)}, constrained_layout=True,
     )
     axis.stairs(threshold_counts["Parton truth"], threshold_edges, color="black", linewidth=2.0, label="Parton truth")
-    axis.stairs(threshold_counts["Perfect reco"], threshold_edges, color="#666666", linestyle="--", label="Perfect reco")
+    axis.stairs(
+        threshold_counts[perfect_label], threshold_edges, color="#666666",
+        linestyle="--", label=perfect_label,
+    )
     perfect_ratio = np.divide(
-        threshold_counts["Perfect reco"], threshold_counts["Parton truth"],
+        threshold_counts[perfect_label], threshold_counts["Parton truth"],
         out=np.full(len(threshold_centers), np.nan),
         where=threshold_counts["Parton truth"] > 0,
     )
     ratio_axis.plot(
         threshold_centers, perfect_ratio, color="#666666", linestyle="--",
-        linewidth=1.3, label="Perfect reco",
+        linewidth=1.3, label=perfect_label,
     )
     for index, (label, _, _) in enumerate(records):
         axis.stairs(threshold_counts[label], threshold_edges, color=_color(label, index), linewidth=1.6, label=label)
@@ -388,7 +400,10 @@ def _plot_spectrum(
     ratio_axis.set_xlabel(r"$m_{t\bar{t}}$ [GeV]")
     axis.set_ylabel("Events / 5 GeV")
     axis.set_xlim(300.0, 550.0)
-    axis.set_title(f"Threshold spectrum, 300–550 GeV — {LABELS[estimator]}")
+    axis.set_title(
+        f"Threshold spectrum, 300–550 GeV — {LABELS[estimator]}\n"
+        f"Perfect-reco reference uses {perfect_support:,}/{len(event_ids):,} finite events"
+    )
     axis.legend(frameon=False, ncol=2)
     ratio_axis.legend(frameon=False, ncol=2)
     ratio_axis.grid(axis="y", alpha=0.25)
