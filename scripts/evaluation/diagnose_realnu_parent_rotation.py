@@ -479,6 +479,52 @@ def run(
     mean = cfm.target_mean.detach().cpu().numpy().reshape(2, 4)
     std = cfm.target_std.detach().cpu().numpy().reshape(2, 4)
     source_action = [_source_prior_action(angle, mean, std) for angle in ANGLES]
+    source_transform_checks = {}
+    source_physical = (
+        base_source.reshape(len(base_source), 1, 2, 4)
+        * cfm.target_std.detach().reshape(1, 1, 2, 4)
+        + cfm.target_mean.detach().reshape(1, 1, 2, 4)
+    )
+    for angle in ANGLES:
+        rotated_source = _rotate_source(
+            base_source, angle, cfm.target_mean, cfm.target_std
+        )
+        restored_source = _rotate_source(
+            rotated_source, -angle, cfm.target_mean, cfm.target_std
+        )
+        rotated_physical = (
+            rotated_source.reshape(len(base_source), 1, 2, 4)
+            * cfm.target_std.detach().reshape(1, 1, 2, 4)
+            + cfm.target_mean.detach().reshape(1, 1, 2, 4)
+        )
+        matrix = _rotation_matrix(
+            angle, device=base_source.device, dtype=base_source.dtype
+        )
+        expected_pxpy = source_physical[..., :2] @ matrix.T
+        restored_features = restored_source.reshape(len(base_source), 1, 2, 4)
+        base_features = base_source.reshape(len(base_source), 1, 2, 4)
+        roundtrip_pxpy_error = float(
+            torch.max(torch.abs(restored_features[..., :2] - base_features[..., :2]))
+        )
+        roundtrip_other_error = float(
+            torch.max(torch.abs(restored_features[..., 2:] - base_features[..., 2:]))
+        )
+        physical_rotation_error = float(
+            torch.max(torch.abs(rotated_physical[..., :2] - expected_pxpy))
+        )
+        if (
+            roundtrip_pxpy_error > 2.0e-6
+            or roundtrip_other_error > 1.0e-4
+            or physical_rotation_error > 2.0e-5
+        ):
+            raise RuntimeError(
+                "Scaler-aware source rotation failed its round-trip or physical px/py check"
+            )
+        source_transform_checks[str(float(angle))] = {
+            "roundtrip_max_abs_standardized_pxpy": roundtrip_pxpy_error,
+            "roundtrip_max_abs_standardized_pz_mass": roundtrip_other_error,
+            "physical_pxpy_rotation_max_abs_gev": physical_rotation_error,
+        }
 
     with torch.no_grad():
         baseline = event_model.sample_partonic(
@@ -507,11 +553,26 @@ def run(
                 solver="heun",
                 parent_source_state=co_rotated_source,
             )["parents"][:, 0]
+            source_rotated = _rotate_source(
+                base_source, angle, cfm.target_mean, cfm.target_std
+            )
+            source_only = event_model.sample_partonic(
+                selected_batch,
+                samples=1,
+                steps=steps,
+                solver="heun",
+                parent_source_state=source_rotated,
+            )["parents"][:, 0]
             expected_parent = _rotate_parents(base_parents, angle)
             fixed_changes = _observable_differences(base_parents, fixed)
+            source_changes = _observable_differences(base_parents, source_only)
+            co_changes = _observable_differences(base_parents, co_rotated)
             covariance_changes = _observable_differences(expected_parent, co_rotated)
             expected_response = torch.full_like(
                 fixed_changes["top_phi"], float(angle)
+            )
+            source_expected_response = torch.full_like(
+                source_changes["top_phi"], float(angle)
             )
             sensitivity = {
                 "input_rotation_same_source": {
@@ -548,7 +609,60 @@ def run(
                         fixed_changes["mttbar"].cpu().numpy()
                     ),
                 },
+                "source_rotation_fixed_event": {
+                    "expected_phi_response_rad": float(angle),
+                    "top_phi_shift_rad": _summary(
+                        source_changes["top_phi"].cpu().numpy()
+                    ),
+                    "antitop_phi_shift_rad": _summary(
+                        source_changes["antitop_phi"].cpu().numpy()
+                    ),
+                    "top_phi_response_error_rad": _summary(
+                        _angle_difference(
+                            source_changes["top_phi"], source_expected_response
+                        ).cpu().numpy()
+                    ),
+                    "antitop_phi_response_error_rad": _summary(
+                        _angle_difference(
+                            source_changes["antitop_phi"], source_expected_response
+                        ).cpu().numpy()
+                    ),
+                    "top_pt_change_gev": _summary(
+                        source_changes["top_pt"].cpu().numpy()
+                    ),
+                    "antitop_pt_change_gev": _summary(
+                        source_changes["antitop_pt"].cpu().numpy()
+                    ),
+                    "mttbar_change_gev": _summary(
+                        source_changes["mttbar"].cpu().numpy()
+                    ),
+                },
                 "formal_co_rotated_source_covariance": {
+                    "top_phi_shift_rad": _summary(
+                        co_changes["top_phi"].cpu().numpy()
+                    ),
+                    "antitop_phi_shift_rad": _summary(
+                        co_changes["antitop_phi"].cpu().numpy()
+                    ),
+                    "top_phi_response_error_rad": _summary(
+                        _angle_difference(
+                            co_changes["top_phi"], expected_response
+                        ).cpu().numpy()
+                    ),
+                    "antitop_phi_response_error_rad": _summary(
+                        _angle_difference(
+                            co_changes["antitop_phi"], expected_response
+                        ).cpu().numpy()
+                    ),
+                    "top_pt_change_gev": _summary(
+                        co_changes["top_pt"].cpu().numpy()
+                    ),
+                    "antitop_pt_change_gev": _summary(
+                        co_changes["antitop_pt"].cpu().numpy()
+                    ),
+                    "mttbar_change_gev": _summary(
+                        co_changes["mttbar"].cpu().numpy()
+                    ),
                     "parent_four_vector_residual_gev": _summary(
                         (co_rotated - expected_parent).cpu().numpy()
                     ),
@@ -631,6 +745,7 @@ def run(
             "scaler_identity_sha256": record["scaler_identity_sha256"],
         },
         "source_prior_rotation_action": source_action,
+        "source_transform_validation": source_transform_checks,
         "per_angle": angle_results,
         "sealed_test_used": False,
         "truth_free_conditioning": True,
