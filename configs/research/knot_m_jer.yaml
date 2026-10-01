@@ -1,0 +1,220 @@
+data:
+  allow_synthetic: true
+  cache: null
+  events:
+    test: null
+    train: 16
+    validation: 8
+  input: /net/scratch/w00238tl/JointEventReconstruction_KNOT/results/experiments/knot/development/measured.h5
+  loader:
+    persistent_workers: false
+    pin_memory: false
+  max_assignment_states: 100000
+  split:
+    indices_path: null
+    require_existing: false
+  subset_seed: 20260923
+  test_size: 0.05
+experiment:
+  name: KNOT-M
+  seed: 20260923
+inference:
+  invisible:
+    flow:
+      solver: euler
+      steps: 2
+    point_estimator: none
+    samples_per_assignment: 2
+  seed: 20260923
+inputs:
+  ELECTRON:
+    count: 1
+    features:
+    - e
+    - eta
+    - phi
+    - pt
+    - charge
+  GLOBAL:
+    features:
+    - njet
+    - nelectron
+    - nmuon
+    - nBJets_90
+    - nBJets_85
+    - nBJets_77
+    - nBJets_70
+    - nBJets_65
+  JET:
+    count: 8
+    features:
+    - e
+    - eta
+    - phi
+    - pt
+    - btag
+    - charge
+  MET:
+    count: 1
+    features:
+    - phi
+    - pt
+  MUON:
+    count: 1
+    features:
+    - e
+    - eta
+    - phi
+    - pt
+    - charge
+  transforms:
+    btag:
+    - minmax
+    - 0
+    - 1
+    charge:
+    - minmax
+    - -1
+    - 1
+    e: log
+    eta:
+    - minmax
+    - -3.0
+    - 3.0
+    nBJets_65:
+    - minmax
+    - 0
+    - 8
+    nBJets_70:
+    - minmax
+    - 0
+    - 8
+    nBJets_77:
+    - minmax
+    - 0
+    - 8
+    nBJets_85:
+    - minmax
+    - 0
+    - 8
+    nBJets_90:
+    - minmax
+    - 0
+    - 8
+    nelectron:
+    - minmax
+    - 0
+    - 2
+    njet:
+    - minmax
+    - 0
+    - 8
+    nmuon:
+    - minmax
+    - 0
+    - 2
+    phi: sincos
+    pt: log
+model:
+  assignment:
+    formulation: discriminative
+  encoder:
+    hidden:
+      multivector_channels: 2
+      scalar_channels: 16
+    layers: 1
+    momentum_scale_gev: 100.0
+    n_heads: 2
+    symmetry_breaking:
+      beam: xyplane
+      time: true
+    type: lgatr
+  heads:
+    parent_four_vector:
+      enabled: false
+    partonic:
+      enabled: true
+      target_path: /net/scratch/w00238tl/JointEventReconstruction_KNOT/results/experiments/knot/development/parents.h5
+      targets:
+      - role: top_e
+        truth_binding: synthetic_hard_process_top_e
+      - role: top_mu
+        truth_binding: synthetic_hard_process_top_mu
+    point_invisible:
+      enabled: false
+  invisible:
+    conditioning:
+      assignment: none
+    coordinates:
+      type: met_residual
+    generator:
+      network:
+        d_feedforward: 64
+        d_model: 32
+        dropout: 0.0
+        layers: 1
+        n_heads: 2
+        zero_init_output: true
+      type: cfm
+    mass_shell:
+      enforcement: exact
+      mass:
+        mode: fixed
+        parameterization: null
+        value: 0.0
+      roles: {}
+  latent:
+    d_feedforward: 64
+    d_model: 32
+    dropout: 0.0
+    n_heads: 2
+  mode: factorized
+  topology_queries:
+    dropout: 0.0
+    enabled: true
+    interaction: full
+    layers: 1
+    n_heads: 2
+    relations:
+    - - top_e
+      - ttbar
+    - - top_mu
+      - ttbar
+    roles:
+    - kind: parent
+      name: top_e
+      node: top_e
+      related:
+      - ttbar
+    - kind: parent
+      name: top_mu
+      node: top_mu
+      related:
+      - ttbar
+    - kind: global
+      name: ttbar
+      node: null
+      related:
+      - top_e
+      - top_mu
+topology: configs/topology/ttbar2L.yaml
+training:
+  batch_size: 4
+  epochs: 1
+  learning_rate: 0.001
+  loss_weights:
+    assignment: 1.0
+    invisible: 0.0
+    partonic: 0.0
+  output: /net/scratch/w00238tl/JointEventReconstruction_KNOT/results/experiments/knot/development/training
+  partonic_shared_encoder_gradients: both
+  precision: 32-true
+  shared_encoder_gradients: both
+  trainable:
+  - visible
+  - assignment
+  - invisible
+  - queries
+  - partonic
+  weight_decay: 0.0
+  workers: 0

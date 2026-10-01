@@ -425,6 +425,7 @@ class PartonicCFM(nn.Module):
         dropout: float,
         *,
         scaler,
+        roles: tuple[str, str] | None = None,
         conditioning: str = "P0",
         use_topology_queries: bool = True,
         velocity_backbone: str = "conventional",
@@ -433,6 +434,9 @@ class PartonicCFM(nn.Module):
         super().__init__()
         if conditioning not in self.MODE_CONDITION_COUNTS:
             raise ValueError(f"Partonic CFM conditioning must be P0, P1 or P2, found {conditioning!r}")
+        self.ROLES = tuple(roles) if roles is not None else type(self).ROLES
+        if len(self.ROLES) != 2 or len(set(self.ROLES)) != 2:
+            raise ValueError("Maintained parent CFM currently requires exactly two distinct configured parent roles")
         if scaler is None or tuple(scaler.role_names) != self.ROLES:
             raise ValueError("Partonic CFM requires a train-fitted scaler ordered as (top, antitop)")
         self.scaler = scaler

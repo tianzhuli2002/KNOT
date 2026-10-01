@@ -1,0 +1,9 @@
+variant: J
+training_conditioning: truth
+steps: 2
+solver: euler
+loss_weights:
+  assignment: 1.0
+  invisible: 0.0
+  parent: 0.0
+  joint: 1.0

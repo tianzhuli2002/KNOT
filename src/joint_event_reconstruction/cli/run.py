@@ -120,7 +120,7 @@ def _load_repo_script(relative_path: str, module_name: str):
     return module
 
 
-def build_data(config, visible, *, include_truth: bool = True, device: str | None = None):
+def build_data(config, visible, *, include_truth: bool = True, device: str | None = None, complete_assignments: bool = False):
     from joint_event_reconstruction.data.structured import StructuredDataModule
 
     visible_data = OmegaConf.create(OmegaConf.to_container(visible, resolve=True))
@@ -146,7 +146,8 @@ def build_data(config, visible, *, include_truth: bool = True, device: str | Non
     if include_truth and config.model.invisible.enabled and invisible.path is None:
         raise ValueError("Invisible inference is enabled but the data config has no invisible_truth")
     build_assignments = (
-        str(config.model.mode) == "joint_flow"
+        complete_assignments
+        or str(config.model.mode) == "joint_flow"
         or str(config.model.assignment.formulation) == "flow_matching"
         or (
             bool(config.model.parent_cfm.enabled)
