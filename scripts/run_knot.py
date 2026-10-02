@@ -1,6 +1,7 @@
 """Bounded KNOT CPU train/predict using JER YAML, data and Lightning checkpoints."""
 
 import argparse
+import copy
 import json
 import subprocess
 from pathlib import Path
@@ -9,12 +10,13 @@ import h5py
 import lightning as L
 import numpy as np
 import torch
+from omegaconf import OmegaConf
+
 from joint_event_reconstruction.cli.run import build_data, load_visible_config
 from joint_event_reconstruction.configuration import load_experiment
 from joint_event_reconstruction.data.invisible import InvisibleScaler
 from joint_event_reconstruction.data.partonic import PartonicScaler
 from joint_event_reconstruction.knot import KnotModule
-from omegaconf import OmegaConf
 
 
 def main():
@@ -24,13 +26,18 @@ def main():
     parser.add_argument("--research", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--checkpoint")
-    parser.add_argument("--steps", type=int, default=2)
+    parser.add_argument(
+        "--steps",
+        type=int,
+        help="Optional bounded optimizer-step cap; otherwise use training.epochs",
+    )
+    parser.add_argument("--accelerator", choices=("cpu", "gpu"), default="cpu")
     parser.add_argument("--samples", type=int, default=3)
     parser.add_argument("--batches", type=int, default=2)
     args = parser.parse_args()
     torch.set_num_threads(1)
-    if args.steps <= 0 or args.batches <= 0:
-        parser.error("Positive bounded steps/batches required")
+    if (args.steps is not None and args.steps <= 0) or args.batches <= 0:
+        parser.error("Positive steps/batches required")
     root = Path(__file__).resolve().parents[1]
     output = Path(args.output).resolve()
     if not output.is_relative_to(root / "results/experiments/knot"):
@@ -38,6 +45,12 @@ def main():
     output.mkdir(parents=True, exist_ok=False)
     config = load_experiment(args.config)
     research = OmegaConf.to_container(OmegaConf.load(args.research), resolve=True)
+    # The parent CFM flag tells build_data to load and scale parent truth. KNOT
+    # owns its P0/P2/J continuous generator, so its base EventModel must not
+    # also construct the separate standalone parent CFM.
+    knot_config = copy.deepcopy(config)
+    if knot_config.model.get("parent_cfm") is not None:
+        knot_config.model.parent_cfm.enabled = False
     torch.manual_seed(int(config.experiment.seed))
     visible = load_visible_config(config)
     # Development runner deliberately accepts train/validation-only inputs.
@@ -53,8 +66,9 @@ def main():
     if args.action == "train":
         data = build_data(config, visible, device="cpu", complete_assignments=True)
         data.setup("fit")
+        torch.manual_seed(int(config.experiment.seed))
         module = KnotModule(
-            config,
+            knot_config,
             visible,
             research=research,
             invisible_scaler=data.invisible_scaler,
@@ -62,25 +76,32 @@ def main():
             synthetic_data=data.structured_collator.invisible_store.synthetic,
         )
         trainer = L.Trainer(
-            accelerator="cpu",
+            accelerator=args.accelerator,
             devices=1,
-            max_steps=args.steps,
-            max_epochs=args.steps,
-            limit_val_batches=0,
+            max_steps=args.steps if args.steps is not None else -1,
+            max_epochs=args.steps if args.steps is not None else int(config.training.epochs),
+            precision=str(config.training.precision),
             num_sanity_val_steps=0,
             logger=False,
             enable_checkpointing=False,
             enable_progress_bar=False,
             default_root_dir=output,
         )
-        trainer.fit(module, train_dataloaders=data.train_dataloader())
+        # Reset after model initialization so M/C/J start with the same
+        # shuffled training order under their common experiment seed.
+        torch.manual_seed(int(config.experiment.seed))
+        trainer.fit(
+            module,
+            train_dataloaders=data.train_dataloader(),
+            val_dataloaders=data.val_dataloader(),
+        )
         trainer.save_checkpoint(output / "model.ckpt")
     else:
         if not args.checkpoint:
             parser.error("--checkpoint required for prediction")
         saved = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
         module = KnotModule(
-            config,
+            knot_config,
             visible,
             research=research,
             invisible_scaler=InvisibleScaler.from_dict(saved["invisible_scaler"]),
@@ -120,6 +141,8 @@ def main():
                 "input": input_path,
                 "action": args.action,
                 "bounded_steps": args.steps,
+                "configured_epochs": int(config.training.epochs),
+                "accelerator": args.accelerator,
                 "sealed_test_used": False,
             },
             indent=2,

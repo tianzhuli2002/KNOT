@@ -189,10 +189,20 @@ class KnotModule(JointEventModule):
         ):
             raise ValueError("Disable unused parent/direct objectives in KNOT")
         scaler = kwargs["partonic_scaler"]
+        # KNOT owns the parent flow even though it disables the standalone
+        # parent-CFM head inherited from JointEventModule.  Persist the scaler
+        # explicitly so checkpoints can be reconstructed and validated.
+        if scaler is None:
+            raise ValueError("KNOT requires a train-fitted partonic scaler")
+        self.partonic_scaler_metadata = scaler.as_dict()
         self.parent_roles = tuple(scaler.role_names)
-        if self.parent_roles != tuple(base.spec.roots):
+        if len(self.parent_roles) != len(base.spec.roots) or set(
+            self.parent_roles
+        ) != set(base.spec.roots):
             raise ValueError(
-                f"Configure precisely the compiled parent roots, avoiding redundant pair targets: {base.spec.roots}"
+                "Configure precisely the compiled parent roots, avoiding "
+                f"redundant pair targets: topology={base.spec.roots}, "
+                f"scaler={self.parent_roles}"
             )
         self.invisible_roles = tuple(r.key for r in base.spec.invisible_roles)
         if self.variant == "C":
