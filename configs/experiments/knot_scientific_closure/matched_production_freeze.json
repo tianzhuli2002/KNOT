@@ -1,0 +1,140 @@
+{
+  "source_commit": "57a078b265f8db42b19986c0efa96526607ca1a2",
+  "closure_branch_commit": "0f5915817b342d4f33bea0cfb1847db5dd8bdef3",
+  "data": {
+    "measured_input": "/net/scratch/w00238tl/JointEventReconstruction_topology_queries/results/experiments/partonic_ttbar2L_2M_realnu_v1/adapted/train_validation/partonic_ttbar2l_train_validation_maxjets8_v1_measured.h5",
+    "authoritative_supervision": "/net/scratch/w00238tl/JointEventReconstruction_topology_queries/results/experiments/partonic_ttbar2L_2M_realnu_v1/adapted/train_validation_authoritative_20260926/partonic_ttbar2l_train_validation_maxjets8_v1_supervision.h5",
+    "shared_measured_cache": "/net/scratch/w00238tl/JointEventReconstruction_topology_queries/results/experiments/partonic_ttbar2L_2M_realnu_v1/cache/train_validation_measured_maxjets8_v1.pt",
+    "source_file_sha256": "75e895c0c9ce3984d4c925fa6f850748258e7b1d0e007a757f74cbeaa9cf9196",
+    "source_manifest_sha256": "5f4d44cad0b6f8857ebb2a4094d40e3901459c5648cb7464cb9af42279502601",
+    "split_membership_sha256": "260af7bda73383dc2d5d5adf95f628e71f081642964ea7b875746d7d08225374",
+    "train": {
+      "events": 1799753,
+      "event_id_membership_sha256_sorted_little_endian_int64": "7d63f66f5edb08296388e05c4ba90c3a293608493b9a81c24331b9c9aeb6f5b2"
+    },
+    "validation": {
+      "events": 100342,
+      "event_id_membership_sha256_sorted_little_endian_int64": "7a1f2932974fb0ecde1fc94e72fe1c76b76fa870e294d41859feafd02e9d2bcd"
+    },
+    "split_rule": "SplitMix64(EVENT_ID XOR 20260924) mod 100: train 0-89, validation 90-94, reserved test 95-99",
+    "reserved_test_materialized": false,
+    "sealed_test_used": false,
+    "neutrino_role_order": [
+      "top.nu",
+      "antitop.nu"
+    ],
+    "parent_role_order": [
+      "top",
+      "antitop"
+    ]
+  },
+  "configs": {
+    "M": {
+      "experiment": "configs/experiments/knot_scientific_closure/knot_m_production.public.yaml",
+      "research": "configs/research/knot_m_production.yaml"
+    },
+    "C": {
+      "experiment": "configs/experiments/knot_scientific_closure/knot_c_production.public.yaml",
+      "research": "configs/research/knot_c_production.yaml"
+    },
+    "J": {
+      "experiment": "configs/experiments/knot_scientific_closure/knot_j_production.public.yaml",
+      "research": "configs/research/knot_j_production.yaml"
+    }
+  },
+  "training": {
+    "training_conditioning": {
+      "M": "supervised q(A|x); N and P marginal losses use x only and do not condition on A",
+      "C": "q(N|A_truth,x) and q(P|A_truth,N_truth,x) during training; coherent ancestral prediction",
+      "J": "q(N,P|A_truth,x) joint continuous loss; joint prediction under sampled A"
+    },
+    "common": {
+      "batch_size": 512,
+      "epochs": 20,
+      "max_optimizer_steps": null,
+      "stopping_policy": "fixed 20 epochs; early stopping disabled",
+      "precision": "bf16-mixed",
+      "optimizer": "AdamW",
+      "learning_rate": 0.000361545,
+      "weight_decay": 6.0735294e-05,
+      "fused_adamw_requested": true,
+      "gradient_clip": 1.0,
+      "gradient_accumulation_steps": 1,
+      "scheduler": {
+        "type": "ReduceLROnPlateau",
+        "factor": 0.8,
+        "patience": 8,
+        "minimum_learning_rate": 1e-06
+      },
+      "workers": 8,
+      "data_loader": {
+        "pin_memory": true,
+        "persistent_workers": true,
+        "prefetch_factor": 2
+      },
+      "measured_inputs_scalers_and_preprocessing": "same shared production cache and same full train membership for M/C/J",
+      "inference_flow_steps": 8,
+      "inference_solver": "heun"
+    },
+    "shared_initialization": {
+      "seed": 42011,
+      "parameter_tensor_sha256": "cfdcc0614f72a10fd2514c5797ed8e82db219860caa6bed1bf726630ea9a5401",
+      "identical_across_M_C_J": true,
+      "components": {
+        "measured_encoder_and_shared_projections": "aa6cdb052f7f4c04aa1c2c91bce92142e5eae3ec91df5147881a0e4b8ee97c5c",
+        "topology_queries": "ea029ae7e9ff7af470097d3a1a1e6ebdf646f68b0b70814557abab8923c11023",
+        "assignment": "3d54355ae0357f677665917961acc3c22d4dd3f20cf7dbd3d44057608b5e0152"
+      },
+      "hash_population_note": "Production architecture initialized with deterministic seed 42011; tensor hashes cover parameters and are independent of non-parameter scaler buffers."
+    },
+    "variant_initialization_seeds": {
+      "M": 42011,
+      "C": 42011,
+      "J": 42011
+    },
+    "parameter_counts": {
+      "M": {
+        "total": 2775317,
+        "shared": 1169028,
+        "variant_specific": 1606289
+      },
+      "C": {
+        "total": 2775317,
+        "shared": 1169028,
+        "variant_specific": 1606289
+      },
+      "J": {
+        "total": 2954891,
+        "shared": 1169028,
+        "variant_specific": 1785863
+      }
+    },
+    "capacity_matching_note": "If production later shows a scientifically meaningful difference and parameter counts differ substantially, capacity matching becomes a follow-up control."
+  },
+  "posterior_sampling": {
+    "samples_per_event": 32,
+    "random_seed": 42011,
+    "assignment_sampling": "categorical with replacement for each event and posterior sample",
+    "continuous_policy": {
+      "steps": 8,
+      "solver": "heun"
+    },
+    "M": "independent N and P marginal draws; sample slots do not encode dependence",
+    "C": "ancestral A then N|A,x then P|A,N,x within the same sample index",
+    "J": "one joint (N,P) draw conditioned on the same sampled A"
+  },
+  "model_native_assignment_support": {
+    "train_validation_events_checked": 1900095,
+    "truth_assignment_supported": 1899839,
+    "truth_assignment_unsupported": 256,
+    "fraction": 0.9998652698944,
+    "unsupported_causes": {
+      "candidate_truncation": 256,
+      "missing_truth_role": 0,
+      "feasibility_topology_exclusion": 0,
+      "jet_multiplicity_candidate_availability": 0,
+      "other": 0
+    }
+  },
+  "production_jobs_submitted": false
+}

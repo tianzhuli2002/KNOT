@@ -1,0 +1,9 @@
+variant: C
+training_conditioning: truth
+steps: 8
+solver: heun
+loss_weights:
+  assignment: 1.0
+  invisible: 1.0
+  parent: 1.0
+  joint: 0.0
