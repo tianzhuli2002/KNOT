@@ -222,7 +222,8 @@ class StructuredCollator:
         raw = batch.get("reco_raw_labels")
         self._validate_static_layout(type_ids)
         visible_assignment_support = None
-        if raw is None and self.visible_store is not None:
+        # An explicit authoritative sidecar takes precedence over cached labels.
+        if self.visible_store is not None:
             source_labels, visible_assignment_support = self.visible_store.lookup(
                 batch["event_index"]
             )
@@ -342,6 +343,7 @@ class StructuredCollator:
                     f"truth={self.visible_store.path}"
                 )
             batch["visible_assignment_support"] = observed_support
+            structured["objective_support"] = observed_support
         if self._assignment_template is not None:
             structured["assignments"] = self._assignment_template.batch(pools)
         batch["structured"] = structured
@@ -460,7 +462,7 @@ class StructuredCachedDataset(Dataset):
         position = int(self.positions[item])
         result = {
             "tokens": self.payload["tokens"][position],
-            "type_ids": self.payload["type_ids"][position],
+            "type_ids": self.payload["type_ids"][position].long(),
             "padding_mask": self.payload["padding_mask"][position],
             "labels": self.payload["labels"][position],
             "event_index": self.payload.get("event_id", self.payload["indices"])[position],
@@ -476,7 +478,7 @@ class StructuredCachedDataset(Dataset):
             self.positions[np.asarray(items, dtype=np.int64)], dtype=torch.long
         )
         event_source = self.payload.get("event_id", self.payload["indices"])
-        type_ids = self.payload["type_ids"].index_select(0, positions)
+        type_ids = self.payload["type_ids"].index_select(0, positions).long()
         result = {
             "tokens": self.payload["tokens"].index_select(0, positions),
             "type_ids": type_ids,

@@ -1,0 +1,9 @@
+{
+  "optimizer_steps": 600,
+  "batch_size": 128,
+  "posterior_samples": 16,
+  "prediction_events": 1024,
+  "expected_training_seconds": 3415.9063164582476,
+  "benchmark_steps_per_model": 50,
+  "reason": "50-step M/C/J benchmarks: matched 600-step budget, approximately 57 minutes training; reserve diagnostics time"
+}

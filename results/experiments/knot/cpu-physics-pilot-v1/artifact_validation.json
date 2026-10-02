@@ -1,0 +1,8 @@
+{
+  "M_C_J_same_EVENT_IDs": true,
+  "common_initialization_matches_frozen": true,
+  "600_finite_steps_each": true,
+  "best_and_final_checkpoints_present": true,
+  "spin_arrays_finite_and_match_metrics": true,
+  "sealed_test_used": false
+}

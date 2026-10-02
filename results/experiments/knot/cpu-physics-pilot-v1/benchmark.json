@@ -1,0 +1,65 @@
+{
+  "M": {
+    "wall_seconds": 96.18474668683484,
+    "seconds_per_step": 1.9236949337366969,
+    "steps_per_second": 0.5198329436037666,
+    "events_per_second": 66.53861678128213,
+    "peak_RSS_MiB": 5038.34765625,
+    "initialization": {
+      "shared_initialization_hash": "cfdcc0614f72a10fd2514c5797ed8e82db219860caa6bed1bf726630ea9a5401",
+      "shared_component_hashes": {
+        "visible": "aa6cdb052f7f4c04aa1c2c91bce92142e5eae3ec91df5147881a0e4b8ee97c5c",
+        "topology_queries": "ea029ae7e9ff7af470097d3a1a1e6ebdf646f68b0b70814557abab8923c11023",
+        "reconstruction": "3d54355ae0357f677665917961acc3c22d4dd3f20cf7dbd3d44057608b5e0152"
+      },
+      "total_parameters": 2775317,
+      "shared_parameters": 1169028,
+      "variant_specific_parameters": 1606289,
+      "variant_initialization_seed": 42011
+    },
+    "optimizer_steps": 50,
+    "batch_size": 128
+  },
+  "C": {
+    "wall_seconds": 95.59912241902202,
+    "seconds_per_step": 1.9119824483804404,
+    "steps_per_second": 0.5230173534527254,
+    "events_per_second": 66.94622124194885,
+    "peak_RSS_MiB": 5038.34765625,
+    "initialization": {
+      "shared_initialization_hash": "cfdcc0614f72a10fd2514c5797ed8e82db219860caa6bed1bf726630ea9a5401",
+      "shared_component_hashes": {
+        "visible": "aa6cdb052f7f4c04aa1c2c91bce92142e5eae3ec91df5147881a0e4b8ee97c5c",
+        "topology_queries": "ea029ae7e9ff7af470097d3a1a1e6ebdf646f68b0b70814557abab8923c11023",
+        "reconstruction": "3d54355ae0357f677665917961acc3c22d4dd3f20cf7dbd3d44057608b5e0152"
+      },
+      "total_parameters": 2775317,
+      "shared_parameters": 1169028,
+      "variant_specific_parameters": 1606289,
+      "variant_initialization_seed": 42011
+    },
+    "optimizer_steps": 50,
+    "batch_size": 128
+  },
+  "J": {
+    "wall_seconds": 92.8749905989971,
+    "seconds_per_step": 1.857499811979942,
+    "steps_per_second": 0.5383580625691059,
+    "events_per_second": 68.90983200884556,
+    "peak_RSS_MiB": 5038.34765625,
+    "initialization": {
+      "shared_initialization_hash": "cfdcc0614f72a10fd2514c5797ed8e82db219860caa6bed1bf726630ea9a5401",
+      "shared_component_hashes": {
+        "visible": "aa6cdb052f7f4c04aa1c2c91bce92142e5eae3ec91df5147881a0e4b8ee97c5c",
+        "topology_queries": "ea029ae7e9ff7af470097d3a1a1e6ebdf646f68b0b70814557abab8923c11023",
+        "reconstruction": "3d54355ae0357f677665917961acc3c22d4dd3f20cf7dbd3d44057608b5e0152"
+      },
+      "total_parameters": 2954891,
+      "shared_parameters": 1169028,
+      "variant_specific_parameters": 1785863,
+      "variant_initialization_seed": 42011
+    },
+    "optimizer_steps": 50,
+    "batch_size": 128
+  }
+}

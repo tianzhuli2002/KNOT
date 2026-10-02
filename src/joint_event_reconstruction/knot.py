@@ -44,6 +44,7 @@ class EventPosterior:
     invisible_support: torch.Tensor
     parent_support: torch.Tensor
     factorisation: str
+    assignment_log_probability: torch.Tensor | None = None
 
     def validate(self):
         b, m = self.sample_index.shape
@@ -79,6 +80,14 @@ class EventPosterior:
         ):
             if mask.dtype != torch.bool or mask.shape != (b, m, len(roles)):
                 raise ValueError(f"Invalid posterior support for {roles}")
+        if self.assignment_log_probability is not None and (
+            self.assignment_log_probability.shape != (b, m)
+            or not torch.isfinite(self.assignment_log_probability).all()
+            or (self.assignment_log_probability > 1e-6).any()
+        ):
+            raise ValueError(
+                "Sampled assignment log probabilities must be finite [event,sample] and <=0"
+            )
         return self
 
     def write(self, path):
@@ -105,6 +114,16 @@ class EventPosterior:
                 f.attrs[name] = json.dumps(getattr(self, name))
             f.attrs["topology_identity"] = self.topology_identity
             f.attrs["factorisation"] = self.factorisation
+            f.attrs["posterior_semantics"] = {
+                "M": "marginal",
+                "C": "ancestral",
+                "J": "joint",
+            }[self.factorisation]
+            if self.assignment_log_probability is not None:
+                f.create_dataset(
+                    "assignment_log_probability",
+                    data=self.assignment_log_probability.cpu().numpy(),
+                )
             f.attrs["sample_semantics"] = (
                 "independent_marginals"
                 if self.factorisation == "M"
@@ -196,9 +215,12 @@ class KnotModule(JointEventModule):
             raise ValueError("KNOT requires a train-fitted partonic scaler")
         self.partonic_scaler_metadata = scaler.as_dict()
         self.parent_roles = tuple(scaler.role_names)
-        if len(self.parent_roles) != len(base.spec.roots) or set(
-            self.parent_roles
-        ) != set(base.spec.roots):
+        # Compiled roots are sorted names, not a tensor-axis convention.
+        # Parent query order is the maintained tensor order throughout KNOT.
+        query_roles = tuple(base.topology_queries.parent_role_names)
+        if self.parent_roles != query_roles or sorted(self.parent_roles) != sorted(
+            base.spec.roots
+        ):
             raise ValueError(
                 "Configure precisely the compiled parent roots, avoiding "
                 f"redundant pair targets: topology={base.spec.roots}, "
@@ -522,7 +544,7 @@ class KnotModule(JointEventModule):
         return output
 
     @torch.no_grad()
-    def posterior(self, batch, *, samples, generator=None):
+    def posterior(self, batch, *, samples, generator=None, oracle=None):
         if samples <= 0:
             raise ValueError("Positive posterior count required")
         # One encoder call, before expansion; no encoder calls inside either ODE.
@@ -534,21 +556,42 @@ class KnotModule(JointEventModule):
             replacement=True,
             generator=generator,
         )
+        if oracle is not None:
+            if self.variant != "C" or oracle not in {
+                "truth_assignment_truth_neutrino",
+                "predicted_assignment_truth_neutrino",
+            }:
+                raise ValueError("Parent oracle endpoints are defined only for KNOT-C")
+            if oracle == "truth_assignment_truth_neutrino":
+                states = space.truth_state[:, None].expand(-1, samples)
         b, m = states.shape
         repeated = self.repeat_visible(visible, m)
         invisible = self.event_model.invisible
         ncontext = self.invisible_context(result, space, states, visible).flatten(0, 1)
         memory, mask = invisible.visible_context(repeated)
         if self.variant != "J":
-            n, _ = invisible.sample(
-                repeated,
-                ncontext,
-                samples=1,
-                budget=int(self.research["steps"]),
-                sampler=self.research["solver"],
-                generator=generator,
-            )
-            n = n[:, 0].reshape(b, m, *n.shape[2:])
+            if oracle is None:
+                n, _ = invisible.sample(
+                    repeated,
+                    ncontext,
+                    samples=1,
+                    budget=int(self.research["steps"]),
+                    sampler=self.research["solver"],
+                    generator=generator,
+                )
+                n = n[:, 0].reshape(b, m, *n.shape[2:])
+            else:
+                # Consume the same Gaussian source draw as deployed C, keeping
+                # parent noise matched without integrating an unused N flow.
+                torch.randn(
+                    (b * m, ncontext.shape[1], invisible.coordinates.state_dim),
+                    dtype=memory.dtype,
+                    device=memory.device,
+                    generator=generator,
+                )
+                n = batch["invisible_truth_scaled"][:, None].expand(
+                    -1, samples, *batch["invisible_truth_scaled"].shape[1:]
+                )
             neutrino = invisible.decode_state(n, batch["met_xy"], invisible.scaler)
         else:
             neutrino = None
@@ -599,4 +642,7 @@ class KnotModule(JointEventModule):
                 (b, m, len(self.parent_roles)), dtype=torch.bool, device=states.device
             ),
             self.variant,
+            space.state_probabilities(result["assignment_logits"])
+            .gather(1, states)
+            .log(),
         ).validate()

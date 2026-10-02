@@ -1,0 +1,265 @@
+{
+  "source_config": "/net/scratch/w00238tl/JointEventReconstruction_KNOT/configs/experiments/knot_scientific_closure",
+  "sample": "existing 144-event train/validation adaptation; no test rows",
+  "optimizer_steps_per_variant": 2,
+  "posterior_sample_policy": "4 coherent samples per validation event; ancestral for C and joint for J",
+  "shared_initialization_hash": "e3fe7026f8d4eedda1481330d85e0e3af25eeaf97f78e2dea837b9abddfb51f5",
+  "parameter_counts": {
+    "M": {
+      "shared_initialization_hash": "e3fe7026f8d4eedda1481330d85e0e3af25eeaf97f78e2dea837b9abddfb51f5",
+      "shared_component_hashes": {
+        "visible": "9254f8efcbc8a8ddd90faa66547d1cd233a93daa0c8105dd756727fade1871b0",
+        "topology_queries": "de7c14014b592b69575241db857794fe8711fb3fc50d69c54b1e4be0a543940e",
+        "reconstruction": "1b1692ef0077d1b359fd9cebb3d6829061a0ebe77d32a6415c6b775c82b09376"
+      },
+      "total_parameters": 77033,
+      "shared_parameters": 40760,
+      "variant_specific_parameters": 36273,
+      "variant_initialization_seed": 20261002
+    },
+    "C": {
+      "shared_initialization_hash": "e3fe7026f8d4eedda1481330d85e0e3af25eeaf97f78e2dea837b9abddfb51f5",
+      "shared_component_hashes": {
+        "visible": "9254f8efcbc8a8ddd90faa66547d1cd233a93daa0c8105dd756727fade1871b0",
+        "topology_queries": "de7c14014b592b69575241db857794fe8711fb3fc50d69c54b1e4be0a543940e",
+        "reconstruction": "1b1692ef0077d1b359fd9cebb3d6829061a0ebe77d32a6415c6b775c82b09376"
+      },
+      "total_parameters": 77033,
+      "shared_parameters": 40760,
+      "variant_specific_parameters": 36273,
+      "variant_initialization_seed": 20261002
+    },
+    "J": {
+      "shared_initialization_hash": "e3fe7026f8d4eedda1481330d85e0e3af25eeaf97f78e2dea837b9abddfb51f5",
+      "shared_component_hashes": {
+        "visible": "9254f8efcbc8a8ddd90faa66547d1cd233a93daa0c8105dd756727fade1871b0",
+        "topology_queries": "de7c14014b592b69575241db857794fe8711fb3fc50d69c54b1e4be0a543940e",
+        "reconstruction": "1b1692ef0077d1b359fd9cebb3d6829061a0ebe77d32a6415c6b775c82b09376"
+      },
+      "total_parameters": 88127,
+      "shared_parameters": 40760,
+      "variant_specific_parameters": 47367,
+      "variant_initialization_seed": 20261002
+    }
+  },
+  "variants": {
+    "M": {
+      "train_events_seen": 4,
+      "train_population_events": 96,
+      "validation_events_seen": 4,
+      "validation_population_events": 48,
+      "training_loss_finite": true,
+      "training_component_losses": {
+        "assignment_loss": 2.0292556285858154,
+        "invisible_loss": 2.7130470275878906,
+        "partonic_cfm_loss": 1.8218131065368652
+      },
+      "intended_gradients_finite_nonzero": {
+        "visible": 0.6118104457855225,
+        "queries": 0.6614522933959961,
+        "assignment": 0.3640822172164917,
+        "continuous": 3.8778631687164307,
+        "invisible": 4.32871150970459
+      },
+      "checkpoint_saved_reloaded": true,
+      "validation_component_losses": {
+        "assignment_loss": 1.9724433422088623,
+        "invisible_loss": 1.1882137060165405,
+        "partonic_cfm_loss": 1.9084019660949707
+      },
+      "posterior_prediction_finite": true,
+      "posterior_samples": 4,
+      "posterior_shape": [
+        4,
+        4,
+        2,
+        4
+      ],
+      "initialization": {
+        "shared_initialization_hash": "e3fe7026f8d4eedda1481330d85e0e3af25eeaf97f78e2dea837b9abddfb51f5",
+        "shared_component_hashes": {
+          "visible": "9254f8efcbc8a8ddd90faa66547d1cd233a93daa0c8105dd756727fade1871b0",
+          "topology_queries": "de7c14014b592b69575241db857794fe8711fb3fc50d69c54b1e4be0a543940e",
+          "reconstruction": "1b1692ef0077d1b359fd9cebb3d6829061a0ebe77d32a6415c6b775c82b09376"
+        },
+        "total_parameters": 77033,
+        "shared_parameters": 40760,
+        "variant_specific_parameters": 36273,
+        "variant_initialization_seed": 20261002
+      },
+      "truth_independent_prediction": true,
+      "joint_evaluator": {
+        "coherent_marginals": {
+          "N_pz_mean": -12.715593338012695,
+          "N_pz_variance": 7146.1328125,
+          "P_top_pz_mean": -37.720863342285156,
+          "P_top_pz_variance": 118812.9453125
+        },
+        "shuffled_marginals": {
+          "N_pz_mean": -12.715593338012695,
+          "N_pz_variance": 7146.1328125,
+          "P_top_pz_mean": -37.720855712890625,
+          "P_top_pz_variance": 118812.9375
+        },
+        "marginal_max_absolute_change": 0.0078125,
+        "coherent_joint": {
+          "mean_conditional_covariance": 4742.033203125,
+          "mean_conditional_correlation": 0.20133456587791443
+        },
+        "shuffled_joint": {
+          "mean_conditional_covariance": 695.48193359375,
+          "mean_conditional_correlation": -0.23942780494689941
+        }
+      },
+      "oracle": null,
+      "sealed_test_used": false
+    },
+    "C": {
+      "train_events_seen": 4,
+      "train_population_events": 96,
+      "validation_events_seen": 4,
+      "validation_population_events": 48,
+      "training_loss_finite": true,
+      "training_component_losses": {
+        "assignment_loss": 1.9674649238586426,
+        "invisible_loss": 2.8314616680145264,
+        "partonic_cfm_loss": 3.619846820831299
+      },
+      "intended_gradients_finite_nonzero": {
+        "visible": 1.7245556116104126,
+        "queries": 0.9493807554244995,
+        "assignment": 0.70554518699646,
+        "continuous": 5.780638217926025,
+        "invisible": 3.219970941543579
+      },
+      "checkpoint_saved_reloaded": true,
+      "validation_component_losses": {
+        "assignment_loss": 1.9760324954986572,
+        "invisible_loss": 1.1953669786453247,
+        "partonic_cfm_loss": 1.878394365310669
+      },
+      "posterior_prediction_finite": true,
+      "posterior_samples": 4,
+      "posterior_shape": [
+        4,
+        4,
+        2,
+        4
+      ],
+      "initialization": {
+        "shared_initialization_hash": "e3fe7026f8d4eedda1481330d85e0e3af25eeaf97f78e2dea837b9abddfb51f5",
+        "shared_component_hashes": {
+          "visible": "9254f8efcbc8a8ddd90faa66547d1cd233a93daa0c8105dd756727fade1871b0",
+          "topology_queries": "de7c14014b592b69575241db857794fe8711fb3fc50d69c54b1e4be0a543940e",
+          "reconstruction": "1b1692ef0077d1b359fd9cebb3d6829061a0ebe77d32a6415c6b775c82b09376"
+        },
+        "total_parameters": 77033,
+        "shared_parameters": 40760,
+        "variant_specific_parameters": 36273,
+        "variant_initialization_seed": 20261002
+      },
+      "truth_independent_prediction": true,
+      "joint_evaluator": {
+        "coherent_marginals": {
+          "N_pz_mean": -15.239322662353516,
+          "N_pz_variance": 7112.693359375,
+          "P_top_pz_mean": -56.16204833984375,
+          "P_top_pz_variance": 120974.515625
+        },
+        "shuffled_marginals": {
+          "N_pz_mean": -15.239322662353516,
+          "N_pz_variance": 7112.693359375,
+          "P_top_pz_mean": -56.16204833984375,
+          "P_top_pz_variance": 120974.515625
+        },
+        "marginal_max_absolute_change": 0.0,
+        "coherent_joint": {
+          "mean_conditional_covariance": 4575.779296875,
+          "mean_conditional_correlation": 0.19264641404151917
+        },
+        "shuffled_joint": {
+          "mean_conditional_covariance": 727.97216796875,
+          "mean_conditional_correlation": -0.2482714205980301
+        }
+      },
+      "oracle": {
+        "N_given_A_truth_loss": 1.1953669786453247,
+        "N_given_A_pred_loss": 1.4727951288223267,
+        "P_given_A_truth_N_truth_loss": 1.878394365310669,
+        "P_given_A_pred_N_pred_loss": 1.7048497200012207,
+        "relative_N_context_loss_change": 0.23208617531948494,
+        "relative_P_context_loss_change": -0.09238988814829929
+      },
+      "sealed_test_used": false
+    },
+    "J": {
+      "train_events_seen": 4,
+      "train_population_events": 96,
+      "validation_events_seen": 4,
+      "validation_population_events": 48,
+      "training_loss_finite": true,
+      "training_component_losses": {
+        "assignment_loss": 1.9148037433624268,
+        "joint_loss": 3.225879192352295
+      },
+      "intended_gradients_finite_nonzero": {
+        "visible": 2.0283658504486084,
+        "queries": 3.7531614303588867,
+        "assignment": 1.955482840538025,
+        "continuous": 5.379494667053223
+      },
+      "checkpoint_saved_reloaded": true,
+      "validation_component_losses": {
+        "assignment_loss": 1.9874781370162964,
+        "joint_loss": 1.04383385181427
+      },
+      "posterior_prediction_finite": true,
+      "posterior_samples": 4,
+      "posterior_shape": [
+        4,
+        4,
+        2,
+        4
+      ],
+      "initialization": {
+        "shared_initialization_hash": "e3fe7026f8d4eedda1481330d85e0e3af25eeaf97f78e2dea837b9abddfb51f5",
+        "shared_component_hashes": {
+          "visible": "9254f8efcbc8a8ddd90faa66547d1cd233a93daa0c8105dd756727fade1871b0",
+          "topology_queries": "de7c14014b592b69575241db857794fe8711fb3fc50d69c54b1e4be0a543940e",
+          "reconstruction": "1b1692ef0077d1b359fd9cebb3d6829061a0ebe77d32a6415c6b775c82b09376"
+        },
+        "total_parameters": 88127,
+        "shared_parameters": 40760,
+        "variant_specific_parameters": 47367,
+        "variant_initialization_seed": 20261002
+      },
+      "truth_independent_prediction": true,
+      "joint_evaluator": {
+        "coherent_marginals": {
+          "N_pz_mean": -15.40352725982666,
+          "N_pz_variance": 5373.30517578125,
+          "P_top_pz_mean": 44.59931182861328,
+          "P_top_pz_variance": 143716.21875
+        },
+        "shuffled_marginals": {
+          "N_pz_mean": -15.40352725982666,
+          "N_pz_variance": 5373.30517578125,
+          "P_top_pz_mean": 44.59931945800781,
+          "P_top_pz_variance": 143716.234375
+        },
+        "marginal_max_absolute_change": 0.015625,
+        "coherent_joint": {
+          "mean_conditional_covariance": 887.2190551757812,
+          "mean_conditional_correlation": 0.22872920334339142
+        },
+        "shuffled_joint": {
+          "mean_conditional_covariance": 5938.3017578125,
+          "mean_conditional_correlation": 0.15703889727592468
+        }
+      },
+      "oracle": null,
+      "sealed_test_used": false
+    }
+  },
+  "sealed_test_used": false
+}

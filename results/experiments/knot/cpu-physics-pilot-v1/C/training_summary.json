@@ -1,0 +1,21 @@
+{
+  "wall_seconds": 1164.0285547040403,
+  "seconds_per_step": 1.9400475911734005,
+  "steps_per_second": 0.5154512727160313,
+  "events_per_second": 65.97776290765201,
+  "peak_RSS_MiB": 5043.76171875,
+  "initialization": {
+    "shared_initialization_hash": "cfdcc0614f72a10fd2514c5797ed8e82db219860caa6bed1bf726630ea9a5401",
+    "shared_component_hashes": {
+      "visible": "aa6cdb052f7f4c04aa1c2c91bce92142e5eae3ec91df5147881a0e4b8ee97c5c",
+      "topology_queries": "ea029ae7e9ff7af470097d3a1a1e6ebdf646f68b0b70814557abab8923c11023",
+      "reconstruction": "3d54355ae0357f677665917961acc3c22d4dd3f20cf7dbd3d44057608b5e0152"
+    },
+    "total_parameters": 2775317,
+    "shared_parameters": 1169028,
+    "variant_specific_parameters": 1606289,
+    "variant_initialization_seed": 42011
+  },
+  "optimizer_steps": 600,
+  "batch_size": 128
+}

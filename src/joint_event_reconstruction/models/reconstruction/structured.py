@@ -215,8 +215,14 @@ class StructuredReconstruction(nn.Module):
                 pool["truth_index"] + 1,
                 torch.zeros_like(pool["truth_index"]),
             )
-            node_losses[node_name] = F.cross_entropy(
-                logits[node_name], target
+            losses = F.cross_entropy(logits[node_name], target, reduction="none")
+            support = structured.get(
+                "objective_support", torch.ones_like(target, dtype=torch.bool)
+            )
+            if support.dtype != torch.bool or support.shape != target.shape:
+                raise ValueError(f"Invalid assignment objective support for node {node_name}")
+            node_losses[node_name] = (
+                losses[support].mean() if support.any() else losses.sum() * 0
             )
         return {
             "assignment_loss": torch.stack(tuple(node_losses.values())).mean(),

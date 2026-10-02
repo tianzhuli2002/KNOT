@@ -1,0 +1,47 @@
+{
+  "starting_commit": "92b42e8b995158a61046ee8e168261e226b763dc",
+  "outcome": "K1",
+  "recommendation": "KNOT_FULL_GPU_CAMPAIGN_WITH_EVALUATOR_UPDATE_ONLY",
+  "reason": "C/J have significant coherent N-P shuffle response and broadly comparable marginal reconstruction; use the common evaluator with the validated support-mask and ordered-role correctness fixes, preserving frozen production architectures/configs.",
+  "joint_energy_score_shuffle_increase_GeV": {
+    "M": {
+      "coherent_GeV": 108.95986938476562,
+      "shuffled_GeV": 109.02749633789062,
+      "shuffle_minus_coherent_GeV": 0.06762316823005676,
+      "paired_difference_SE_GeV": 0.12433503568172455
+    },
+    "C": {
+      "coherent_GeV": 96.99549865722656,
+      "shuffled_GeV": 97.46337890625,
+      "shuffle_minus_coherent_GeV": 0.4678800106048584,
+      "paired_difference_SE_GeV": 0.141207754611969
+    },
+    "J": {
+      "coherent_GeV": 93.34003448486328,
+      "shuffled_GeV": 95.21658325195312,
+      "shuffle_minus_coherent_GeV": 1.8765509128570557,
+      "paired_difference_SE_GeV": 0.1415719985961914
+    }
+  },
+  "oracle_interpretation": "No substantial upstream degradation at this training length. Small assignment effect; predicted-neutrino increment is negligible. Dominant degradation is not yet resolved at convergence.",
+  "spin_interpretation": "All reconstructed angles respond to top-antitop pairing; lab deltaPhi is invariant. Spin probes dependence within P, also available to M. Hybrid helicity distributions remain biased; no physical spin performance claim.",
+  "parameter_counts": {
+    "M": {
+      "total": 2775317,
+      "trainable": 2775317
+    },
+    "C": {
+      "total": 2775317,
+      "trainable": 2775317
+    },
+    "J": {
+      "total": 2954891,
+      "trainable": 1567240
+    }
+  },
+  "parameter_count_note": "J total includes a retained unused frozen invisible flow. Actual trainable parameters: M/C 2775317; J 1567240. No capacity matching; no expressivity inference.",
+  "historical_harmonized_baseline_value": "Useful later as a deterministic physical-composition control against learned parent marginals. Requires retraining/harmonized charge-side and after-FSR contracts; not a prerequisite for the frozen campaign.",
+  "sealed_test_used": false,
+  "gpu_slurm_jobs_submitted": 0,
+  "next_action": "Submit the frozen matched M/C/J GPU training campaign using this validated source and common posterior evaluator."
+}

@@ -1,0 +1,12 @@
+{
+  "truth_benchmark": "hybrid: authoritative truth parents with measured charge-ordered leptons; charged-lepton truth is absent",
+  "four_vectors": "E,px,py,pz GeV",
+  "charge_order": [
+    "positive lepton / top",
+    "negative lepton / antitop"
+  ],
+  "boost_sequence": "lab -> ttbar rest -> corresponding parent rest; canonical rotation-free boosts",
+  "helicity_axis": "own parent direction in ttbar rest, including own antitop direction without extra sign",
+  "opening_angle": "dot of both lepton unit directions in the common ttbar rest frame, before individual parent boosts",
+  "delta_phi_ll": "absolute wrapped lab azimuth difference, range [0,pi]"
+}

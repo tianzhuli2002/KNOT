@@ -1,0 +1,19 @@
+{
+  "python": "3.13.15",
+  "packages": {
+    "torch": "2.14.0+cu130",
+    "lightning": "2.6.6",
+    "numpy": "2.5.3",
+    "h5py": "3.16.0",
+    "lgatr": "2.0.0",
+    "scikit-learn": "1.9.1",
+    "scipy": "1.18.1",
+    "omegaconf": "2.3.1"
+  },
+  "CUDA_VISIBLE_DEVICES": "",
+  "torch_threads": 1,
+  "CPU_precision": "float32",
+  "optimizer": "unfused AdamW",
+  "validation_selection": "assignment CE + (6*N flow MSE + 8*P flow MSE)/14, or assignment CE + joint flow MSE",
+  "production_frozen_configs_changed": false
+}

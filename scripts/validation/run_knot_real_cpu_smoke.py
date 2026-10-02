@@ -142,9 +142,12 @@ def joint_evaluator(posterior, seed):
 
 
 def main():
+    global OUTPUT
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--variants", nargs="+", choices=("M", "C", "J"), default=("M", "C", "J"))
+    parser.add_argument("--output", type=Path, default=OUTPUT)
     args = parser.parse_args()
+    OUTPUT = args.output.resolve()
     if OUTPUT.exists():
         raise FileExistsError(f"Refusing to overwrite {OUTPUT}")
     OUTPUT.mkdir(parents=True)
@@ -155,6 +158,7 @@ def main():
         config_path = CONFIG_DIR / f"knot_{variant.lower()}_real_cpu.public.yaml"
         research_path = RESEARCH_DIR / f"knot_{variant.lower()}.yaml"
         config = load_experiment(config_path)
+        config.training.output = str(OUTPUT / variant)
         research = OmegaConf.to_container(OmegaConf.load(research_path), resolve=True)
         if research["variant"] != variant or research["training_conditioning"] != "truth":
             raise ValueError(f"Unexpected KNOT research config: {research_path}")

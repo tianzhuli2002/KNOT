@@ -1,0 +1,524 @@
+{
+  "M": {
+    "top": {
+      "neutrino_pT": {
+        "bias_GeV": 7.658060073852539,
+        "RMSE_GeV": 39.727882385253906,
+        "residual_std_GeV": 38.98280334472656
+      },
+      "neutrino_pz": {
+        "bias_GeV": 16.526418685913086,
+        "RMSE_GeV": 117.55231475830078,
+        "residual_std_GeV": 116.38480377197266
+      },
+      "neutrino_mean_deltaR": 1.8626625537872314,
+      "neutrino_pz_68_coverage": 0.51953125,
+      "neutrino_pz_rank_68_coverage": 0.6030078124999999,
+      "neutrino_pz_rank_68_coverage_SE": 0.014549335980789004,
+      "parent_pT": {
+        "bias_GeV": 3.057828426361084,
+        "RMSE_GeV": 72.06039428710938,
+        "residual_std_GeV": 71.9954833984375
+      },
+      "parent_mass": {
+        "bias_GeV": 1.0230271816253662,
+        "RMSE_GeV": 7.542424201965332,
+        "residual_std_GeV": 7.47272253036499
+      }
+    },
+    "antitop": {
+      "neutrino_pT": {
+        "bias_GeV": 5.71230936050415,
+        "RMSE_GeV": 43.92069625854492,
+        "residual_std_GeV": 43.54764175415039
+      },
+      "neutrino_pz": {
+        "bias_GeV": 31.098970413208008,
+        "RMSE_GeV": 117.47660827636719,
+        "residual_std_GeV": 113.28551483154297
+      },
+      "neutrino_mean_deltaR": 1.7888158559799194,
+      "neutrino_pz_68_coverage": 0.5107421875,
+      "neutrino_pz_rank_68_coverage": 0.5894531249999999,
+      "neutrino_pz_rank_68_coverage_SE": 0.01461038940014888,
+      "parent_pT": {
+        "bias_GeV": 1.9387791156768799,
+        "RMSE_GeV": 73.30044555664062,
+        "residual_std_GeV": 73.2748031616211
+      },
+      "parent_mass": {
+        "bias_GeV": 1.5335118770599365,
+        "RMSE_GeV": 6.587525367736816,
+        "residual_std_GeV": 6.406546115875244
+      }
+    },
+    "mttbar": {
+      "bias_GeV": 10.866582870483398,
+      "RMSE_GeV": 136.25355529785156,
+      "residual_std_GeV": 135.8195343017578
+    },
+    "pT_ttbar": {
+      "bias_GeV": 10.98193359375,
+      "RMSE_GeV": 70.56101989746094,
+      "residual_std_GeV": 69.70117950439453
+    },
+    "assignment": {
+      "complete_accuracy": 0.783203125,
+      "NLL": 0.5449807643890381,
+      "per_node_accuracy": {
+        "antitop": 0.8056640625,
+        "top": 0.798828125
+      },
+      "unsupported_evaluation_events": 0,
+      "per_role_accuracy": {
+        "top.b": 0.798828125,
+        "top.lepton": 1.0,
+        "antitop.b": 0.8056640625,
+        "antitop.lepton": 1.0
+      }
+    },
+    "joint": {
+      "coherent_mean_conditional_correlation": -2.0333100110292435e-05,
+      "shuffled_mean_conditional_correlation": 0.016426872462034225,
+      "coherent_mean_absolute_correlation": 0.20690374076366425,
+      "shuffled_mean_absolute_correlation": 0.20258893072605133,
+      "paired_difference_standard_error": 0.010965720750391483,
+      "marginal_max_change": 0.0
+    },
+    "joint_energy_score": {
+      "coherent_GeV": 108.95986938476562,
+      "shuffled_GeV": 109.02749633789062,
+      "shuffle_minus_coherent_GeV": 0.06762316823005676,
+      "paired_difference_SE_GeV": 0.12433503568172455
+    },
+    "spin": {
+      "delta_phi_ll": {
+        "truth_mean": 1.8745343685150146,
+        "coherent_mean": 1.8745343685150146,
+        "shuffled_mean": 1.8745343685150146,
+        "coherent_event_mean_RMSE": 0.0,
+        "shuffled_event_mean_RMSE": 0.0,
+        "paired_event_difference_RMS": 0.0,
+        "paired_mean_difference_SE": 0.0
+      },
+      "cos_theta_plus": {
+        "truth_mean": 0.08204811666912057,
+        "coherent_mean": -0.40584426734257273,
+        "shuffled_mean": -0.3548382198034088,
+        "coherent_event_mean_RMSE": 0.7346689996874632,
+        "shuffled_event_mean_RMSE": 0.7058647840655125,
+        "paired_event_difference_RMS": 0.08602679638656886,
+        "paired_mean_difference_SE": 0.0021648363487713437
+      },
+      "cos_theta_minus": {
+        "truth_mean": 0.06851015328682691,
+        "coherent_mean": -0.377558744920891,
+        "shuffled_mean": -0.31982906932278876,
+        "coherent_event_mean_RMSE": 0.710272746121116,
+        "shuffled_event_mean_RMSE": 0.6779345196770671,
+        "paired_event_difference_RMS": 0.08942988535009008,
+        "paired_mean_difference_SE": 0.0021343976364713167
+      },
+      "helicity_product": {
+        "truth_mean": -0.01409951204987843,
+        "coherent_mean": 0.2047554328406652,
+        "shuffled_mean": 0.13602135061064927,
+        "coherent_event_mean_RMSE": 0.3744993924177585,
+        "shuffled_event_mean_RMSE": 0.3407706944107538,
+        "paired_event_difference_RMS": 0.10336345284095816,
+        "paired_mean_difference_SE": 0.0024124573594034434
+      },
+      "cos_opening": {
+        "truth_mean": -0.3739911256818408,
+        "coherent_mean": -0.23690699725154962,
+        "shuffled_mean": -0.14575128119068884,
+        "coherent_event_mean_RMSE": 0.24147321171446914,
+        "shuffled_event_mean_RMSE": 0.31217521036871143,
+        "paired_event_difference_RMS": 0.12862528920308952,
+        "paired_mean_difference_SE": 0.002835857945166886
+      }
+    },
+    "prediction": {
+      "events": 1024,
+      "samples": 16,
+      "seconds": 64.48524267901666,
+      "EVENT_ID_sha256": "f1b31ec7781449ce993a482815f1206ea8cf5ad7384b3605c9317456ef62a587",
+      "semantics": "marginal"
+    },
+    "parameter_counts": {
+      "total": 2775317,
+      "trainable": 2775317
+    },
+    "population": {
+      "channel_counts": {
+        "emu": 464,
+        "ee": 237,
+        "mumu": 323
+      },
+      "jet_multiplicity_counts": {
+        "2": 354,
+        "3": 357,
+        "4": 178,
+        "5": 81,
+        "6": 32,
+        "7": 17,
+        "8": 5
+      },
+      "truth_mttbar_quantiles_GeV": [
+        318.0766906738281,
+        383.01609802246094,
+        492.6002197265625,
+        763.3153747558595,
+        2958.939453125
+      ]
+    }
+  },
+  "C": {
+    "top": {
+      "neutrino_pT": {
+        "bias_GeV": 7.114110469818115,
+        "RMSE_GeV": 39.384361267089844,
+        "residual_std_GeV": 38.73651123046875
+      },
+      "neutrino_pz": {
+        "bias_GeV": -7.5916595458984375,
+        "RMSE_GeV": 113.13136291503906,
+        "residual_std_GeV": 112.8763656616211
+      },
+      "neutrino_mean_deltaR": 1.8368430137634277,
+      "neutrino_pz_68_coverage": 0.529296875,
+      "neutrino_pz_rank_68_coverage": 0.6115234374999999,
+      "neutrino_pz_rank_68_coverage_SE": 0.014494475904900984,
+      "parent_pT": {
+        "bias_GeV": 9.211265563964844,
+        "RMSE_GeV": 72.59564971923828,
+        "residual_std_GeV": 72.00889587402344
+      },
+      "parent_mass": {
+        "bias_GeV": 0.4970436692237854,
+        "RMSE_GeV": 7.456940174102783,
+        "residual_std_GeV": 7.440356731414795
+      }
+    },
+    "antitop": {
+      "neutrino_pT": {
+        "bias_GeV": 4.886277198791504,
+        "RMSE_GeV": 44.0574836730957,
+        "residual_std_GeV": 43.78568649291992
+      },
+      "neutrino_pz": {
+        "bias_GeV": 19.997589111328125,
+        "RMSE_GeV": 110.94436645507812,
+        "residual_std_GeV": 109.1272201538086
+      },
+      "neutrino_mean_deltaR": 1.740267276763916,
+      "neutrino_pz_68_coverage": 0.4931640625,
+      "neutrino_pz_rank_68_coverage": 0.5810156249999999,
+      "neutrino_pz_rank_68_coverage_SE": 0.014413496088985277,
+      "parent_pT": {
+        "bias_GeV": 5.418206214904785,
+        "RMSE_GeV": 73.2435302734375,
+        "residual_std_GeV": 73.0428466796875
+      },
+      "parent_mass": {
+        "bias_GeV": 1.3225209712982178,
+        "RMSE_GeV": 6.635567665100098,
+        "residual_std_GeV": 6.502438068389893
+      }
+    },
+    "mttbar": {
+      "bias_GeV": 11.78089714050293,
+      "RMSE_GeV": 142.2032470703125,
+      "residual_std_GeV": 141.7144012451172
+    },
+    "pT_ttbar": {
+      "bias_GeV": 18.22882843017578,
+      "RMSE_GeV": 73.07232666015625,
+      "residual_std_GeV": 70.7621078491211
+    },
+    "assignment": {
+      "complete_accuracy": 0.791015625,
+      "NLL": 0.5498629808425903,
+      "per_node_accuracy": {
+        "antitop": 0.8076171875,
+        "top": 0.8076171875
+      },
+      "unsupported_evaluation_events": 0,
+      "per_role_accuracy": {
+        "top.b": 0.8076171875,
+        "top.lepton": 1.0,
+        "antitop.b": 0.8076171875,
+        "antitop.lepton": 1.0
+      }
+    },
+    "joint": {
+      "coherent_mean_conditional_correlation": 0.16570240259170532,
+      "shuffled_mean_conditional_correlation": 0.004879808984696865,
+      "coherent_mean_absolute_correlation": 0.25347810983657837,
+      "shuffled_mean_absolute_correlation": 0.20703822374343872,
+      "paired_difference_standard_error": 0.011165162548422813,
+      "marginal_max_change": 0.0
+    },
+    "joint_energy_score": {
+      "coherent_GeV": 96.99549865722656,
+      "shuffled_GeV": 97.46337890625,
+      "shuffle_minus_coherent_GeV": 0.4678800106048584,
+      "paired_difference_SE_GeV": 0.141207754611969
+    },
+    "spin": {
+      "delta_phi_ll": {
+        "truth_mean": 1.8745343685150146,
+        "coherent_mean": 1.8745343685150146,
+        "shuffled_mean": 1.8745343685150146,
+        "coherent_event_mean_RMSE": 0.0,
+        "shuffled_event_mean_RMSE": 0.0,
+        "paired_event_difference_RMS": 0.0,
+        "paired_mean_difference_SE": 0.0
+      },
+      "cos_theta_plus": {
+        "truth_mean": 0.08204811666912057,
+        "coherent_mean": -0.39710089623136213,
+        "shuffled_mean": -0.34924966044208805,
+        "coherent_event_mean_RMSE": 0.727500162145621,
+        "shuffled_event_mean_RMSE": 0.6998106861045639,
+        "paired_event_difference_RMS": 0.0825956043887447,
+        "paired_mean_difference_SE": 0.002103822111848354
+      },
+      "cos_theta_minus": {
+        "truth_mean": 0.06851015328682691,
+        "coherent_mean": -0.37192691970276687,
+        "shuffled_mean": -0.314576297014295,
+        "coherent_event_mean_RMSE": 0.7008471463058548,
+        "shuffled_event_mean_RMSE": 0.6657594656230286,
+        "paired_event_difference_RMS": 0.08894040570280064,
+        "paired_mean_difference_SE": 0.002124379928793035
+      },
+      "helicity_product": {
+        "truth_mean": -0.01409951204987843,
+        "coherent_mean": 0.20142407356162328,
+        "shuffled_mean": 0.13658941891311185,
+        "coherent_event_mean_RMSE": 0.3715736154579887,
+        "shuffled_event_mean_RMSE": 0.34055497516806155,
+        "paired_event_difference_RMS": 0.10374463839210692,
+        "paired_mean_difference_SE": 0.0025309447253642073
+      },
+      "cos_opening": {
+        "truth_mean": -0.3739911256818408,
+        "coherent_mean": -0.25458242538844034,
+        "shuffled_mean": -0.16224919173359048,
+        "coherent_event_mean_RMSE": 0.21734290047530144,
+        "shuffled_event_mean_RMSE": 0.29259812071980473,
+        "paired_event_difference_RMS": 0.13174575575312064,
+        "paired_mean_difference_SE": 0.002936754912453562
+      }
+    },
+    "prediction": {
+      "events": 1024,
+      "samples": 16,
+      "seconds": 85.00657978816889,
+      "EVENT_ID_sha256": "f1b31ec7781449ce993a482815f1206ea8cf5ad7384b3605c9317456ef62a587",
+      "semantics": "ancestral"
+    },
+    "parameter_counts": {
+      "total": 2775317,
+      "trainable": 2775317
+    },
+    "population": {
+      "channel_counts": {
+        "emu": 464,
+        "ee": 237,
+        "mumu": 323
+      },
+      "jet_multiplicity_counts": {
+        "2": 354,
+        "3": 357,
+        "4": 178,
+        "5": 81,
+        "6": 32,
+        "7": 17,
+        "8": 5
+      },
+      "truth_mttbar_quantiles_GeV": [
+        318.0766906738281,
+        383.01609802246094,
+        492.6002197265625,
+        763.3153747558595,
+        2958.939453125
+      ]
+    }
+  },
+  "J": {
+    "top": {
+      "neutrino_pT": {
+        "bias_GeV": 10.402875900268555,
+        "RMSE_GeV": 40.406837463378906,
+        "residual_std_GeV": 39.04475402832031
+      },
+      "neutrino_pz": {
+        "bias_GeV": -29.51751708984375,
+        "RMSE_GeV": 119.67667388916016,
+        "residual_std_GeV": 115.97940826416016
+      },
+      "neutrino_mean_deltaR": 1.9227948188781738,
+      "neutrino_pz_68_coverage": 0.5849609375,
+      "neutrino_pz_rank_68_coverage": 0.6541406249999999,
+      "neutrino_pz_rank_68_coverage_SE": 0.014018583801972021,
+      "parent_pT": {
+        "bias_GeV": 14.504396438598633,
+        "RMSE_GeV": 74.430419921875,
+        "residual_std_GeV": 73.00349426269531
+      },
+      "parent_mass": {
+        "bias_GeV": 0.13483765721321106,
+        "RMSE_GeV": 7.21617317199707,
+        "residual_std_GeV": 7.214913368225098
+      }
+    },
+    "antitop": {
+      "neutrino_pT": {
+        "bias_GeV": 5.05521297454834,
+        "RMSE_GeV": 43.08627700805664,
+        "residual_std_GeV": 42.78868865966797
+      },
+      "neutrino_pz": {
+        "bias_GeV": -1.369197130203247,
+        "RMSE_GeV": 111.49227905273438,
+        "residual_std_GeV": 111.48387145996094
+      },
+      "neutrino_mean_deltaR": 1.8214330673217773,
+      "neutrino_pz_68_coverage": 0.5947265625,
+      "neutrino_pz_rank_68_coverage": 0.6815624999999998,
+      "neutrino_pz_rank_68_coverage_SE": 0.013616354722443864,
+      "parent_pT": {
+        "bias_GeV": 9.504127502441406,
+        "RMSE_GeV": 73.85224151611328,
+        "residual_std_GeV": 73.23814392089844
+      },
+      "parent_mass": {
+        "bias_GeV": -0.2355610430240631,
+        "RMSE_GeV": 6.360550880432129,
+        "residual_std_GeV": 6.356187343597412
+      }
+    },
+    "mttbar": {
+      "bias_GeV": 10.863073348999023,
+      "RMSE_GeV": 136.18783569335938,
+      "residual_std_GeV": 135.75389099121094
+    },
+    "pT_ttbar": {
+      "bias_GeV": 39.120567321777344,
+      "RMSE_GeV": 79.43536376953125,
+      "residual_std_GeV": 69.13435363769531
+    },
+    "assignment": {
+      "complete_accuracy": 0.796875,
+      "NLL": 0.5418751239776611,
+      "per_node_accuracy": {
+        "antitop": 0.8173828125,
+        "top": 0.8154296875
+      },
+      "unsupported_evaluation_events": 0,
+      "per_role_accuracy": {
+        "top.b": 0.8154296875,
+        "top.lepton": 1.0,
+        "antitop.b": 0.8173828125,
+        "antitop.lepton": 1.0
+      }
+    },
+    "joint": {
+      "coherent_mean_conditional_correlation": 0.545115053653717,
+      "shuffled_mean_conditional_correlation": -0.008265030570328236,
+      "coherent_mean_absolute_correlation": 0.5504682660102844,
+      "shuffled_mean_absolute_correlation": 0.1952112913131714,
+      "paired_difference_standard_error": 0.010426836088299751,
+      "marginal_max_change": 1.9073486328125e-06
+    },
+    "joint_energy_score": {
+      "coherent_GeV": 93.34003448486328,
+      "shuffled_GeV": 95.21658325195312,
+      "shuffle_minus_coherent_GeV": 1.8765509128570557,
+      "paired_difference_SE_GeV": 0.1415719985961914
+    },
+    "spin": {
+      "delta_phi_ll": {
+        "truth_mean": 1.8745343685150146,
+        "coherent_mean": 1.8745343685150146,
+        "shuffled_mean": 1.8745343685150146,
+        "coherent_event_mean_RMSE": 0.0,
+        "shuffled_event_mean_RMSE": 0.0,
+        "paired_event_difference_RMS": 0.0,
+        "paired_mean_difference_SE": 0.0
+      },
+      "cos_theta_plus": {
+        "truth_mean": 0.08204811666912057,
+        "coherent_mean": -0.3676564095735124,
+        "shuffled_mean": -0.3106023056534119,
+        "coherent_event_mean_RMSE": 0.6925892720844183,
+        "shuffled_event_mean_RMSE": 0.6616230162110706,
+        "paired_event_difference_RMS": 0.09115115567041882,
+        "paired_mean_difference_SE": 0.0022214689339575227
+      },
+      "cos_theta_minus": {
+        "truth_mean": 0.06851015328682691,
+        "coherent_mean": -0.3704010435594646,
+        "shuffled_mean": -0.3127145278083453,
+        "coherent_event_mean_RMSE": 0.6977561893964134,
+        "shuffled_event_mean_RMSE": 0.6640819318739213,
+        "paired_event_difference_RMS": 0.09179407542996904,
+        "paired_mean_difference_SE": 0.0022313502657222103
+      },
+      "helicity_product": {
+        "truth_mean": -0.01409951204987843,
+        "coherent_mean": 0.19390573229682329,
+        "shuffled_mean": 0.12458956136230473,
+        "coherent_event_mean_RMSE": 0.3708999586841417,
+        "shuffled_event_mean_RMSE": 0.3371085016377084,
+        "paired_event_difference_RMS": 0.10954496036674406,
+        "paired_mean_difference_SE": 0.0026507971215499154
+      },
+      "cos_opening": {
+        "truth_mean": -0.3739911256818408,
+        "coherent_mean": -0.27122570379178074,
+        "shuffled_mean": -0.18101322312419796,
+        "coherent_event_mean_RMSE": 0.21115105184057897,
+        "shuffled_event_mean_RMSE": 0.27917882517815273,
+        "paired_event_difference_RMS": 0.12522465429040128,
+        "paired_mean_difference_SE": 0.002714062477322884
+      }
+    },
+    "prediction": {
+      "events": 1024,
+      "samples": 16,
+      "seconds": 27.511195133905858,
+      "EVENT_ID_sha256": "f1b31ec7781449ce993a482815f1206ea8cf5ad7384b3605c9317456ef62a587",
+      "semantics": "joint"
+    },
+    "parameter_counts": {
+      "total": 2954891,
+      "trainable": 1567240
+    },
+    "population": {
+      "channel_counts": {
+        "emu": 464,
+        "ee": 237,
+        "mumu": 323
+      },
+      "jet_multiplicity_counts": {
+        "2": 354,
+        "3": 357,
+        "4": 178,
+        "5": 81,
+        "6": 32,
+        "7": 17,
+        "8": 5
+      },
+      "truth_mttbar_quantiles_GeV": [
+        318.0766906738281,
+        383.01609802246094,
+        492.6002197265625,
+        763.3153747558595,
+        2958.939453125
+      ]
+    }
+  }
+}

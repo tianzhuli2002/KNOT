@@ -1,0 +1,68 @@
+{
+  "train": {
+    "events": 25000,
+    "channels": {
+      "emu": 11850,
+      "ee": 5215,
+      "mumu": 7935
+    },
+    "jet_multiplicity_counts": {
+      "2": 8587,
+      "3": 8308,
+      "4": 4800,
+      "5": 2120,
+      "6": 813,
+      "7": 260,
+      "8": 112
+    },
+    "truth_mttbar_quantiles_GeV": [
+      286.3153381347656,
+      380.8554962158203,
+      492.1416320800781,
+      758.5197692871095,
+      2752.496337890625
+    ],
+    "feasible_assignment_count_quantiles": [
+      13.0,
+      13.0,
+      25.0,
+      61.0,
+      145.0
+    ],
+    "truth_assignment_supported": 25000,
+    "truth_assignment_unsupported": 0
+  },
+  "validation": {
+    "events": 5000,
+    "channels": {
+      "emu": 2367,
+      "ee": 1065,
+      "mumu": 1568
+    },
+    "jet_multiplicity_counts": {
+      "2": 1714,
+      "3": 1683,
+      "4": 980,
+      "5": 410,
+      "6": 141,
+      "7": 51,
+      "8": 21
+    },
+    "truth_mttbar_quantiles_GeV": [
+      318.0766906738281,
+      381.97328491210936,
+      491.11944580078125,
+      756.3048217773439,
+      2958.939453125
+    ],
+    "feasible_assignment_count_quantiles": [
+      13.0,
+      13.0,
+      25.0,
+      61.0,
+      145.0
+    ],
+    "truth_assignment_supported": 4999,
+    "truth_assignment_unsupported": 1
+  }
+}

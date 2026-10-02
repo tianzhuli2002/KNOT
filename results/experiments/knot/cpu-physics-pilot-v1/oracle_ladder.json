@@ -1,0 +1,110 @@
+{
+  "truth_assignment_truth_neutrino": {
+    "top": {
+      "parent_pT": {
+        "bias_GeV": 8.397209167480469,
+        "RMSE_GeV": 72.17269134521484,
+        "residual_std_GeV": 71.68252563476562
+      },
+      "parent_mass": {
+        "bias_GeV": 0.49830591678619385,
+        "RMSE_GeV": 7.451812267303467,
+        "residual_std_GeV": 7.4351325035095215
+      }
+    },
+    "antitop": {
+      "parent_pT": {
+        "bias_GeV": 4.641701698303223,
+        "RMSE_GeV": 72.84705352783203,
+        "residual_std_GeV": 72.69902801513672
+      },
+      "parent_mass": {
+        "bias_GeV": 1.3303149938583374,
+        "RMSE_GeV": 6.638650417327881,
+        "residual_std_GeV": 6.503994464874268
+      }
+    },
+    "mttbar": {
+      "bias_GeV": 8.693801879882812,
+      "RMSE_GeV": 139.82122802734375,
+      "residual_std_GeV": 139.55068969726562
+    },
+    "pT_ttbar": {
+      "bias_GeV": 18.18704605102539,
+      "RMSE_GeV": 73.11119079589844,
+      "residual_std_GeV": 70.8129653930664
+    }
+  },
+  "predicted_assignment_truth_neutrino": {
+    "top": {
+      "parent_pT": {
+        "bias_GeV": 9.318925857543945,
+        "RMSE_GeV": 72.61634063720703,
+        "residual_std_GeV": 72.01590728759766
+      },
+      "parent_mass": {
+        "bias_GeV": 0.49123120307922363,
+        "RMSE_GeV": 7.456191539764404,
+        "residual_std_GeV": 7.4399919509887695
+      }
+    },
+    "antitop": {
+      "parent_pT": {
+        "bias_GeV": 5.580852508544922,
+        "RMSE_GeV": 73.28374481201172,
+        "residual_std_GeV": 73.07093811035156
+      },
+      "parent_mass": {
+        "bias_GeV": 1.3228766918182373,
+        "RMSE_GeV": 6.639556884765625,
+        "residual_std_GeV": 6.506436824798584
+      }
+    },
+    "mttbar": {
+      "bias_GeV": 11.413189888000488,
+      "RMSE_GeV": 142.29296875,
+      "residual_std_GeV": 141.8345184326172
+    },
+    "pT_ttbar": {
+      "bias_GeV": 18.204811096191406,
+      "RMSE_GeV": 73.10372161865234,
+      "residual_std_GeV": 70.80069732666016
+    }
+  },
+  "deployed": {
+    "top": {
+      "parent_pT": {
+        "bias_GeV": 9.211265563964844,
+        "RMSE_GeV": 72.59564971923828,
+        "residual_std_GeV": 72.00889587402344
+      },
+      "parent_mass": {
+        "bias_GeV": 0.4970436692237854,
+        "RMSE_GeV": 7.456940174102783,
+        "residual_std_GeV": 7.440356731414795
+      }
+    },
+    "antitop": {
+      "parent_pT": {
+        "bias_GeV": 5.418206214904785,
+        "RMSE_GeV": 73.2435302734375,
+        "residual_std_GeV": 73.0428466796875
+      },
+      "parent_mass": {
+        "bias_GeV": 1.3225209712982178,
+        "RMSE_GeV": 6.635567665100098,
+        "residual_std_GeV": 6.502438068389893
+      }
+    },
+    "mttbar": {
+      "bias_GeV": 11.78089714050293,
+      "RMSE_GeV": 142.2032470703125,
+      "residual_std_GeV": 141.7144012451172
+    },
+    "pT_ttbar": {
+      "bias_GeV": 18.22882843017578,
+      "RMSE_GeV": 73.07232666015625,
+      "residual_std_GeV": 70.7621078491211
+    }
+  }
+}

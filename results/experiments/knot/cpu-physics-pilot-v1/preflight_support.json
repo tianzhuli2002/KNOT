@@ -1,0 +1,16 @@
+{
+  "recorded_unsupported_EVENT_IDs": [
+    227166632,
+    211232532,
+    331649012
+  ],
+  "assignment_loss": 0.0,
+  "finite_continuous_loss": true,
+  "reversed_parent_order_rejected": true,
+  "parent_tensor_order": [
+    "top",
+    "antitop"
+  ],
+  "population_rescanned": false,
+  "sealed_test_used": false
+}

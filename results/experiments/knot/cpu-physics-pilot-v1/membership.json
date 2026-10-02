@@ -1,0 +1,12 @@
+{
+  "train": {
+    "events": 25000,
+    "sha256": "83f3c28c290ead339aa914fcb9fcc756a966b7d11d2dde797b31923d6259e852"
+  },
+  "validation": {
+    "events": 5000,
+    "sha256": "7ae29408ae539af134e4d4065b6cc23e18ea547ebf958c86b1978af93afd6e19"
+  },
+  "selection": "maintained deterministic EVENT_ID subset, seed 42011",
+  "sealed_test_used": false
+}
