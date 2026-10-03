@@ -490,11 +490,18 @@ class KnotModule(JointEventModule):
         jweight = self.weights.get("joint", 0)
         if self.variant != "J" and nweight:
             context = self.invisible_context(result, space, states, visible)[:, 0]
+            invisible_support = batch["invisible_support"].all(-1)
+            if self.conditioning == "truth" and self.variant != "M":
+                # A truth assignment outside the model's feasible state set
+                # cannot provide a valid conditional context for C or J.
+                invisible_support = (
+                    invisible_support & batch["visible_assignment_support"]
+                )
             output["invisible_loss"] = base.invisible.loss(
                 batch["invisible_truth_scaled"],
                 visible,
                 context,
-                event_mask=batch["invisible_support"].all(-1),
+                event_mask=invisible_support,
                 role_context=self.invisible_role_context(
                     result, space, states, visible
                 )[:, 0],
@@ -503,6 +510,8 @@ class KnotModule(JointEventModule):
         if (self.variant == "J" and jweight) or (self.variant != "J" and pweight):
             target = batch["partonic_truth"]
             support = batch["partonic_support"].all(-1)
+            if self.conditioning == "truth" and self.variant != "M":
+                support = support & batch["visible_assignment_support"]
             p = (
                 (partonic_features(target) - self.parent_mean) / self.parent_std
             ).flatten(1)
@@ -542,6 +551,17 @@ class KnotModule(JointEventModule):
             total = total + (jweight if self.variant == "J" else pweight) * output[key]
         output["loss"] = total
         return output
+
+    def common_validation_selection(self, output):
+        """Dimension-weighted validation score shared by the frozen M/C/J pilot."""
+        assignment = output["assignment_loss"]
+        if self.variant == "J":
+            return assignment + output["joint_loss"]
+        return (
+            assignment
+            + (6.0 / 14.0) * output["invisible_loss"]
+            + (8.0 / 14.0) * output["partonic_cfm_loss"]
+        )
 
     @torch.no_grad()
     def posterior(self, batch, *, samples, generator=None, oracle=None):

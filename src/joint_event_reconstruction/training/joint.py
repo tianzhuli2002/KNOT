@@ -524,6 +524,12 @@ class JointEventModule(L.LightningModule):
     def _step(self, batch: dict, stage: str) -> torch.Tensor:
         output = self(batch, compute_objectives=True)
         batch_size = len(batch["tokens"])
+        for name, value in output.items():
+            if name.endswith("_loss") and torch.is_tensor(value) and not torch.isfinite(value).all():
+                variant = getattr(self, "variant", "joint")
+                raise FloatingPointError(
+                    f"Nonfinite {stage} component {name} for {variant}"
+                )
         self.log(
             f"{stage}_loss",
             output["loss"],
@@ -575,6 +581,15 @@ class JointEventModule(L.LightningModule):
             self.log(
                 f"{stage}_partonic_cfm_loss",
                 output["partonic_cfm_loss"],
+                on_step=False,
+                on_epoch=True,
+                batch_size=batch_size,
+            )
+        selection = getattr(self, "common_validation_selection", None)
+        if stage == "val" and selection is not None:
+            self.log(
+                "val_selection_loss",
+                selection(output),
                 on_step=False,
                 on_epoch=True,
                 batch_size=batch_size,
