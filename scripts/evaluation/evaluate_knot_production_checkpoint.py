@@ -5,9 +5,12 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
+import socket
 import subprocess
 import time
 from dataclasses import fields
+from datetime import UTC, datetime
 from pathlib import Path
 
 import h5py
@@ -72,6 +75,31 @@ def select_batch(value, indices, batch_size):
     if isinstance(value, list) and len(value) == batch_size:
         return [value[int(index)] for index in indices.cpu().tolist()]
     return value
+
+
+@torch.inference_mode()
+def sample_invisible_for_assignments(
+    module, batch, visible, assignment, space, states, generator
+):
+    """Sample C neutrinos under supplied truth or predicted assignment states."""
+    batch_size, samples = states.shape
+    repeated = module.repeat_visible(visible, samples)
+    invisible = module.event_model.invisible
+    context = module.invisible_context(assignment, space, states, visible).flatten(
+        0, 1
+    )
+    scaled, _ = invisible.sample(
+        repeated,
+        context,
+        samples=1,
+        budget=int(module.research["steps"]),
+        sampler=module.research["solver"],
+        generator=generator,
+    )
+    scaled = scaled[:, 0].reshape(batch_size, samples, *scaled.shape[2:])
+    return invisible.decode_physical_state(
+        scaled, batch["met_xy"], invisible.scaler
+    )["four_vector"]
 
 
 def wrapped_delta(value):
@@ -152,6 +180,7 @@ def physical_calibration_features(neutrinos, parents, truth_n, truth_p):
 def assignment_diagnostics(probabilities, space, batch):
     truth_state = batch["structured"]["assignments"]["truth_state"]
     predicted_state = probabilities.argmax(dim=-1)
+    map_probability = probabilities.gather(1, predicted_state[:, None]).squeeze(1)
     predicted_candidate = space.node_indices(predicted_state)
     support = batch["visible_assignment_support"].bool()
     safe_truth_state = torch.where(support, truth_state, torch.zeros_like(truth_state))
@@ -174,12 +203,15 @@ def assignment_diagnostics(probabilities, space, batch):
             pred_row = table[pred.clamp_min(0)]
             target_row = table[target.clamp_min(0)]
             pred_row = torch.where(pred[:, None] >= 0, pred_row, -1)
-            leaves[leaf_role] = (pred_row == target_row).all(-1)
+            leaves[f"{role}_{leaf_role}"] = (pred_row == target_row).all(-1)
 
     return {
         "entropy_nats": as_numpy(entropy),
         "support_mask": as_numpy(support),
         "complete_correct": as_numpy(predicted_state == safe_truth_state),
+        "predicted_state": as_numpy(predicted_state),
+        "predicted_candidates": as_numpy(predicted_candidate),
+        "map_probability": as_numpy(map_probability),
         "nll": as_numpy(nll),
         "node_correct": as_numpy(role_correct),
         "node_names": list(space.nodes),
@@ -307,6 +339,8 @@ def draw_plots(output, neutrinos, parents, truth_n, truth_p, spin):
 
 @torch.inference_mode()
 def evaluate(args):
+    wall_started = time.perf_counter()
+    started_utc = datetime.now(UTC).isoformat()
     config = load_experiment(args.config)
     research = OmegaConf.to_container(OmegaConf.load(args.research), resolve=True)
     if research["variant"] != args.variant:
@@ -345,14 +379,20 @@ def evaluate(args):
     if device.type == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("CUDA evaluation requested but torch.cuda.is_available() is false")
     module.to(device).eval()
+    device_name = torch.cuda.get_device_name(device) if device.type == "cuda" else "CPU"
     generator = torch.Generator(device=device).manual_seed(args.seed)
 
     predictions, truth_n_rows, truth_p_rows, lepton_rows = [], [], [], []
     assignment_rows = []
-    sampled_b_vectors_rows, sampled_b_tokens_rows, truth_b_tokens_rows = [], [], []
+    sampled_b_vectors_rows, sampled_b_tokens_rows = [], []
+    truth_b_vectors_rows, truth_b_tokens_rows = [], []
     oracle_rows = {
         "truth_assignment_truth_neutrino": [],
         "predicted_assignment_truth_neutrino": [],
+    }
+    neutrino_oracle_rows = {
+        "truth_assignment": [],
+        "predicted_assignment": [],
     }
     started = time.perf_counter()
     for batch_index, host_batch in enumerate(loader):
@@ -386,7 +426,8 @@ def evaluate(args):
         b_token_indices, truth_b_token_indices = [], []
         for role in ("top", "antitop"):
             node_index = space.nodes.index(role)
-            leaf_table = batch["structured"]["pools"][role]["leaf_indices"]["b"]
+            leaf_key = f"{role}_b"
+            leaf_table = batch["structured"]["pools"][role]["leaf_indices"][leaf_key]
             sampled_candidate = posterior.assignment_candidates[..., node_index]
             sampled_tokens = leaf_table[sampled_candidate, 0]
             truth_candidate = torch.as_tensor(
@@ -407,6 +448,16 @@ def evaluate(args):
         sampled_b_vectors_rows.append(
             as_numpy(batch["physics_vectors"][batch_indices, sampled_tokens])
         )
+        truth_b_vectors = batch["physics_vectors"][
+            torch.arange(len(truth_tokens), device=device)[:, None],
+            truth_tokens.clamp_min(0),
+        ]
+        truth_b_vectors = torch.where(
+            batch["visible_assignment_support"].bool()[:, None, None],
+            truth_b_vectors,
+            torch.zeros_like(truth_b_vectors),
+        )
+        truth_b_vectors_rows.append(as_numpy(truth_b_vectors))
         sampled_b_tokens_rows.append(as_numpy(sampled_tokens))
         truth_b_tokens_rows.append(as_numpy(truth_tokens))
 
@@ -414,6 +465,41 @@ def evaluate(args):
             keep = batch["visible_assignment_support"].bool().nonzero(as_tuple=False).flatten()
             if len(keep):
                 oracle_batch = select_batch(batch, keep, len(batch["event_index"]))
+                oracle_visible = module.event_model.encode_visible(oracle_batch)
+                oracle_assignment, oracle_space = module.assignment(
+                    oracle_batch, oracle_visible
+                )
+                predicted_states = posterior.assignment_state.index_select(0, keep)
+                truth_states = oracle_space.truth_state[:, None].expand_as(
+                    predicted_states
+                )
+                oracle_seed = args.seed + 10_000 + batch_index
+                neutrino_oracle_rows["truth_assignment"].append(
+                    as_numpy(
+                        sample_invisible_for_assignments(
+                            module,
+                            oracle_batch,
+                            oracle_visible,
+                            oracle_assignment,
+                            oracle_space,
+                            truth_states,
+                            torch.Generator(device=device).manual_seed(oracle_seed),
+                        )
+                    )
+                )
+                neutrino_oracle_rows["predicted_assignment"].append(
+                    as_numpy(
+                        sample_invisible_for_assignments(
+                            module,
+                            oracle_batch,
+                            oracle_visible,
+                            oracle_assignment,
+                            oracle_space,
+                            predicted_states,
+                            torch.Generator(device=device).manual_seed(oracle_seed),
+                        )
+                    )
+                )
                 for endpoint, rows in oracle_rows.items():
                     oracle = module.posterior(
                         oracle_batch,
@@ -431,11 +517,21 @@ def evaluate(args):
     tn, tp, leptons = map(np.concatenate, (truth_n_rows, truth_p_rows, lepton_rows))
     sampled_b_vectors = np.concatenate(sampled_b_vectors_rows)
     sampled_b_tokens = np.concatenate(sampled_b_tokens_rows)
+    truth_b_vectors = np.concatenate(truth_b_vectors_rows)
     truth_b_tokens = np.concatenate(truth_b_tokens_rows)
     support = np.concatenate([row["support_mask"] for row in assignment_rows]).astype(bool)
     entropy = np.concatenate([row["entropy_nats"] for row in assignment_rows])
     truth_states = np.concatenate([row["truth_state"] for row in assignment_rows])
     truth_candidates = np.concatenate([row["truth_candidates"] for row in assignment_rows])
+    predicted_states = np.concatenate([row["predicted_state"] for row in assignment_rows])
+    predicted_candidates = np.concatenate([row["predicted_candidates"] for row in assignment_rows])
+    map_probability = np.concatenate([row["map_probability"] for row in assignment_rows])
+    map_node_correct = np.concatenate([row["node_correct"] for row in assignment_rows])
+    leaf_names = list(assignment_rows[0]["leaf_correct"])
+    map_leaf_correct = {
+        name: np.concatenate([row["leaf_correct"][name] for row in assignment_rows])
+        for name in leaf_names
+    }
     event_ids = as_numpy(posterior.event_id).astype(np.int64)
     if not np.array_equal(event_ids, selected_ids):
         raise ValueError("Posterior EVENT_ID order differs from deterministic validation selection")
@@ -543,19 +639,29 @@ def evaluate(args):
             "TRUTH/assignment_state": truth_states,
             "TRUTH/assignment_candidates": truth_candidates,
             "TRUTH/assignment_support": support,
+            "diagnostics/assignment_truth_NLL": assignment_nll,
             "measured/leptons": leptons,
             "measured_b/sample_four_vectors": sampled_b_vectors,
             "measured_b/sample_token_indices": sampled_b_tokens,
+            "measured_b/truth_four_vectors": truth_b_vectors,
             "TRUTH/b_token_indices": truth_b_tokens,
             "diagnostics/assignment_entropy_nats": entropy,
+            "diagnostics/assignment_MAP_state": predicted_states,
+            "diagnostics/assignment_MAP_candidates": predicted_candidates,
+            "diagnostics/assignment_MAP_probability": map_probability,
+            "diagnostics/assignment_MAP_node_correct": map_node_correct,
         }.items():
             add_dataset(saved, name, value)
+        for name, value in map_leaf_correct.items():
+            add_dataset(saved, f"diagnostics/assignment_MAP_leaf_correct/{name}", value)
         for name, value in (("truth", spin[1]), ("paired", spin[2]), ("shuffled", spin[3])):
             for observable, draws in value.items():
                 add_dataset(saved, f"spin/{name}/{observable}", draws)
         if args.variant == "C":
             for endpoint, values in oracle_rows.items():
                 add_dataset(saved, f"oracle/{endpoint}/parents", np.concatenate(values, axis=0))
+            for endpoint, values in neutrino_oracle_rows.items():
+                add_dataset(saved, f"oracle/neutrino_{endpoint}/invisible", np.concatenate(values, axis=0))
         saved.attrs["spin_definition"] = json.dumps(SPIN_DEFINITION)
         saved.attrs["sealed_test_used"] = False
 
@@ -584,6 +690,7 @@ def evaluate(args):
         if training_manifest_path.is_file()
         else {}
     )
+    draw_plots(output, n, p, tn, tp, spin)
     manifest = {
         "variant": args.variant,
         "training_source_commit": training_manifest.get("source_commit"),
@@ -599,12 +706,20 @@ def evaluate(args):
         "events": len(event_ids),
         "samples_per_event": int(args.samples),
         "evaluation_seed": int(args.seed),
+        "device": str(device),
+        "device_name": device_name,
+        "hostname": socket.gethostname(),
+        "slurm_job_id": os.environ.get("SLURM_JOB_ID"),
+        "slurm_array_job_id": os.environ.get("SLURM_ARRAY_JOB_ID"),
+        "slurm_array_task_id": os.environ.get("SLURM_ARRAY_TASK_ID"),
+        "started_utc": started_utc,
+        "finished_utc": datetime.now(UTC).isoformat(),
+        "wall_seconds": float(time.perf_counter() - wall_started),
         "validation_event_id_sha256": digest,
         "sealed_test_used": False,
         "spin_truth_benchmark": "hybrid: authoritative truth parents with measured charge-ordered leptons",
     }
     (output / "evaluation_manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
-    draw_plots(output, n, p, tn, tp, spin)
     print(json.dumps({"output": str(output), "events": len(event_ids), "samples": args.samples, "runtime_seconds": metrics["runtime_seconds"]}, indent=2))
 
 
