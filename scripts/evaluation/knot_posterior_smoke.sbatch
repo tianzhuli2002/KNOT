@@ -77,9 +77,13 @@ with h5py.File(h5_path, "r") as data:
     assert data["invisible"].shape == (64, 4, 2, 4)
     assert data["parents"].shape == (64, 4, 2, 4)
     assert data["measured_b/sample_four_vectors"].shape == (64, 4, 2, 4)
+    assert data["diagnostics/assignment_MAP_probability"].shape == (64,)
+    assert data["diagnostics/assignment_truth_NLL"].shape == (64,)
     assert np.isfinite(data["measured_b/sample_four_vectors"][:]).all()
     if variant == "C":
         assert "oracle/truth_assignment_truth_neutrino/parents" in data
         assert "oracle/predicted_assignment_truth_neutrino/parents" in data
+        assert "oracle/neutrino_truth_assignment/invisible" in data
+        assert "oracle/neutrino_predicted_assignment/invisible" in data
 print("KNOT production evaluator smoke passed for", variant)
 PY
