@@ -349,6 +349,7 @@ def evaluate(args):
 
     predictions, truth_n_rows, truth_p_rows, lepton_rows = [], [], [], []
     assignment_rows = []
+    sampled_b_vectors_rows, sampled_b_tokens_rows, truth_b_tokens_rows = [], [], []
     oracle_rows = {
         "truth_assignment_truth_neutrino": [],
         "predicted_assignment_truth_neutrino": [],
@@ -380,6 +381,35 @@ def evaluate(args):
         diagnostics = assignment_diagnostics(probabilities, space, batch)
         assignment_rows.append(diagnostics)
 
+        # Save the measured b four-vector paired with each sampled assignment.
+        # Candidate states use the exact model-native topology leaf table.
+        b_token_indices, truth_b_token_indices = [], []
+        for role in ("top", "antitop"):
+            node_index = space.nodes.index(role)
+            leaf_table = batch["structured"]["pools"][role]["leaf_indices"]["b"]
+            sampled_candidate = posterior.assignment_candidates[..., node_index]
+            sampled_tokens = leaf_table[sampled_candidate, 0]
+            truth_candidate = torch.as_tensor(
+                diagnostics["truth_candidates"][:, node_index], device=device
+            )
+            safe_candidate = truth_candidate.clamp_min(0)
+            truth_tokens = leaf_table[safe_candidate, 0]
+            truth_tokens = torch.where(
+                batch["visible_assignment_support"].bool(),
+                truth_tokens,
+                torch.full_like(truth_tokens, -1),
+            )
+            b_token_indices.append(sampled_tokens)
+            truth_b_token_indices.append(truth_tokens)
+        sampled_tokens = torch.stack(b_token_indices, dim=-1)
+        truth_tokens = torch.stack(truth_b_token_indices, dim=-1)
+        batch_indices = torch.arange(len(sampled_tokens), device=device)[:, None, None]
+        sampled_b_vectors_rows.append(
+            as_numpy(batch["physics_vectors"][batch_indices, sampled_tokens])
+        )
+        sampled_b_tokens_rows.append(as_numpy(sampled_tokens))
+        truth_b_tokens_rows.append(as_numpy(truth_tokens))
+
         if args.variant == "C":
             keep = batch["visible_assignment_support"].bool().nonzero(as_tuple=False).flatten()
             if len(keep):
@@ -399,6 +429,9 @@ def evaluate(args):
     posterior = concatenate(predictions)
     n, p = as_numpy(posterior.invisible), as_numpy(posterior.parents)
     tn, tp, leptons = map(np.concatenate, (truth_n_rows, truth_p_rows, lepton_rows))
+    sampled_b_vectors = np.concatenate(sampled_b_vectors_rows)
+    sampled_b_tokens = np.concatenate(sampled_b_tokens_rows)
+    truth_b_tokens = np.concatenate(truth_b_tokens_rows)
     support = np.concatenate([row["support_mask"] for row in assignment_rows]).astype(bool)
     entropy = np.concatenate([row["entropy_nats"] for row in assignment_rows])
     truth_states = np.concatenate([row["truth_state"] for row in assignment_rows])
@@ -511,6 +544,9 @@ def evaluate(args):
             "TRUTH/assignment_candidates": truth_candidates,
             "TRUTH/assignment_support": support,
             "measured/leptons": leptons,
+            "measured_b/sample_four_vectors": sampled_b_vectors,
+            "measured_b/sample_token_indices": sampled_b_tokens,
+            "TRUTH/b_token_indices": truth_b_tokens,
             "diagnostics/assignment_entropy_nats": entropy,
         }.items():
             add_dataset(saved, name, value)
@@ -554,7 +590,9 @@ def evaluate(args):
         "evaluation_source_commit": subprocess.check_output(
             ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True
         ).strip(),
-        "branch": "research/knot-production-evaluator-v1",
+        "branch": subprocess.check_output(
+            ["git", "branch", "--show-current"], cwd=ROOT, text=True
+        ).strip(),
         "public_config": str(Path(args.config).resolve()),
         "research_config": str(Path(args.research).resolve()),
         "checkpoint": str(args.checkpoint.resolve()),
