@@ -203,7 +203,7 @@ def assignment_diagnostics(probabilities, space, batch):
             pred_row = table[pred.clamp_min(0)]
             target_row = table[target.clamp_min(0)]
             pred_row = torch.where(pred[:, None] >= 0, pred_row, -1)
-            leaves[f"{role}_{leaf_role}"] = (pred_row == target_row).all(-1)
+            leaves[f"{role}_{leaf_role.rsplit('.', 1)[-1]}"] = (pred_row == target_row).all(-1)
 
     return {
         "entropy_nats": as_numpy(entropy),
@@ -426,7 +426,7 @@ def evaluate(args):
         b_token_indices, truth_b_token_indices = [], []
         for role in ("top", "antitop"):
             node_index = space.nodes.index(role)
-            leaf_key = f"{role}_b"
+            leaf_key = f"{role}.b"
             leaf_table = batch["structured"]["pools"][role]["leaf_indices"][leaf_key]
             sampled_candidate = posterior.assignment_candidates[..., node_index]
             sampled_tokens = leaf_table[sampled_candidate, 0]
