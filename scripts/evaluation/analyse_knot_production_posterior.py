@@ -230,6 +230,12 @@ def point_metric(prediction, truth, *, periodic=False):
 
 
 def calibration(samples, truth):
+    if len(truth) == 0:
+        return {
+            "coverage": {"0.5": None, "0.68": None, "0.9": None},
+            "rank_PIT_histogram_10_bins": [0] * 10,
+            "width_vs_median_absolute_error": [],
+        }
     coverage = {}
     for level in (0.50, 0.68, 0.90):
         tail = (1.0 - level) / 2.0
@@ -241,7 +247,7 @@ def calibration(samples, truth):
     width = np.quantile(samples, 0.84, axis=1) - np.quantile(samples, 0.16, axis=1)
     center = np.median(samples, axis=1)
     order = np.argsort(width, kind="stable")
-    groups = np.array_split(order, min(5, len(order)))
+    groups = np.array_split(order, min(5, len(order))) if len(order) else []
     return {
         "coverage": coverage,
         "rank_PIT_histogram_10_bins": hist.astype(int).tolist(),
@@ -422,7 +428,8 @@ def wilson(successes, total, z=1.0):
 
 def bootstrap_comparison(arrays, replicates, seed):
     n_events = len(next(iter(arrays.values()))["mtt_squared_error"])
-    draws = np.random.default_rng(seed).integers(0, n_events, size=(replicates, n_events), dtype=np.int32)
+    random = np.random.default_rng(seed)
+    draws = random.integers(0, n_events, size=(replicates, n_events), dtype=np.int32)
 
     def statistic(values, index):
         if values.ndim == 1:
@@ -442,12 +449,18 @@ def bootstrap_comparison(arrays, replicates, seed):
     output = {}
     for label, (field, transform) in definitions.items():
         per_variant = {}
+        if transform in ("masked_mean", "masked_sqrt"):
+            valid = np.flatnonzero(np.isfinite(arrays["M"][field]))
+            for variant in VARIANTS[1:]:
+                if not np.array_equal(np.isfinite(arrays[variant][field]), np.isfinite(arrays["M"][field])):
+                    raise ValueError(f"Paired bootstrap population differs for {label}/{variant}")
+            conditional_draws = valid[random.integers(0, len(valid), size=(replicates, len(valid)))]
         for variant in VARIANTS:
             values = arrays[variant][field]
             if transform == "masked_mean":
-                replica = np.array([np.nanmean(values[index]) for index in draws])
+                replica = values[conditional_draws].mean(axis=1)
             elif transform == "masked_sqrt":
-                replica = np.array([np.sqrt(np.nanmean(values[index])) for index in draws])
+                replica = np.sqrt(values[conditional_draws].mean(axis=1))
             else:
                 replica = statistic(values, draws)
                 if transform == "sqrt":
@@ -487,14 +500,20 @@ def save_spectrum_figure(output, packs):
         all_values = [packs[v]["diagnostic_arrays"]["draws"][name].ravel() for v in VARIANTS]
         low = float(np.quantile(truth, 0.002))
         high = float(np.quantile(truth, 0.998))
+        if not high > low:
+            padding = max(abs(low) * 0.05, 1.0)
+            low, high = low - padding, high + padding
         if name in ("mttbar", "pTttbar", "top_pT"):
             low = max(0.0, low)
         edges = np.linspace(low, high, 41)
-        truth_hist, _ = np.histogram(truth, edges, density=True)
+        truth_counts, _ = np.histogram(truth, edges)
+        bin_width = np.diff(edges)
+        truth_hist = np.divide(truth_counts, truth_counts.sum() * bin_width, out=np.zeros_like(bin_width), where=truth_counts.sum() > 0)
         centers = 0.5 * (edges[:-1] + edges[1:])
         axes[0, column].step(centers, truth_hist, where="mid", color="#222222", lw=1.6, label="truth")
         for variant, samples in zip(VARIANTS, all_values):
-            hist, _ = np.histogram(samples, edges, density=True)
+            counts, _ = np.histogram(samples, edges)
+            hist = np.divide(counts, counts.sum() * bin_width, out=np.zeros_like(bin_width), where=counts.sum() > 0)
             axes[0, column].step(centers, hist, where="mid", color=COLORS[variant], label=variant)
             ratio = np.divide(hist, truth_hist, out=np.full_like(hist, np.nan), where=truth_hist > 0)
             axes[1, column].plot(centers, ratio, color=COLORS[variant], lw=1.0)
@@ -560,7 +579,8 @@ def save_core_plots(output, posterior, packs, njet, channels, common_support, en
                 residual = packs[variant]["diagnostic_arrays"]["points"]["mttbar"][mask] - packs[variant]["diagnostic_arrays"]["truth"]["mttbar"][mask]
                 rows["mtt_RMSE_GeV"].append((0.5 * (left + right), float(np.sqrt(np.mean(residual**2)))))
                 rows["joint_energy_score_GeV"].append((0.5 * (left + right), float(packs[variant]["diagnostic_arrays"]["joint"]["coherent_energy_score_by_event"][mask].mean())))
-        axis.plot(*np.asarray(rows["assignment_accuracy"]).T, "o-", color=colors[variant], label="MAP assignment accuracy")
+        if rows["assignment_accuracy"]:
+            axis.plot(*np.asarray(rows["assignment_accuracy"]).T, "o-", color=colors[variant], label="MAP assignment accuracy")
         axis.set_xlabel("assignment entropy [nats]")
         axis.set_ylabel("supported MAP accuracy")
         axis.set_ylim(0, 1.02)
@@ -582,8 +602,9 @@ def save_core_plots(output, posterior, packs, njet, channels, common_support, en
                 residual = packs[variant]["diagnostic_arrays"]["points"]["mttbar"][mask] - packs[variant]["diagnostic_arrays"]["truth"]["mttbar"][mask]
                 rows["mtt_RMSE_GeV"].append((center, float(np.sqrt(np.mean(residual**2)))))
                 rows["joint_energy_score_GeV"].append((center, float(packs[variant]["diagnostic_arrays"]["joint"]["coherent_energy_score_by_event"][mask].mean())))
-        axes[0].plot(*np.asarray(rows["mtt_RMSE_GeV"]).T, "o-", color=colors[variant], label=variant)
-        axes[1].plot(*np.asarray(rows["joint_energy_score_GeV"]).T, "o-", color=colors[variant], label=variant)
+        if rows["mtt_RMSE_GeV"]:
+            axes[0].plot(*np.asarray(rows["mtt_RMSE_GeV"]).T, "o-", color=colors[variant], label=variant)
+            axes[1].plot(*np.asarray(rows["joint_energy_score_GeV"]).T, "o-", color=colors[variant], label=variant)
     axes[0].set(xlabel="mean assignment entropy [nats]", ylabel="mtt RMSE [GeV]")
     axes[1].set(xlabel="mean assignment entropy [nats]", ylabel="joint energy score [GeV]")
     for axis in axes:
@@ -614,7 +635,7 @@ def save_core_plots(output, posterior, packs, njet, channels, common_support, en
         means, errors, centers = [], [], []
         for index, (lo, hi) in enumerate(pairwise(mtt_edges)):
             mask = (truth_mtt >= lo) & (truth_mtt <= hi if index == len(mtt_edges) - 2 else truth_mtt < hi)
-            means.append(float(residual[mask].mean()))
+            means.append(float(residual[mask].mean()) if mask.any() else np.nan)
             errors.append(float(residual[mask].std(ddof=1) / np.sqrt(mask.sum())) if mask.sum() > 1 else 0)
             centers.append(float(0.5 * (lo + hi)))
         ax.errorbar(centers, means, yerr=errors, fmt="o-", color=colors[variant], label=variant)
@@ -643,7 +664,7 @@ def save_core_plots(output, posterior, packs, njet, channels, common_support, en
     for axis, name in zip(axes, calibration_names):
         levels = np.array([0.5, 0.68, 0.9])
         for variant in VARIANTS:
-            coverage = [packs[variant]["metrics"]["posterior_calibration"][name]["coverage"][str(float(level))] for level in levels]
+            coverage = [packs[variant]["posterior_calibration"][name]["coverage"][str(float(level))] for level in levels]
             axis.plot(levels, coverage, "o-", color=colors[variant], label=variant)
         axis.plot([0, 1], [0, 1], color="#222222", ls="--", lw=0.8)
         axis.set(title=name, xlabel="nominal coverage", ylabel="empirical coverage", xlim=(0.4, 0.95), ylim=(0.35, 1.0))
@@ -721,7 +742,8 @@ def save_core_plots(output, posterior, packs, njet, channels, common_support, en
         residual = arrays["points"]["mttbar"] - truth_mtt
         for channel in ("ee", "mumu", "emu"):
             mask = channels == channel
-            axis.hist(residual[mask], bins=35, density=True, histtype="step", label=channel)
+            if mask.any():
+                axis.hist(residual[mask], bins=35, density=True, histtype="step", label=channel)
         axis.set(title=f"KNOT-{variant}", xlabel="mtt residual [GeV]", ylabel="density")
     axes[0].legend()
     fig.tight_layout()
@@ -832,17 +854,17 @@ def main():
         for index, (lo, hi) in enumerate(pairwise(mtt_edges)):
             mask = (truth_mtt >= lo) & (truth_mtt <= hi if index == len(mtt_edges) - 2 else truth_mtt < hi)
             residual = mtt_residual[mask]
-            differential[variant].append({"truth_mtt_low": float(lo), "truth_mtt_high": float(hi), "events": int(mask.sum()), "bias_GeV": float(residual.mean()), "RMSE_GeV": float(np.sqrt(np.mean(residual**2)))})
+            differential[variant].append({"truth_mtt_low": float(lo), "truth_mtt_high": float(hi), "events": int(mask.sum()), "bias_GeV": float(residual.mean()) if len(residual) else None, "RMSE_GeV": float(np.sqrt(np.mean(residual**2))) if len(residual) else None})
         channel_summary[variant] = {}
         for channel in ("ee", "mumu", "emu"):
             mask = channels == channel
             residual = mtt_residual[mask]
-            channel_summary[variant][channel] = {"events": int(mask.sum()), "mtt_bias_GeV": float(residual.mean()), "mtt_RMSE_GeV": float(np.sqrt(np.mean(residual**2))), "mtt_coverage68": calibration(mtt_draws[mask], truth_mtt[mask])["coverage"]["0.68"]}
+            channel_summary[variant][channel] = {"events": int(mask.sum()), "mtt_bias_GeV": float(residual.mean()) if mask.any() else None, "mtt_RMSE_GeV": float(np.sqrt(np.mean(residual**2))) if mask.any() else None, "mtt_coverage68": calibration(mtt_draws[mask], truth_mtt[mask])["coverage"]["0.68"]}
         entropy_summary[variant] = []
         entropy = posterior[variant]["diagnostics/assignment_entropy_nats"]
         for i, (lo, hi) in enumerate(pairwise(entropy_edges)):
             mask = support & (entropy >= lo) & ((entropy < hi) if i < len(entropy_edges)-2 else (entropy <= hi))
-            entropy_summary[variant].append({"entropy_low": float(lo), "entropy_high": float(hi), "events": int(mask.sum()), "MAP_accuracy": float(arrays["map_correct"][mask].mean()), "assignment_NLL": float(arrays["assignment_nll"][mask].mean()), "mtt_RMSE_GeV": float(np.sqrt(np.mean(mtt_residual[mask]**2))), "joint_energy_score_GeV": float(joint["coherent_energy_score_by_event"][mask].mean()), "decay_chain_delta_pt_RMSE_GeV": float(np.sqrt(np.mean(decay["pt_RMSE_by_event"]["coherent"][mask]**2)))})
+            entropy_summary[variant].append({"entropy_low": float(lo), "entropy_high": float(hi), "events": int(mask.sum()), "MAP_accuracy": float(arrays["map_correct"][mask].mean()) if mask.any() else None, "assignment_NLL": float(arrays["assignment_nll"][mask].mean()) if mask.any() else None, "mtt_RMSE_GeV": float(np.sqrt(np.mean(mtt_residual[mask]**2))) if mask.any() else None, "joint_energy_score_GeV": float(joint["coherent_energy_score_by_event"][mask].mean()) if mask.any() else None, "decay_chain_delta_pt_RMSE_GeV": float(np.sqrt(np.mean(decay["pt_RMSE_by_event"]["coherent"][mask]**2))) if mask.any() else None})
 
     spin_summary = {}
     for variant in VARIANTS:
