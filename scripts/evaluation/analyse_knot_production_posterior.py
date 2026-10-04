@@ -439,6 +439,9 @@ def bootstrap_comparison(arrays, replicates, seed):
     definitions = {
         "mtt_RMSE_GeV": ("mtt_squared_error", "sqrt"),
         "mtt_bias_GeV": ("mtt_residual", "mean"),
+        "pTttbar_RMSE_GeV": ("ttbar_pt_squared_error", "sqrt"),
+        "top_pT_RMSE_GeV": ("top_pt_squared_error", "sqrt"),
+        "nu_top_pz_RMSE_GeV": ("nu_top_pz_squared_error", "sqrt"),
         "joint_energy_score_GeV": ("joint_energy", "mean"),
         "joint_shuffle_penalty_GeV": ("joint_shuffle_penalty", "mean"),
         "decay_chain_delta_pt_RMSE_GeV": ("decay_pt_squared", "sqrt"),
@@ -485,6 +488,14 @@ def bootstrap_comparison(arrays, replicates, seed):
             },
             "paired_differences_vs_M_95pct": {
                 variant: None if variant == "M" else np.nanquantile(per_variant[variant] - per_variant["M"], [0.025, 0.975]).astype(float).tolist()
+                for variant in VARIANTS
+            },
+            "paired_differences_vs_C_68pct": {
+                variant: None if variant == "C" else np.nanquantile(per_variant[variant] - per_variant["C"], [0.16, 0.84]).astype(float).tolist()
+                for variant in VARIANTS
+            },
+            "paired_differences_vs_C_95pct": {
+                variant: None if variant == "C" else np.nanquantile(per_variant[variant] - per_variant["C"], [0.025, 0.975]).astype(float).tolist()
                 for variant in VARIANTS
             },
         }
@@ -843,6 +854,9 @@ def main():
         bootstrap_arrays[variant] = {
             "mtt_squared_error": mtt_residual**2,
             "mtt_residual": mtt_residual,
+            "ttbar_pt_squared_error": (arrays["points"]["pTttbar"] - arrays["truth"]["pTttbar"])**2,
+            "top_pt_squared_error": (arrays["points"]["top_pT"] - arrays["truth"]["top_pT"])**2,
+            "nu_top_pz_squared_error": (arrays["points"]["nu_top_pz"] - arrays["truth"]["nu_top_pz"])**2,
             "joint_energy": joint["coherent_energy_score_by_event"],
             "joint_shuffle_penalty": joint["shuffle_minus_coherent_by_event"],
             "decay_pt_squared": decay["pt_RMSE_by_event"]["coherent"]**2,
@@ -878,6 +892,53 @@ def main():
                 "coherent_vs_shuffled_event_SE": float(np.std(posterior[variant][f"spin/paired/{name}"].mean(axis=1) - posterior[variant][f"spin/shuffled/{name}"].mean(axis=1), ddof=1) / np.sqrt(len(event_ids))),
             }
     bootstrap = bootstrap_comparison(bootstrap_arrays, args.bootstrap_replicates, args.seed + 550)
+    shuffle_intervals = bootstrap["joint_shuffle_penalty_GeV"]["paired_bootstrap_95pct_interval"]
+    mtt_differences = bootstrap["mtt_RMSE_GeV"]["paired_differences_vs_M_95pct"]
+    pt_differences = bootstrap["pTttbar_RMSE_GeV"]["paired_differences_vs_M_95pct"]
+    c_shuffle = shuffle_intervals["C"]
+    j_shuffle = shuffle_intervals["J"]
+    m_shuffle = shuffle_intervals["M"]
+    coherent_shuffle_effect = c_shuffle[0] > 0 and j_shuffle[0] > 0
+    marginal_metrics_comparable = all(
+        interval[0] <= 0 <= interval[1]
+        for interval in (mtt_differences["C"], mtt_differences["J"], pt_differences["C"], pt_differences["J"])
+    )
+    if coherent_shuffle_effect:
+        mechanism = "KNOT_MECHANISM_CONFIRMED"
+    elif c_shuffle[1] < 0 and j_shuffle[1] < 0:
+        mechanism = "KNOT_MECHANISM_NOT_SUPPORTED"
+    else:
+        mechanism = "KNOT_MECHANISM_NOT_RESOLVED"
+    if coherent_shuffle_effect and marginal_metrics_comparable:
+        pilot_outcome = "K1"
+    elif coherent_shuffle_effect and bootstrap["joint_energy_score_GeV"]["paired_differences_vs_C_95pct"]["J"][1] < 0:
+        pilot_outcome = "K2"
+    elif all(interval[0] <= 0 <= interval[1] for interval in (mtt_differences["C"], mtt_differences["J"])) and not coherent_shuffle_effect:
+        pilot_outcome = "K3"
+    elif mtt_differences["C"][0] > 0 and mtt_differences["J"][0] > 0:
+        pilot_outcome = "K4"
+    else:
+        pilot_outcome = "K3"
+    spin_pairing_sensitive = {
+        variant: {
+            name: abs(spin_summary[variant][name]["coherent_mean"] - spin_summary[variant][name]["shuffled_mean"])
+            > 2 * spin_summary[variant][name]["coherent_vs_shuffled_event_SE"]
+            for name in SPIN_NAMES
+        }
+        for variant in VARIANTS
+    }
+    spin_pairing_sensitive["labframe_delta_phi_ll_control_insensitive"] = all(
+        not spin_pairing_sensitive[variant]["delta_phi_ll"] for variant in VARIANTS
+    )
+    parameter_counts = freeze["training"]["parameter_counts"]
+    c_total = parameter_counts["C"]["total"]
+    j_total = parameter_counts["J"]["total"]
+    c_vs_j = {
+        "J_minus_C_joint_energy_score_95pct_GeV": bootstrap["joint_energy_score_GeV"]["paired_differences_vs_C_95pct"]["J"],
+        "J_minus_C_mtt_RMSE_95pct_GeV": bootstrap["mtt_RMSE_GeV"]["paired_differences_vs_C_95pct"]["J"],
+        "J_parameter_count_fraction_above_C": float((j_total - c_total) / c_total),
+        "interpretation": "A measured J-C difference is a finite-capacity, optimization, inductive-bias or sequential-error-propagation effect; it is not evidence that J is more expressive in principle.",
+    }
     summary = {
         "events": len(event_ids),
         "samples_per_event": int(posterior["M"]["sample_index"].shape[1]),
@@ -894,9 +955,15 @@ def main():
         "entropy_diagnostics": entropy_summary,
         "channel_robustness": channel_summary,
         "spin_hybrid": spin_summary,
+        "spin_pairing_sensitivity": spin_pairing_sensitive,
         "paired_event_bootstrap": {"replicates": args.bootstrap_replicates, "seed": args.seed + 550, "uncertainty_scope": "validation event sampling only; one fixed training seed", "metrics": bootstrap},
-        "KNOT_MECHANISM": "NOT_RESOLVED",
-        "production_decision": "KNOT_FULL_GPU_CAMPAIGN_WITH_EVALUATOR_UPDATE_ONLY",
+        "KNOT_MECHANISM": mechanism,
+        "KNOT_pilot_outcome": pilot_outcome,
+        "KNOT_C_vs_J": c_vs_j,
+        "marginal_metrics_comparable_CJ_vs_M": marginal_metrics_comparable,
+        "marginal_shuffle_effect_M_95pct_GeV": m_shuffle,
+        "followup_training_decision": "Keep the matched M/C/J checkpoints and use the evaluator outputs for interpretation; make no architecture change from one training seed. If a future meaningful J-C difference appears, treat capacity/optimization as controls before an expressivity claim.",
+        "production_decision": "KNOT_FULL_GPU_CAMPAIGN_WITH_EVALUATOR_UPDATE_ONLY" if pilot_outcome != "K4" else "KNOT_FULL_GPU_CAMPAIGN_PAUSE_FOR_SPECIFIC_ISSUE",
     }
     if "oracle/truth_assignment_truth_neutrino/parents" in posterior["C"]:
         c = posterior["C"]
