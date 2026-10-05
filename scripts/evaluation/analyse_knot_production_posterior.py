@@ -328,7 +328,7 @@ def decay_chain_diagnostics(posterior, truth_n, truth_p, leptons, seed):
         ("truth_assignment_truth_neutrino_truth_parent", truth_baseline),
         ("coherent", coherent),
         ("assignment_b_shuffled", assignment_shuffled),
-        ("neutrino_parent_pair_shuffled", np_shuffled),
+        ("neutrino_sample_shuffled", np_shuffled),
     ):
         summaries[label] = {
             name: {
@@ -337,12 +337,19 @@ def decay_chain_diagnostics(posterior, truth_n, truth_p, leptons, seed):
             }
             for name, value in data.items()
         }
-    return {
-        "summary": summaries,
-        "pt_RMSE_by_event": {"coherent": np.sqrt(np.mean(coherent["delta_pt"] ** 2, axis=(1, 2))),
-                              "assignment_b_shuffled": np.sqrt(np.mean(assignment_shuffled["delta_pt"] ** 2, axis=(1, 2))),
-                              "neutrino_parent_pair_shuffled": np.sqrt(np.mean(np_shuffled["delta_pt"] ** 2, axis=(1, 2)))},
+    values = {
+        "coherent": coherent,
+        "assignment_b_shuffled": assignment_shuffled,
+        "neutrino_sample_shuffled": np_shuffled,
     }
+    rmse_by_event = {
+        label: {
+            name: np.sqrt(np.mean(residual**2, axis=(1, 2)))
+            for name, residual in row.items()
+        }
+        for label, row in values.items()
+    }
+    return {"summary": summaries, "rmse_by_event": rmse_by_event}
 
 
 def metric_pack(posterior, metrics, truth_n, truth_p, seed):
@@ -425,8 +432,14 @@ def bootstrap_comparison(arrays, replicates, seed):
         "joint_shuffle_penalty_GeV": ("joint_shuffle_penalty", "mean"),
         "decay_chain_delta_pt_RMSE_GeV": ("decay_pt_squared", "sqrt"),
         "mtt_68_coverage": ("mtt_covered_68", "mean"),
+        "mtt_68_coverage_absolute_error": ("mtt_covered_68", "coverage_error"),
         "assignment_accuracy_supported": ("assignment_correct", "masked_mean"),
         "high_mtt_RMSE_GeV": ("high_mtt_squared_error", "masked_sqrt"),
+        "high_mtt_bias_GeV": ("high_mtt_residual", "masked_mean"),
+        "high_mtt_coverage68": ("high_mtt_covered_68", "masked_mean"),
+        "high_mtt_joint_energy_score_GeV": ("high_mtt_joint_energy", "masked_mean"),
+        "high_mtt_decay_chain_delta_pt_RMSE_GeV": ("high_mtt_decay_pt_squared", "masked_sqrt"),
+        "mtt_migration_diagonal_retention": ("mtt_migration_diagonal_retained", "mean"),
     }
     output = {}
     for label, (field, transform) in definitions.items():
@@ -447,10 +460,16 @@ def bootstrap_comparison(arrays, replicates, seed):
                 replica = statistic(values, draws)
                 if transform == "sqrt":
                     replica = np.sqrt(replica)
+                elif transform == "coverage_error":
+                    replica = np.abs(replica - 0.68)
             per_variant[variant] = replica
         output[label] = {
             "estimate": {
-                variant: float(np.nanmean(arrays[variant][field]) ** (0.5 if transform in ("sqrt", "masked_sqrt") else 1.0))
+                variant: (
+                    float(np.abs(np.nanmean(arrays[variant][field]) - 0.68))
+                    if transform == "coverage_error"
+                    else float(np.nanmean(arrays[variant][field]) ** (0.5 if transform in ("sqrt", "masked_sqrt") else 1.0))
+                )
                 for variant in VARIANTS
             },
             "paired_bootstrap_68pct_interval": {
@@ -479,6 +498,100 @@ def bootstrap_comparison(arrays, replicates, seed):
             },
         }
     return output
+
+
+def paired_difference_bootstrap(left, right, replicates, seed, *, square_root=False):
+    """Paired event-bootstrap for a metric difference, preserving event pairing."""
+    random = np.random.default_rng(seed)
+    event_count = len(left[VARIANTS[0]])
+    index = random.integers(0, event_count, size=(replicates, event_count), dtype=np.int32)
+    result = {}
+    for variant in VARIANTS:
+        a, b = np.asarray(left[variant]), np.asarray(right[variant])
+        if a.shape != b.shape or a.ndim != 1:
+            raise ValueError(f"Paired difference arrays do not align for {variant}")
+        if len(a) != event_count:
+            raise ValueError(f"Paired difference event count differs for {variant}")
+        if square_root:
+            values = np.sqrt(a[index].mean(axis=1)) - np.sqrt(b[index].mean(axis=1))
+            estimate = float(np.sqrt(a.mean()) - np.sqrt(b.mean()))
+        else:
+            values = a[index].mean(axis=1) - b[index].mean(axis=1)
+            estimate = float(a.mean() - b.mean())
+        result[variant] = {
+            "estimate": estimate,
+            "paired_bootstrap_68pct_interval": np.quantile(values, [0.16, 0.84]).tolist(),
+            "paired_bootstrap_95pct_interval": np.quantile(values, [0.025, 0.975]).tolist(),
+        }
+    return result
+
+
+def grouped_bootstrap_metrics(per_event, mask, replicates, seed, transforms):
+    """Paired model metrics within one common, predeclared event group."""
+    indices = np.flatnonzero(mask)
+    if not len(indices):
+        return {name: None for name in transforms}
+    random = np.random.default_rng(seed)
+    chosen = indices[random.integers(0, len(indices), size=(replicates, len(indices)), dtype=np.int32)]
+    result = {}
+    for name, (field, transform) in transforms.items():
+        samples = {}
+        for variant in VARIANTS:
+            values = np.asarray(per_event[variant][field])
+            selected = values[chosen]
+            if transform == "rmse":
+                samples[variant] = np.sqrt(selected.mean(axis=1))
+                estimate = float(np.sqrt(values[indices].mean()))
+            elif transform == "mean":
+                samples[variant] = selected.mean(axis=1)
+                estimate = float(values[indices].mean())
+            else:
+                raise ValueError(f"Unknown grouped bootstrap transform {transform}")
+            result.setdefault(name, {}).setdefault("estimate", {})[variant] = estimate
+            result[name].setdefault("paired_bootstrap_95pct_interval", {})[variant] = np.quantile(
+                samples[variant], [0.025, 0.975]
+            ).tolist()
+        result[name]["paired_difference_vs_M_95pct"] = {
+            variant: None if variant == "M" else np.quantile(samples[variant] - samples["M"], [0.025, 0.975]).tolist()
+            for variant in VARIANTS
+        }
+        result[name]["paired_difference_vs_C_95pct"] = {
+            variant: None if variant == "C" else np.quantile(samples[variant] - samples["C"], [0.025, 0.975]).tolist()
+            for variant in VARIANTS
+        }
+    return result
+
+
+def migration_summary(truth, predictions, edges):
+    """Truth-to-posterior-mean migration with explicit row normalization."""
+    summary = {}
+    truth_bin = np.clip(np.digitize(truth, edges[1:-1]), 0, len(edges) - 2)
+    for variant in VARIANTS:
+        prediction_bin = np.clip(np.digitize(predictions[variant], edges[1:-1]), 0, len(edges) - 2)
+        counts = np.zeros((len(edges) - 1, len(edges) - 1), dtype=np.int64)
+        np.add.at(counts, (truth_bin, prediction_bin), 1)
+        row_totals = counts.sum(axis=1, keepdims=True)
+        conditional = np.divide(
+            counts,
+            row_totals,
+            out=np.zeros_like(counts, dtype=np.float64),
+            where=row_totals > 0,
+        )
+        diagonal_event = truth_bin == prediction_bin
+        summary[variant] = {
+            "events": len(truth),
+            "truth_bin_edges_GeV": edges.tolist(),
+            "predicted_underflow_overflow": "retained in first/last truth-quantile bin",
+            "counts_truth_rows_predicted_columns": counts.tolist(),
+            "row_normalized_fraction": conditional.tolist(),
+            "diagonal_retention": float(diagonal_event.mean()),
+            "diagonal_retention_by_truth_bin": [
+                float(conditional[i, i]) if row_totals[i, 0] else None
+                for i in range(len(edges) - 1)
+            ],
+            "diagonal_retained_by_event": diagonal_event,
+        }
+    return summary
 
 
 def save_spectrum_figure(output, packs):
@@ -524,18 +637,15 @@ def save_core_plots(output, posterior, packs, njet, channels, common_support, en
     save_spectrum_figure(output, packs)
     colors = COLORS
 
-    fig, axes = plt.subplots(1, 3, figsize=(13, 4))
-    jet_bins = np.unique(np.quantile(njet, np.linspace(0, 1, 9)).astype(int))
-    if len(jet_bins) < 2:
-        jet_bins = np.array([int(njet.min()), int(njet.max()) + 1])
-    jet_pairs = list(pairwise(jet_bins))
-    groups = [(int(low), int(high), (njet >= low) & (njet <= high if i == len(jet_pairs)-1 else njet < high)) for i, (low, high) in enumerate(jet_pairs)]
-    for variant, axis in zip(VARIANTS, axes):
+    fig, axes = plt.subplots(2, 3, figsize=(14, 7), sharex=True)
+    physical_njet = np.sort(np.unique(njet))
+    for variant, column in zip(VARIANTS, range(len(VARIANTS))):
+        accuracy_axis, support_axis = axes[:, column]
         support = posterior[variant]["TRUTH/assignment_support"].astype(bool)
         node_correct = posterior[variant]["diagnostics/assignment_MAP_node_correct"].astype(bool).all(axis=1)
-        xs, accuracy, low, high, support_fraction = [], [], [], [], []
-        for low_edge, high_edge, mask in groups:
-            xs.append(0.5 * (low_edge + high_edge))
+        accuracy, low, high, support_fraction = [], [], [], []
+        for jet_count in physical_njet:
+            mask = njet == jet_count
             total = int(mask.sum())
             supported = mask & support
             count = int(supported.sum())
@@ -545,22 +655,27 @@ def save_core_plots(output, posterior, packs, njet, channels, common_support, en
             interval = wilson(int(node_correct[supported].sum()), count)
             low.append(accuracy[-1] - interval[0] if interval else np.nan)
             high.append(interval[1] - accuracy[-1] if interval else np.nan)
-        axis.errorbar(xs, accuracy, yerr=[low, high], fmt="o-", color=colors[variant], label="MAP accuracy, supported")
-        axis.plot(xs, support_fraction, "s--", color="#555555", label="truth support")
-        axis.set_title(f"KNOT-{variant}")
-        axis.set_xlabel("measured jet multiplicity")
-        axis.set_ylim(0, 1.03)
-        axis.grid(alpha=0.2)
-    axes[0].set_ylabel("fraction")
-    axes[0].legend(fontsize=8)
+        accuracy_axis.errorbar(physical_njet, accuracy, yerr=[low, high], fmt="o-", color=colors[variant], label="complete MAP accuracy")
+        accuracy_axis.set_title(f"KNOT-{variant}")
+        accuracy_axis.set_ylim(0, 1.03)
+        accuracy_axis.grid(alpha=0.2)
+        support_axis.plot(physical_njet, support_fraction, "s--", color="#555555", label="truth support")
+        support_axis.set_xticks(physical_njet)
+        support_axis.set_xlabel("physical measured jet multiplicity")
+        support_axis.set_ylim(0, 1.03)
+        support_axis.grid(alpha=0.2)
+    axes[0, 0].set_ylabel("supported complete accuracy")
+    axes[1, 0].set_ylabel("truth assignment support fraction")
+    axes[0, 0].legend(fontsize=8)
+    axes[1, 0].legend(fontsize=8)
     fig.tight_layout()
     fig.savefig(output / "assignment_by_jet_multiplicity.png", dpi=160)
     plt.close(fig)
 
     fig, axes = plt.subplots(1, 3, figsize=(13, 4))
     for variant, axis in zip(VARIANTS, axes):
-        entropy = posterior[variant]["diagnostics/assignment_entropy_nats"]
-        supported = posterior[variant]["TRUTH/assignment_support"].astype(bool) & common_support
+        entropy = np.mean([posterior[v]["diagnostics/assignment_entropy_nats"] for v in VARIANTS], axis=0)
+        supported = common_support
         rows = {"assignment_accuracy": [], "mtt_RMSE_GeV": [], "joint_energy_score_GeV": []}
         for index, (left, right) in enumerate(pairwise(entropy_edges)):
             mask = supported & (entropy >= left) & ((entropy < right) if index < len(entropy_edges)-2 else (entropy <= right))
@@ -582,8 +697,8 @@ def save_core_plots(output, posterior, packs, njet, channels, common_support, en
 
     fig, axes = plt.subplots(1, 2, figsize=(10, 4))
     for variant in VARIANTS:
-        entropy = posterior[variant]["diagnostics/assignment_entropy_nats"]
-        supported = posterior[variant]["TRUTH/assignment_support"].astype(bool) & common_support
+        entropy = np.mean([posterior[v]["diagnostics/assignment_entropy_nats"] for v in VARIANTS], axis=0)
+        supported = common_support
         rows = {"mtt_RMSE_GeV": [], "joint_energy_score_GeV": []}
         for index, (left, right) in enumerate(pairwise(entropy_edges)):
             mask = supported & (entropy >= left) & ((entropy < right) if index < len(entropy_edges)-2 else (entropy <= right))
@@ -637,9 +752,12 @@ def save_core_plots(output, posterior, packs, njet, channels, common_support, en
     plt.close(fig)
 
     fig, axes = plt.subplots(1, 3, figsize=(14, 4))
+    truth_bin = np.clip(np.digitize(truth_mtt, mtt_edges[1:-1]), 0, len(mtt_edges) - 2)
     for variant, axis in zip(VARIANTS, axes):
         pred = packs[variant]["diagnostic_arrays"]["draws"]["mttbar"].mean(axis=1)
-        matrix, _, _ = np.histogram2d(truth_mtt, pred, bins=(mtt_edges, mtt_edges))
+        prediction_bin = np.clip(np.digitize(pred, mtt_edges[1:-1]), 0, len(mtt_edges) - 2)
+        matrix = np.zeros((len(mtt_edges) - 1, len(mtt_edges) - 1), dtype=np.float64)
+        np.add.at(matrix, (truth_bin, prediction_bin), 1)
         matrix = np.divide(matrix, matrix.sum(axis=1, keepdims=True), out=np.zeros_like(matrix), where=matrix.sum(axis=1, keepdims=True) > 0)
         image = axis.imshow(matrix, origin="lower", aspect="auto", vmin=0, vmax=1, cmap="viridis")
         axis.plot([0, len(mtt_edges)-2], [0, len(mtt_edges)-2], color="white", ls="--", lw=0.8)
@@ -680,8 +798,13 @@ def save_core_plots(output, posterior, packs, njet, channels, common_support, en
     fig, axes = plt.subplots(1, 3, figsize=(13, 4))
     for variant, axis in zip(VARIANTS, axes):
         decay = packs[variant]["diagnostic_arrays"]["decay"]
-        for label in ("coherent", "assignment_b_shuffled", "neutrino_parent_pair_shuffled"):
-            axis.hist(decay["pt_RMSE_by_event"][label], bins=35, density=True, histtype="step", label=label.replace("_", " "))
+        labels = {
+            "coherent": "coherent",
+            "assignment_b_shuffled": "B/A sample pairing shuffled",
+            "neutrino_sample_shuffled": "neutrino samples shuffled across k",
+        }
+        for label, display in labels.items():
+            axis.hist(decay["rmse_by_event"][label]["delta_pt"], bins=35, density=True, histtype="step", label=display)
         axis.set(title=f"KNOT-{variant}", xlabel=r"per-event decay-chain $\Delta p_T$ RMSE [GeV]", ylabel="density")
     axes[0].legend(fontsize=7)
     fig.tight_layout()
@@ -791,6 +914,26 @@ def main():
     for variant in VARIANTS:
         posterior[variant], training_metrics[variant] = read_variant(args.evaluation, variant)
     event_ids = posterior["M"]["EVENT_ID"].astype(np.int64)
+    selection_dir = output / "selection"
+    selection_dir.mkdir()
+    selection_ids_path = selection_dir / "validation_10k_event_ids.npy"
+    np.save(selection_ids_path, event_ids, allow_pickle=False)
+    selection_manifest = {
+        "requested_events": len(event_ids),
+        "full_validation_events": int(freeze["data"]["validation"]["events"]),
+        "full_validation_membership_sha256_sorted_little_endian_int64": freeze["data"]["validation"]["event_id_membership_sha256_sorted_little_endian_int64"],
+        "event_id_sha256_ordered_little_endian_int64": sha256_ids(event_ids),
+        "membership_identity": "ordered EVENT_ID values read from the completed M/C/J posterior HDF5 files",
+        "ranking": "splitmix64_event_id_v1",
+        "ranking_seed": int(args.seed + 200),
+        "posterior_sampling_seed": int(args.seed),
+        "selected_ids_path": str(selection_ids_path),
+        "validation_order_preserved": True,
+        "reserved_test_used": False,
+    }
+    (selection_dir / "validation_10k_selection.json").write_text(
+        json.dumps(selection_manifest, indent=2) + "\n"
+    )
     for variant in VARIANTS[1:]:
         if not np.array_equal(event_ids, posterior[variant]["EVENT_ID"]):
             raise ValueError("M/C/J evaluation must use exactly the same ordered EVENT_ID values")
@@ -798,6 +941,12 @@ def main():
             raise ValueError("M/C/J posterior sample budgets or event-local indices differ")
     njet, channels = join_measured_categories(event_ids, measured_path)
     truth_n, truth_p = posterior["M"]["TRUTH/neutrinos"], posterior["M"]["TRUTH/parents"]
+    spin_definitions = {
+        variant: json.loads(str(posterior[variant]["attrs"]["spin_definition"]))
+        for variant in VARIANTS
+    }
+    if any(spin_definitions[v] != spin_definitions["M"] for v in VARIANTS[1:]):
+        raise ValueError("M/C/J spin-observable definitions differ")
     for variant in VARIANTS[1:]:
         if not np.array_equal(truth_n, posterior[variant]["TRUTH/neutrinos"]) or not np.array_equal(truth_p, posterior[variant]["TRUTH/parents"]):
             raise ValueError("M/C/J event truth arrays do not match in the shared evaluation order")
@@ -815,10 +964,37 @@ def main():
     if len(mtt_edges) < 3:
         raise ValueError("Truth mttbar sample does not support migration bins")
 
-    differential, channel_summary, entropy_summary = {}, {}, {}
+    differential, channel_summary, entropy_summary = {}, {}, []
     bootstrap_arrays = {}
+    per_event_group_metrics = {}
+    predictions_mtt = {
+        variant: packs[variant]["diagnostic_arrays"]["points"]["mttbar"]
+        for variant in VARIANTS
+    }
+    migration = migration_summary(truth_mtt, predictions_mtt, mtt_edges)
+    migration_events = {
+        variant: migration[variant].pop("diagonal_retained_by_event")
+        for variant in VARIANTS
+    }
+    support_by_njet = {}
+    for jet_count in np.unique(njet):
+        physical_bin = njet == jet_count
+        support_by_njet[str(int(jet_count))] = {
+            "events": int(physical_bin.sum()),
+            "variants": {},
+        }
+        for variant in VARIANTS:
+            variant_support = posterior[variant]["TRUTH/assignment_support"].astype(bool)
+            supported = physical_bin & variant_support
+            correct = packs[variant]["diagnostic_arrays"]["map_correct"]
+            support_by_njet[str(int(jet_count))]["variants"][variant] = {
+                "supported_events": int(supported.sum()),
+                "support_fraction": float(supported.sum() / physical_bin.sum()),
+                "complete_MAP_accuracy_supported": float(correct[supported].mean()) if supported.any() else None,
+            }
     threshold = float(np.quantile(truth_mtt, 0.90))
     high_tail = truth_mtt >= threshold
+    high_mtt_summary = {}
     for variant in VARIANTS:
         arrays = packs[variant]["diagnostic_arrays"]
         support_v = arrays["support"]
@@ -828,6 +1004,10 @@ def main():
         mtt_draws = arrays["draws"]["mttbar"]
         low68, high68 = np.quantile(mtt_draws, [0.16, 0.84], axis=1)
         high_sq = np.where(high_tail, mtt_residual**2, np.nan)
+        covered68 = ((truth_mtt >= low68) & (truth_mtt <= high68)).astype(float)
+        decay_pt = decay["rmse_by_event"]["coherent"]["delta_pt"]
+        assignment_shuffle_pt = decay["rmse_by_event"]["assignment_b_shuffled"]["delta_pt"]
+        neutrino_shuffle_pt = decay["rmse_by_event"]["neutrino_sample_shuffled"]["delta_pt"]
         accuracy = np.where(support_v, arrays["map_correct"], np.nan).astype(float)
         bootstrap_arrays[variant] = {
             "mtt_squared_error": mtt_residual**2,
@@ -837,10 +1017,30 @@ def main():
             "nu_top_pz_squared_error": (arrays["points"]["nu_top_pz"] - arrays["truth"]["nu_top_pz"])**2,
             "joint_energy": joint["coherent_energy_score_by_event"],
             "joint_shuffle_penalty": joint["shuffle_minus_coherent_by_event"],
-            "decay_pt_squared": decay["pt_RMSE_by_event"]["coherent"]**2,
-            "mtt_covered_68": ((truth_mtt >= low68) & (truth_mtt <= high68)).astype(float),
+            "decay_pt_squared": decay_pt**2,
+            "decay_pt_assignment_shuffle_squared": assignment_shuffle_pt**2,
+            "decay_pt_neutrino_shuffle_squared": neutrino_shuffle_pt**2,
+            "decay_mass_squared": decay["rmse_by_event"]["coherent"]["delta_mass"]**2,
+            "decay_mass_assignment_shuffle_squared": decay["rmse_by_event"]["assignment_b_shuffled"]["delta_mass"]**2,
+            "decay_mass_neutrino_shuffle_squared": decay["rmse_by_event"]["neutrino_sample_shuffled"]["delta_mass"]**2,
+            "decay_deltaR_squared": decay["rmse_by_event"]["coherent"]["delta_R"]**2,
+            "decay_deltaR_assignment_shuffle_squared": decay["rmse_by_event"]["assignment_b_shuffled"]["delta_R"]**2,
+            "decay_deltaR_neutrino_shuffle_squared": decay["rmse_by_event"]["neutrino_sample_shuffled"]["delta_R"]**2,
+            "mtt_covered_68": covered68,
             "assignment_correct": accuracy,
             "high_mtt_squared_error": high_sq,
+            "high_mtt_residual": np.where(high_tail, mtt_residual, np.nan),
+            "high_mtt_covered_68": np.where(high_tail, covered68, np.nan),
+            "high_mtt_joint_energy": np.where(high_tail, joint["coherent_energy_score_by_event"], np.nan),
+            "high_mtt_decay_pt_squared": np.where(high_tail, decay_pt**2, np.nan),
+            "mtt_migration_diagonal_retained": migration_events[variant].astype(float),
+        }
+        per_event_group_metrics[variant] = {
+            "assignment_accuracy": arrays["map_correct"].astype(float),
+            "assignment_nll": arrays["assignment_nll"],
+            "mtt_squared_error": mtt_residual**2,
+            "joint_energy": joint["coherent_energy_score_by_event"],
+            "decay_pt_squared": decay_pt**2,
         }
         differential[variant] = []
         for index, (lo, hi) in enumerate(pairwise(mtt_edges)):
@@ -852,11 +1052,53 @@ def main():
             mask = channels == channel
             residual = mtt_residual[mask]
             channel_summary[variant][channel] = {"events": int(mask.sum()), "mtt_bias_GeV": float(residual.mean()) if mask.any() else None, "mtt_RMSE_GeV": float(np.sqrt(np.mean(residual**2))) if mask.any() else None, "mtt_coverage68": calibration(mtt_draws[mask], truth_mtt[mask])["coverage"]["0.68"]}
-        entropy_summary[variant] = []
-        entropy = posterior[variant]["diagnostics/assignment_entropy_nats"]
-        for i, (lo, hi) in enumerate(pairwise(entropy_edges)):
-            mask = support & (entropy >= lo) & ((entropy < hi) if i < len(entropy_edges)-2 else (entropy <= hi))
-            entropy_summary[variant].append({"entropy_low": float(lo), "entropy_high": float(hi), "events": int(mask.sum()), "MAP_accuracy": float(arrays["map_correct"][mask].mean()) if mask.any() else None, "assignment_NLL": float(arrays["assignment_nll"][mask].mean()) if mask.any() else None, "mtt_RMSE_GeV": float(np.sqrt(np.mean(mtt_residual[mask]**2))) if mask.any() else None, "joint_energy_score_GeV": float(joint["coherent_energy_score_by_event"][mask].mean()) if mask.any() else None, "decay_chain_delta_pt_RMSE_GeV": float(np.sqrt(np.mean(decay["pt_RMSE_by_event"]["coherent"][mask]**2))) if mask.any() else None})
+        high_mtt_summary[variant] = {
+            "truth_decile_threshold_GeV": threshold,
+            "events": int(high_tail.sum()),
+            "mtt_bias_GeV": float(mtt_residual[high_tail].mean()),
+            "mtt_RMSE_GeV": float(np.sqrt(np.mean(mtt_residual[high_tail] ** 2))),
+            "mtt_coverage68": float(covered68[high_tail].mean()),
+            "joint_energy_score_GeV": float(joint["coherent_energy_score_by_event"][high_tail].mean()),
+            "decay_chain_delta_pt_RMSE_GeV": float(np.sqrt(np.mean(decay_pt[high_tail] ** 2))),
+        }
+
+    entropy_transforms = {
+        "assignment_accuracy": ("assignment_accuracy", "mean"),
+        "assignment_NLL": ("assignment_nll", "mean"),
+        "mtt_RMSE_GeV": ("mtt_squared_error", "rmse"),
+        "joint_energy_score_GeV": ("joint_energy", "mean"),
+        "decay_chain_delta_pt_RMSE_GeV": ("decay_pt_squared", "rmse"),
+    }
+    for index, (lo, hi) in enumerate(pairwise(entropy_edges)):
+        bin_mask = support & (mean_entropy >= lo) & (
+            (mean_entropy < hi) if index < len(entropy_edges) - 2 else (mean_entropy <= hi)
+        )
+        per_variant = {}
+        for variant in VARIANTS:
+            arrays = packs[variant]["diagnostic_arrays"]
+            residual = arrays["points"]["mttbar"] - truth_mtt
+            per_variant[variant] = {
+                "MAP_accuracy": float(arrays["map_correct"][bin_mask].mean()),
+                "assignment_NLL": float(arrays["assignment_nll"][bin_mask].mean()),
+                "mtt_RMSE_GeV": float(np.sqrt(np.mean(residual[bin_mask] ** 2))),
+                "joint_energy_score_GeV": float(arrays["joint"]["coherent_energy_score_by_event"][bin_mask].mean()),
+                "decay_chain_delta_pt_RMSE_GeV": float(np.sqrt(np.mean(arrays["decay"]["rmse_by_event"]["coherent"]["delta_pt"][bin_mask] ** 2))),
+            }
+        entropy_summary.append({
+            "bin": index,
+            "common_mean_entropy_low_nats": float(lo),
+            "common_mean_entropy_high_nats": float(hi),
+            "events": int(bin_mask.sum()),
+            "mean_common_entropy_nats": float(mean_entropy[bin_mask].mean()),
+            "variants": per_variant,
+            "paired_bootstrap_95pct": grouped_bootstrap_metrics(
+                per_event_group_metrics,
+                bin_mask,
+                args.bootstrap_replicates,
+                args.seed + 610 + index,
+                entropy_transforms,
+            ),
+        })
 
     spin_summary = {}
     for variant in VARIANTS:
@@ -870,6 +1112,36 @@ def main():
                 "coherent_vs_shuffled_event_SE": float(np.std(posterior[variant][f"spin/paired/{name}"].mean(axis=1) - posterior[variant][f"spin/shuffled/{name}"].mean(axis=1), ddof=1) / np.sqrt(len(event_ids))),
             }
     bootstrap = bootstrap_comparison(bootstrap_arrays, args.bootstrap_replicates, args.seed + 550)
+    decay_shuffle_comparison = {}
+    for index, (metric, field) in enumerate(
+        (("delta_pt", "decay_pt"), ("delta_mass", "decay_mass"), ("delta_R", "decay_deltaR"))
+    ):
+        coherent = {
+            variant: bootstrap_arrays[variant][f"{field}_squared"]
+            for variant in VARIANTS
+        }
+        decay_shuffle_comparison[metric] = {
+            "assignment_B_sample_pairing_shuffled_minus_coherent_RMSE": paired_difference_bootstrap(
+                {
+                    variant: bootstrap_arrays[variant][f"{field}_assignment_shuffle_squared"]
+                    for variant in VARIANTS
+                },
+                coherent,
+                args.bootstrap_replicates,
+                args.seed + 650 + index,
+                square_root=True,
+            ),
+            "neutrino_sample_shuffled_minus_coherent_RMSE": paired_difference_bootstrap(
+                {
+                    variant: bootstrap_arrays[variant][f"{field}_neutrino_shuffle_squared"]
+                    for variant in VARIANTS
+                },
+                coherent,
+                args.bootstrap_replicates,
+                args.seed + 660 + index,
+                square_root=True,
+            ),
+        }
     shuffle_intervals = bootstrap["joint_shuffle_penalty_GeV"]["paired_bootstrap_95pct_interval"]
     mtt_differences = bootstrap["mtt_RMSE_GeV"]["paired_differences_vs_M_95pct"]
     pt_differences = bootstrap["pTttbar_RMSE_GeV"]["paired_differences_vs_M_95pct"]
@@ -923,11 +1195,17 @@ def main():
         "event_id_sha256_ordered_little_endian_int64": sha256_ids(event_ids),
         "sealed_test_used": False,
         "spin_truth_benchmark": "hybrid truth closure: after-FSR truth parents with measured charge-ordered leptons",
+        "spin_observable_definition": spin_definitions["M"],
         "event_categories": {"njet_counts": {str(x): int((njet == x).sum()) for x in np.unique(njet)}, "channels": {ch: int((channels == ch).sum()) for ch in ("ee", "mumu", "emu")}},
         "common_supported_events": int(support.sum()),
         "common_entropy_edges_nats": entropy_edges.tolist(),
+        "entropy_binning_definition": "fixed validation quantiles of each event's mean assignment entropy across M/C/J, computed on common truth-supported events; downstream metrics use identical EVENT_ID membership per bin",
+        "assignment_support_by_physical_njet": support_by_njet,
         "truth_mttbar_quantile_edges_GeV": mtt_edges.tolist(),
         "high_mtt_truth_decile_threshold_GeV": threshold,
+        "mttbar_migration": migration,
+        "high_mtt_tail": high_mtt_summary,
+        "validation_selection": selection_manifest,
         "variants": {variant: {key: value for key, value in packs[variant].items() if key != "diagnostic_arrays" and key != "metrics"} | {"training_evaluation_metrics": training_metrics[variant]} for variant in VARIANTS},
         "mttbar_differential": differential,
         "entropy_diagnostics": entropy_summary,
@@ -935,6 +1213,7 @@ def main():
         "spin_hybrid": spin_summary,
         "spin_pairing_sensitivity": spin_pairing_sensitive,
         "paired_event_bootstrap": {"replicates": args.bootstrap_replicates, "seed": args.seed + 550, "uncertainty_scope": "validation event sampling only; one fixed training seed", "metrics": bootstrap},
+        "decay_chain_shuffle_comparison": decay_shuffle_comparison,
         "KNOT_MECHANISM": mechanism,
         "KNOT_pilot_outcome": pilot_outcome,
         "KNOT_C_vs_J": c_vs_j,
