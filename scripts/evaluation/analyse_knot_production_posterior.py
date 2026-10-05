@@ -157,10 +157,7 @@ def join_measured_categories(event_ids: np.ndarray, source_path: Path):
 def kinematic_features(posterior, truth_n, truth_p):
     n_draw = posterior["invisible"]
     p_draw = posterior["parents"]
-    n_point = n_draw.mean(axis=1)
-    p_point = p_draw.mean(axis=1)
     pair_draw = p_draw.sum(axis=2)
-    pair_point = p_point.sum(axis=1)
     truth_pair = truth_p.sum(axis=1)
     feature_draws = {
         "top_pT": pt(p_draw[:, :, 0]),
@@ -193,29 +190,11 @@ def kinematic_features(posterior, truth_n, truth_p):
         "nu_antitop_pT": pt(truth_n[:, 1]),
     }
     point_features = {name: values.mean(axis=1) for name, values in feature_draws.items()}
-    point_features.update(
-        {
-            "top_pT": pt(p_point[:, 0]),
-            "antitop_pT": pt(p_point[:, 1]),
-            "top_mass": four_vector_mass(p_point[:, 0]),
-            "antitop_mass": four_vector_mass(p_point[:, 1]),
-            "mttbar": four_vector_mass(pair_point),
-            "pTttbar": pt(pair_point),
-            "yttbar": rapidity(pair_point),
-            "nu_top_pT": pt(n_point[:, 0]),
-            "nu_antitop_pT": pt(n_point[:, 1]),
-            "nu_top_pz": n_point[:, 0, 3],
-            "nu_antitop_pz": n_point[:, 1, 3],
-        }
-    )
     for side, index in (("top", 0), ("antitop", 1)):
         de = eta(n_draw[:, :, index]) - eta(truth_n[:, None, index])
         dp = wrapped_delta(phi(n_draw[:, :, index]) - phi(truth_n[:, None, index]))
         feature_draws[f"nu_{side}_deltaR"] = np.hypot(de, dp)
-        point_features[f"nu_{side}_deltaR"] = np.hypot(
-            eta(n_point[:, index]) - eta(truth_n[:, index]),
-            wrapped_delta(phi(n_point[:, index]) - phi(truth_n[:, index])),
-        )
+        point_features[f"nu_{side}_deltaR"] = feature_draws[f"nu_{side}_deltaR"].mean(axis=1)
         truth_features[f"nu_{side}_deltaR"] = np.zeros(len(truth_n))
     return feature_draws, point_features, truth_features
 
@@ -998,7 +977,19 @@ def main():
         mtt = packs[variant]["reconstruction"]["mttbar"]
         joint = packs[variant]["joint"]
         report_lines.append(f"| {variant} | {mtt['bias']:.3f} | {mtt['RMSE']:.3f} | {joint['coherent_energy_score_GeV']:.3f} | {joint['shuffle_minus_coherent_GeV']:.3f} |")
-    report_lines += ["", "## Interpretation limits", "", "M sample indices are marginal and are not interpreted as coherent event hypotheses. C and J are evaluated with their saved event-local ancestry/joint samples. Spin truth is a hybrid closure sample because generator-level lepton four-vectors are unavailable. Bootstrap intervals resample validation events only and do not include training-seed uncertainty.", "", f"Mechanism classification: {summary['KNOT_MECHANISM']} (one matched production seed; differences require paired uncertainty and semantic interpretation).", f"Production recommendation: {summary['production_decision']}.", ""]
+    report_lines += [
+        "",
+        "Derived-observable bias and RMSE use each event's posterior mean of the observable evaluated sample by sample. The joint energy score uses top and antitop neutrino/parent pz together; shuffling changes only the within-event neutrino-parent pairing.",
+        "",
+        "## Interpretation limits",
+        "",
+        "M sample indices are marginal and are not interpreted as coherent event hypotheses. C and J are evaluated with their saved event-local ancestry/joint samples. Spin truth is a hybrid closure sample because generator-level lepton four-vectors are unavailable. Bootstrap intervals resample validation events only and do not include training-seed uncertainty.",
+        "",
+        f"Pilot outcome: {summary['KNOT_pilot_outcome']}. A J-C joint-score difference does not imply that J is more expressive; parameter count, optimization and sequential error propagation remain possible explanations.",
+        f"Mechanism classification: {summary['KNOT_MECHANISM']} (one matched production seed; differences require paired uncertainty and semantic interpretation).",
+        f"Production recommendation: {summary['production_decision']}.",
+        "",
+    ]
     (output / "physics_summary.md").write_text("\n".join(report_lines))
     print(json.dumps({"output": str(output), "events": len(event_ids), "samples": posterior["M"]["sample_index"].shape[1], "event_id_sha256": sha256_ids(event_ids)}, indent=2))
 
