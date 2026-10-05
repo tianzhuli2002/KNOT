@@ -55,6 +55,11 @@ def wrapped_delta(value):
     return np.angle(np.exp(1j * value))
 
 
+def circular_mean(values, axis=1):
+    """Circular posterior point estimate for azimuth-like observables."""
+    return np.angle(np.mean(np.exp(1j * values), axis=axis))
+
+
 def rapidity(vector):
     plus, minus = vector[..., 0] + vector[..., 3], vector[..., 0] - vector[..., 3]
     if np.any(plus <= 0) or np.any(minus <= 0):
@@ -154,6 +159,25 @@ def join_measured_categories(event_ids: np.ndarray, source_path: Path):
     return njet, channel
 
 
+def persist_physical_njet(event_ids: np.ndarray, njet: np.ndarray, evaluation_path: Path):
+    """Attach the ID-joined pre-truncation jet multiplicity to saved predictions."""
+    for variant in VARIANTS:
+        path = evaluation_path / variant / "posterior.h5"
+        with h5py.File(path, "r+") as output:
+            stored_ids = output["EVENT_ID"][:]
+            if not np.array_equal(stored_ids, event_ids):
+                raise ValueError(f"{variant} EVENT_ID order changed before njet annotation")
+            group = output.require_group("diagnostics")
+            if "physical_njet" in group:
+                existing = group["physical_njet"][:]
+                if not np.array_equal(existing, njet):
+                    raise ValueError(f"{variant} saved physical njet disagrees with the ID join")
+            else:
+                dataset = group.create_dataset("physical_njet", data=njet.astype(np.int16), compression="gzip")
+                dataset.attrs["definition"] = "measured physical jet multiplicity before KNOT candidate truncation"
+                dataset.attrs["source_population"] = "train+validation measured input; reserved test excluded"
+
+
 def kinematic_features(posterior, truth_n, truth_p):
     n_draw = posterior["invisible"]
     p_draw = posterior["parents"]
@@ -164,6 +188,10 @@ def kinematic_features(posterior, truth_n, truth_p):
         "antitop_pT": pt(p_draw[:, :, 1]),
         "top_mass": four_vector_mass(p_draw[:, :, 0]),
         "antitop_mass": four_vector_mass(p_draw[:, :, 1]),
+        "top_y": rapidity(p_draw[:, :, 0]),
+        "antitop_y": rapidity(p_draw[:, :, 1]),
+        "top_phi": phi(p_draw[:, :, 0]),
+        "antitop_phi": phi(p_draw[:, :, 1]),
         "mttbar": four_vector_mass(pair_draw),
         "pTttbar": pt(pair_draw),
         "yttbar": rapidity(pair_draw),
@@ -173,12 +201,20 @@ def kinematic_features(posterior, truth_n, truth_p):
         "nu_antitop_pz": n_draw[:, :, 1, 3],
         "nu_top_pT": pt(n_draw[:, :, 0]),
         "nu_antitop_pT": pt(n_draw[:, :, 1]),
+        "nu_top_eta": eta(n_draw[:, :, 0]),
+        "nu_antitop_eta": eta(n_draw[:, :, 1]),
+        "nu_top_phi": phi(n_draw[:, :, 0]),
+        "nu_antitop_phi": phi(n_draw[:, :, 1]),
     }
     truth_features = {
         "top_pT": pt(truth_p[:, 0]),
         "antitop_pT": pt(truth_p[:, 1]),
         "top_mass": four_vector_mass(truth_p[:, 0]),
         "antitop_mass": four_vector_mass(truth_p[:, 1]),
+        "top_y": rapidity(truth_p[:, 0]),
+        "antitop_y": rapidity(truth_p[:, 1]),
+        "top_phi": phi(truth_p[:, 0]),
+        "antitop_phi": phi(truth_p[:, 1]),
         "mttbar": four_vector_mass(truth_pair),
         "pTttbar": pt(truth_pair),
         "yttbar": rapidity(truth_pair),
@@ -188,8 +224,14 @@ def kinematic_features(posterior, truth_n, truth_p):
         "nu_antitop_pz": truth_n[:, 1, 3],
         "nu_top_pT": pt(truth_n[:, 0]),
         "nu_antitop_pT": pt(truth_n[:, 1]),
+        "nu_top_eta": eta(truth_n[:, 0]),
+        "nu_antitop_eta": eta(truth_n[:, 1]),
+        "nu_top_phi": phi(truth_n[:, 0]),
+        "nu_antitop_phi": phi(truth_n[:, 1]),
     }
     point_features = {name: values.mean(axis=1) for name, values in feature_draws.items()}
+    for name in ("top_phi", "antitop_phi", "nu_top_phi", "nu_antitop_phi"):
+        point_features[name] = circular_mean(feature_draws[name])
     for side, index in (("top", 0), ("antitop", 1)):
         de = eta(n_draw[:, :, index]) - eta(truth_n[:, None, index])
         dp = wrapped_delta(phi(n_draw[:, :, index]) - phi(truth_n[:, None, index]))
@@ -356,7 +398,11 @@ def metric_pack(posterior, metrics, truth_n, truth_p, seed):
     draws, points, truth = kinematic_features(posterior, truth_n, truth_p)
     point_metrics = {}
     for name, value in points.items():
-        point_metrics[name] = point_metric(value, truth[name], periodic=name in ())
+        point_metrics[name] = point_metric(
+            value,
+            truth[name],
+            periodic=name in ("top_phi", "antitop_phi", "nu_top_phi", "nu_antitop_phi"),
+        )
     calibration_names = ("nu_top_pz", "top_pT", "mttbar")
     calibration_results = {
         name: calibration(draws[name], truth[name]) for name in calibration_names
@@ -940,6 +986,7 @@ def main():
         if not np.array_equal(posterior["M"]["sample_index"], posterior[variant]["sample_index"]):
             raise ValueError("M/C/J posterior sample budgets or event-local indices differ")
     njet, channels = join_measured_categories(event_ids, measured_path)
+    persist_physical_njet(event_ids, njet, args.evaluation)
     truth_n, truth_p = posterior["M"]["TRUTH/neutrinos"], posterior["M"]["TRUTH/parents"]
     spin_definitions = {
         variant: json.loads(str(posterior[variant]["attrs"]["spin_definition"]))
@@ -1189,11 +1236,29 @@ def main():
         "J_parameter_count_fraction_above_C": float((j_total - c_total) / c_total),
         "interpretation": "A measured J-C difference is a finite-capacity, optimization, inductive-bias or sequential-error-propagation effect; it is not evidence that J is more expressive in principle.",
     }
+    j_better = (
+        c_vs_j["J_minus_C_joint_energy_score_95pct_GeV"][1] < 0
+        and c_vs_j["J_minus_C_mtt_RMSE_95pct_GeV"][1] < 0
+    )
+    c_better = (
+        c_vs_j["J_minus_C_joint_energy_score_95pct_GeV"][0] > 0
+        and c_vs_j["J_minus_C_mtt_RMSE_95pct_GeV"][0] > 0
+    )
+    c_j_classification = (
+        "J_CLEARLY_BETTER_THAN_C"
+        if j_better
+        else "C_CLEARLY_BETTER_THAN_J"
+        if c_better
+        else "INSUFFICIENT_EVIDENCE_FOR_C_VS_J"
+    )
     summary = {
         "events": len(event_ids),
         "samples_per_event": int(posterior["M"]["sample_index"].shape[1]),
         "event_id_sha256_ordered_little_endian_int64": sha256_ids(event_ids),
         "sealed_test_used": False,
+        "physical_njet_dataset": "diagnostics/physical_njet in each variant posterior.h5; joined by EVENT_ID from the train+validation measured input",
+        "angular_point_estimator": "circular mean across posterior samples for top/antitop and neutrino phi; phi residuals wrapped to [-pi, pi)",
+        "spectrum_weighting": "posterior-predictive histograms flatten the fixed 32 draws/event and normalize aggregate counts; equal K gives equal total weight per event",
         "spin_truth_benchmark": "hybrid truth closure: after-FSR truth parents with measured charge-ordered leptons",
         "spin_observable_definition": spin_definitions["M"],
         "event_categories": {"njet_counts": {str(x): int((njet == x).sum()) for x in np.unique(njet)}, "channels": {ch: int((channels == ch).sum()) for ch in ("ee", "mumu", "emu")}},
@@ -1216,10 +1281,11 @@ def main():
         "decay_chain_shuffle_comparison": decay_shuffle_comparison,
         "KNOT_MECHANISM": mechanism,
         "KNOT_pilot_outcome": pilot_outcome,
+        "KNOT_C_vs_J_classification": c_j_classification,
         "KNOT_C_vs_J": c_vs_j,
         "marginal_metrics_comparable_CJ_vs_M": marginal_metrics_comparable,
         "marginal_shuffle_effect_M_95pct_GeV": m_shuffle,
-        "followup_training_decision": "Keep the matched M/C/J checkpoints and use the evaluator outputs for interpretation; make no architecture change from one training seed. If a future meaningful J-C difference appears, treat capacity/optimization as controls before an expressivity claim.",
+        "followup_training_decision": "RUN_MATCHED_SEEDS_NEXT" if c_j_classification in ("J_CLEARLY_BETTER_THAN_C", "C_CLEARLY_BETTER_THAN_J") else "NO_MORE_KNOT_TRAINING_NEEDED_YET",
         "production_decision": "KNOT_FULL_GPU_CAMPAIGN_WITH_EVALUATOR_UPDATE_ONLY" if pilot_outcome != "K4" else "KNOT_FULL_GPU_CAMPAIGN_PAUSE_FOR_SPECIFIC_ISSUE",
     }
     if "oracle/truth_assignment_truth_neutrino/parents" in posterior["C"]:
@@ -1245,6 +1311,7 @@ def main():
         "source_commit": freeze["source_commit"],
         "closure_branch_commit": freeze["closure_branch_commit"],
         "evaluation_commit": __import__("subprocess").check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
+        "evaluation_script_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         "measured_input": str(measured_path),
         "evaluation_root": str(args.evaluation.resolve()),
     }
@@ -1260,12 +1327,36 @@ def main():
         "",
         "Derived-observable bias and RMSE use each event's posterior mean of the observable evaluated sample by sample. The joint energy score uses top and antitop neutrino/parent pz together; shuffling changes only the within-event neutrino-parent pairing.",
         "",
+        "## Angular residuals",
+        "",
+        "Azimuth uses the circular posterior mean and wrapped residual in [-pi, pi). Neutrino eta and top/antitop rapidity are evaluated for each posterior sample before forming the point estimate.",
+        "",
+        "| Variant | nu top eta RMSE | nu antitop eta RMSE | top y RMSE | antitop y RMSE | nu top phi RMSE | nu antitop phi RMSE | top phi RMSE | antitop phi RMSE |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
+    ]
+    for variant in VARIANTS:
+        reconstruction = packs[variant]["reconstruction"]
+        angular = (
+            "nu_top_eta", "nu_antitop_eta", "top_y", "antitop_y",
+            "nu_top_phi", "nu_antitop_phi", "top_phi", "antitop_phi",
+        )
+        report_lines.append(
+            f"| {variant} | "
+            + " | ".join(f"{reconstruction[name]['RMSE']:.4f}" for name in angular)
+            + " |"
+        )
+    report_lines += [
+        "",
+        "Posterior-predictive spectrum histograms use all 32 draws per event. Fixed sample count gives equal total weight to each event in the normalized aggregate.",
+        "Physical pre-truncation njet is saved as `diagnostics/physical_njet` in each posterior file by exact EVENT_ID join to the train+validation measured input.",
+        "",
         "## Interpretation limits",
         "",
         "M sample indices are marginal and are not interpreted as coherent event hypotheses. C and J are evaluated with their saved event-local ancestry/joint samples. Spin truth is a hybrid closure sample because generator-level lepton four-vectors are unavailable. Bootstrap intervals resample validation events only and do not include training-seed uncertainty.",
         "",
         f"Pilot outcome: {summary['KNOT_pilot_outcome']}. A J-C joint-score difference does not imply that J is more expressive; parameter count, optimization and sequential error propagation remain possible explanations.",
         f"Mechanism classification: {summary['KNOT_MECHANISM']} (one matched production seed; differences require paired uncertainty and semantic interpretation).",
+        f"C/J classification: {summary['KNOT_C_vs_J_classification']}; follow-up: {summary['followup_training_decision']}.",
         f"Production recommendation: {summary['production_decision']}.",
         "",
     ]

@@ -9,7 +9,9 @@ event. The ordered EVENT_ID SHA-256 is
 `2f5256303663568bf2eacb64ed6b9375d95798ecda6ab9d728daea811428d647`; the
 selection was drawn from the 100,342-event validation population using
 `splitmix64_event_id_v1`, seed 42211. M, C and J files have identical ordered
-IDs. Reserved test use is false. Event-resampling intervals below use 500
+IDs. Each posterior HDF5 also stores the pre-truncation physical jet count as
+`diagnostics/physical_njet`, joined from the train+validation measured input by
+exact EVENT_ID. Reserved test use is false. Event-resampling intervals below use 500
 paired validation-event bootstrap replicas (seed 42561) and do not include
 training-seed uncertainty.
 
@@ -49,7 +51,18 @@ Point reconstruction is broadly similar, not uniformly improved by
 conditioning: assignment metrics are nearly identical, C's (m_{t\bar t})
 RMSE is slightly above M, and J's is slightly below M with the paired J-M 95%
 interval `[-1.975, 0.064]` GeV. The joint/coherence conclusion is separate
-from these marginal metrics.
+from these marginal metrics. J-C 95% event-bootstrap intervals exclude zero
+for both joint energy score (`[-3.731,-2.523]` GeV) and (m_{t\bar t}) RMSE
+(`[-2.287,-0.218]` GeV); they support J_CLEARLY_BETTER_THAN_C for this
+checkpoint, without accounting for training-seed uncertainty.
+
+The v10 report also records neutrino eta/phi and top/antitop rapidity/phi
+residuals. Azimuth point estimates are circular posterior means and residuals
+are wrapped to [-pi,pi). The (nu-top eta, nu-antitop eta, top y, antitop y)
+RMSE values are `0.978, 0.968, 0.277, 0.274` for M;
+`0.973, 0.966, 0.278, 0.277` for C; and
+`0.978, 0.966, 0.273, 0.272` for J. Neutrino phi RMSE is
+`1.279/1.265`, `1.279/1.268`, and `1.283/1.271` for M/C/J, respectively.
 
 ## Assignment ambiguity, calibration and tails
 
@@ -133,11 +146,11 @@ pairing sensitivity and does not establish calibrated spin physics.
 
 ## Computation and decision
 
-| Variant | Parameters | GPU training [s] | Posterior inference [s] | Peak CUDA allocation [GB] |
-|---|---:|---:|---:|---:|
-| M | 2,775,317 | 10,043 | 71.94 | 1.250 |
-| C | 2,775,317 | 11,342 | 91.11 | 1.255 |
-| J | 2,954,891 | 8,240 | 29.69 | 1.242 |
+| Variant | Stored / trainable parameters | GPU training [s] | Training presentations/s | Posterior inference [s] | Peak CUDA allocation [GB] |
+|---|---:|---:|---:|---:|---:|
+| M | 2,775,317 / 2,741,309 | 10,043 | 3,584 | 71.94 | 1.250 |
+| C | 2,775,317 / 2,758,339 | 11,342 | 3,174 | 91.11 | 1.255 |
+| J | 2,954,891 / 1,550,262 | 8,240 | 4,368 | 29.69 | 1.242 |
 
 The total J parameter count is 6.47% above C. For this fixed seed, the
 posterior evidence supports **KNOT_MECHANISM_CONFIRMED** and the event-bootstrap
@@ -150,6 +163,12 @@ before treating the J-C ordering as stable. The production recommendation is
 **KNOT_FULL_GPU_CAMPAIGN_WITH_EVALUATOR_UPDATE_ONLY**; the campaign itself is
 complete, and no new jobs were submitted during this evaluation.
 
+The measured J-C ordering and the larger truth-assignment-to-prediction parent
+oracle degradation justify **RUN_MATCHED_SEEDS_NEXT** before treating the
+ordering as stable. No additional campaign is submitted here. A harmonized
+historical JER retraining remains a useful later control, but it is less direct
+than replication of the observed matched M/C/J difference.
+
 Historical JER source semantics are documented in
 [`HISTORICAL_JER_VS_KNOT_M.md`](HISTORICAL_JER_VS_KNOT_M.md). Given the C oracle
 gap, a harmonized retrained old-JER baseline could isolate deterministic
@@ -161,8 +180,8 @@ KNOT action.
 
 Full metrics, paired bootstrap intervals, migration arrays, spin metadata and
 provenance are in
-`results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/physics-analysis-v7/physics_summary.json`.
+`results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/physics-analysis-v11/physics_summary.json`.
 The oracle endpoints are in the neighboring `oracle_summary.json`; the figures
-and the frozen validation selection are in that same `physics-analysis-v7/`
+and the frozen validation selection are in that same `physics-analysis-v11/`
 directory. Production posterior HDF5 files are under the sibling `M/`, `C/`
 and `J/` directories.
