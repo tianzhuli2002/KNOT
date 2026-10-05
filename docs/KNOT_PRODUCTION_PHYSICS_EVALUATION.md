@@ -38,7 +38,7 @@ ancestral and joint event hypotheses, respectively.
 
 The joint energy score evaluates the paired top/antitop neutrino and parent
 longitudinal components; lower is better. Its paired 95% difference intervals
-are C-M `[-2.314, -2.115]`, J-M `[-3.707, -3.462]`, and J-C
+are C-M `[-2.432, -1.398]`, J-M `[-5.626, -4.508]`, and J-C
 `[-3.731, -2.523]` GeV. Shuffling parent samples across neutrino sample index
 changes the score by `-0.064` GeV for M (95% `[-0.123, 0.002]`), `+2.153`
 GeV for C (`[2.067, 2.234]`), and `+3.526` GeV for J (`[3.415, 3.631]`). The
