@@ -773,11 +773,10 @@ def save_core_plots(output, posterior, packs, njet, channels, common_support, en
         ]
         rows = []
         for label, parents in zip(labels, datasets):
-            mean_parent = parents.mean(axis=1)
-            rows.append({"endpoint": label, "top_pT_RMSE_GeV": float(np.sqrt(np.mean((pt(mean_parent[:, 0]) - pt(truth_parent[:, 0]))**2))),
-                         "antitop_pT_RMSE_GeV": float(np.sqrt(np.mean((pt(mean_parent[:, 1]) - pt(truth_parent[:, 1]))**2))),
-                         "top_mass_RMSE_GeV": float(np.sqrt(np.mean((four_vector_mass(mean_parent[:, 0]) - four_vector_mass(truth_parent[:, 0]))**2))),
-                         "antitop_mass_RMSE_GeV": float(np.sqrt(np.mean((four_vector_mass(mean_parent[:, 1]) - four_vector_mass(truth_parent[:, 1]))**2)))})
+            rows.append({"endpoint": label, "top_pT_RMSE_GeV": float(np.sqrt(np.mean((pt(parents[:, :, 0]).mean(axis=1) - pt(truth_parent[:, 0]))**2))),
+                         "antitop_pT_RMSE_GeV": float(np.sqrt(np.mean((pt(parents[:, :, 1]).mean(axis=1) - pt(truth_parent[:, 1]))**2))),
+                         "top_mass_RMSE_GeV": float(np.sqrt(np.mean((four_vector_mass(parents[:, :, 0]).mean(axis=1) - four_vector_mass(truth_parent[:, 0]))**2))),
+                         "antitop_mass_RMSE_GeV": float(np.sqrt(np.mean((four_vector_mass(parents[:, :, 1]).mean(axis=1) - four_vector_mass(truth_parent[:, 1]))**2)))})
         fig, ax = plt.subplots(figsize=(8, 4.5))
         x = np.arange(len(labels))
         width = 0.18
@@ -974,8 +973,7 @@ def main():
         oracle_parent_values = (c["oracle/truth_assignment_truth_neutrino/parents"], c["oracle/predicted_assignment_truth_neutrino/parents"], c["parents"][good])
         c_oracle = []
         for name, parents in zip(oracle_names, oracle_parent_values):
-            mean = parents.mean(axis=1)
-            c_oracle.append({"endpoint": name, "top_pT_RMSE_GeV": float(np.sqrt(np.mean((pt(mean[:, 0]) - pt(truth_p_supported[:, 0]))**2))), "antitop_pT_RMSE_GeV": float(np.sqrt(np.mean((pt(mean[:, 1]) - pt(truth_p_supported[:, 1]))**2))), "top_mass_RMSE_GeV": float(np.sqrt(np.mean((four_vector_mass(mean[:, 0]) - four_vector_mass(truth_p_supported[:, 0]))**2))), "antitop_mass_RMSE_GeV": float(np.sqrt(np.mean((four_vector_mass(mean[:, 1]) - four_vector_mass(truth_p_supported[:, 1]))**2)))})
+            c_oracle.append({"endpoint": name, "top_pT_RMSE_GeV": float(np.sqrt(np.mean((pt(parents[:, :, 0]).mean(axis=1) - pt(truth_p_supported[:, 0]))**2))), "antitop_pT_RMSE_GeV": float(np.sqrt(np.mean((pt(parents[:, :, 1]).mean(axis=1) - pt(truth_p_supported[:, 1]))**2))), "top_mass_RMSE_GeV": float(np.sqrt(np.mean((four_vector_mass(parents[:, :, 0]).mean(axis=1) - four_vector_mass(truth_p_supported[:, 0]))**2))), "antitop_mass_RMSE_GeV": float(np.sqrt(np.mean((four_vector_mass(parents[:, :, 1]).mean(axis=1) - four_vector_mass(truth_p_supported[:, 1]))**2)))})
         for key, label in (("oracle/neutrino_truth_assignment/invisible", "N|A_truth"), ("oracle/neutrino_predicted_assignment/invisible", "N|A_pred")):
             if key not in c:
                 continue
