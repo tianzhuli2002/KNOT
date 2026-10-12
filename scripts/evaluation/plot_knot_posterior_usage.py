@@ -42,6 +42,8 @@ PSEUDO_DATASETS = 128
 MIN_RATIO_SUPPORT = 25.0
 MIN_DIFFERENTIAL_SUPPORT = 50
 BOOTSTRAP_REPLICATES = 200
+TRUTH_NEUTRINO_RTOL = 2.4e-7
+TRUTH_NEUTRINO_ATOL_GEV = 2.0e-7
 NOMINAL_COVERAGE = (0.05, 0.10, 0.20, 0.32, 0.50, 0.68, 0.80, 0.90, 0.95, 0.99)
 
 PARENT_OBSERVABLES: dict[str, dict[str, Any]] = {
@@ -137,6 +139,29 @@ def _sha256(path: Path) -> str:
         for block in iter(lambda: stream.read(8 * 1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def _assert_neutrino_truth_aligned(
+    reference: dict[str, Any], candidate: dict[str, Any], path: Path
+) -> float:
+    if not np.array_equal(candidate["event_ids"], reference["event_ids"]):
+        raise ValueError(f"{path}: EVENT_ID order differs from KNOT-J")
+    if not np.array_equal(candidate["truth_parents"], reference["truth_parents"]):
+        raise ValueError(f"{path}: parent truth differs from KNOT-J on aligned EVENT_ID rows")
+    difference = np.abs(candidate["truth_neutrinos"] - reference["truth_neutrinos"])
+    maximum_difference = float(difference.max(initial=0.0))
+    if not np.allclose(
+        candidate["truth_neutrinos"],
+        reference["truth_neutrinos"],
+        rtol=TRUTH_NEUTRINO_RTOL,
+        atol=TRUTH_NEUTRINO_ATOL_GEV,
+    ):
+        raise ValueError(
+            f"{path}: neutrino truth differs from KNOT-J beyond float32 device-roundoff "
+            f"tolerance (max_abs={maximum_difference:.9g} GeV, "
+            f"rtol={TRUTH_NEUTRINO_RTOL}, atol={TRUTH_NEUTRINO_ATOL_GEV} GeV)"
+        )
+    return maximum_difference
 
 
 def _event_id_hash(event_ids: np.ndarray) -> str:
@@ -263,6 +288,10 @@ def _load_posterior(
                 spin_samples[name] = source[samples_key][:]
     if event_ids.ndim != 1 or not np.issubdtype(event_ids.dtype, np.integer):
         raise ValueError(f"{path}: EVENT_ID must be a one-dimensional integer array")
+    if json.loads(str(attrs.get("parent_roles", "null"))) != ["top", "antitop"]:
+        raise ValueError(f"{path}: parent role order must be [top, antitop]")
+    if json.loads(str(attrs.get("invisible_roles", "null"))) != ["top.nu", "antitop.nu"]:
+        raise ValueError(f"{path}: neutrino role order must be [top.nu, antitop.nu]")
     if len(np.unique(event_ids)) != len(event_ids):
         raise ValueError(f"{path}: EVENT_ID contains duplicate events")
     n_events = len(event_ids)
@@ -1063,7 +1092,13 @@ def _plot_factorisation(
         main.stairs(density, edges, color=COLORS[model], linewidth=2.1, label=LABELS[model])
         ratio, _ = plot_histogram_ratio(lower, counts, truth_counts, edges, method=model, min_reference_events=MIN_RATIO_SUPPORT, label=LABELS[model])
         ratios.append(ratio); colors.append(COLORS[model])
-        table.append({"observable": "mttbar", "representation": representation, "model": model, **_spectrum_metrics(truth, values, representation=representation)})
+        table.append({
+            "observable": "mttbar",
+            "representation": representation,
+            "model": model,
+            "posterior_samples_per_event": int(models[model]["sample_count"]),
+            **_spectrum_metrics(truth, values, representation=representation),
+        })
     centers = 0.5 * (edges[:-1] + edges[1:])
     controlled_ratio_ylim(lower, ratios, centers, colors=colors, center=1.0)
     main.set_ylabel(r"Normalised event density [GeV$^{-1}$]")
@@ -1118,12 +1153,20 @@ def _plot_migration_matrix_csv(
         })
 
 
-def _plot_core_summary(path: Path, rows: list[dict[str, Any]], calibration: list[dict[str, Any]], k: int, n: int) -> None:
+def _plot_core_summary(
+    path: Path,
+    rows: list[dict[str, Any]],
+    calibration: list[dict[str, Any]],
+    k: int,
+    n: int,
+    factorisation_k: int,
+) -> None:
     lines = [
         "# KNOT posterior-usage plotting summary",
         "",
         f"The evaluation used {n:,} aligned events and K={k} stored posterior draws/event from the frozen KNOT-J posterior.",
         "One draw is selected once per event from EVENT_ID and seed 42011; the same sample index is used for all coupled J quantities. Posterior means are E[O(y)] computed after deriving each observable from each sample. Full-posterior population plots use weight 1/K per sample and ordinary residual functions reject this representation.",
+        f"The separate M/C/J factorisation plots use the same representation at a matched K={factorisation_k} for all three models.",
         "",
         "## Point estimators",
         "",
@@ -1180,16 +1223,12 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         raise ValueError(f"{input_path}: posterior has no samples/event")
     model_root = input_path.parent.parent
     models = {"J": j}
+    neutrino_truth_roundoff = {}
     for model in ("M", "C"):
         path = model_root / model / "posterior.h5"
         models[model] = _load_posterior(path, expected_model=model)
         other = models[model]
-        if not np.array_equal(other["event_ids"], event_ids):
-            raise ValueError(f"{path}: EVENT_ID order differs from KNOT-J")
-        if not np.array_equal(other["truth_parents"], j["truth_parents"]):
-            raise ValueError(f"{path}: parent truth differs from KNOT-J on aligned EVENT_ID rows")
-        if not np.array_equal(other["truth_neutrinos"], j["truth_neutrinos"]):
-            raise ValueError(f"{path}: neutrino truth differs from KNOT-J on aligned EVENT_ID rows")
+        neutrino_truth_roundoff[model] = _assert_neutrino_truth_aligned(j, other, path)
         if str(other["attrs"].get("spin_definition", "")) != str(j["attrs"].get("spin_definition", "")):
             raise ValueError(f"{path}: spin definition differs from KNOT-J")
 
@@ -1208,6 +1247,28 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     truth_neutrino_obs = _neutrino_observables(j["truth_neutrinos"], "KNOT-J truth")
     for model in models.values():
         model["observables"] = _parent_observables(model["parent_samples"], str(model["path"]))
+
+    factorisation_models = dict(models)
+    factorisation_k = int(models["M"]["sample_count"])
+    if int(models["C"]["sample_count"]) != factorisation_k:
+        raise ValueError(
+            "KNOT M/C factorisation comparison requires the same posterior sample count; "
+            f"M={factorisation_k}, C={models['C']['sample_count']}"
+        )
+    if int(models["J"]["sample_count"]) != factorisation_k:
+        factorisation_path = model_root / "J" / "posterior.h5"
+        matched_j = _load_posterior(factorisation_path, expected_model="J")
+        neutrino_truth_roundoff["J_factorisation"] = _assert_neutrino_truth_aligned(
+            j, matched_j, factorisation_path
+        )
+        if str(matched_j["attrs"].get("spin_definition", "")) != str(j["attrs"].get("spin_definition", "")):
+            raise ValueError(f"{factorisation_path}: spin definition differs from primary KNOT-J")
+        matched_j["observables"] = _parent_observables(
+            matched_j["parent_samples"], str(matched_j["path"])
+        )
+        factorisation_models["J"] = matched_j
+    if any(int(data["sample_count"]) != factorisation_k for data in factorisation_models.values()):
+        raise ValueError("KNOT M/C/J factorisation sample counts are not matched")
     j_parent_values = {
         name: _representation_values(samples, choices)
         for name, samples in j["observables"].items()
@@ -1263,6 +1324,17 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     for directory in (*dirs.values(), output / "tables", output / "metadata"):
         directory.mkdir(parents=True, exist_ok=True)
 
+    def model_manifest(data: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "path": str(data["path"]),
+            "size_bytes": data["path"].stat().st_size,
+            "sha256": _sha256(data["path"]),
+            "factorisation": str(data["attrs"].get("factorisation", "")),
+            "sample_semantics": str(data["attrs"].get("sample_semantics", "")),
+            "posterior_semantics": str(data["attrs"].get("posterior_semantics", "")),
+            "posterior_samples_per_event": int(data["sample_count"]),
+        }
+
     input_manifest = {
         "primary_model": "J",
         "events": int(n_events),
@@ -1272,20 +1344,23 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "neutrino_role_order": ["top.nu", "antitop.nu"],
         "four_vector_order": ["E", "px", "py", "pz"],
         "units": "GeV; rapidity dimensionless",
+        "truth_alignment": {
+            "event_id_order": "exact equality across all loaded models",
+            "parent_truth": "exact equality across all loaded models",
+            "neutrino_truth": {
+                "policy": "float32 CPU/GPU decoding roundoff tolerance after exact EVENT_ID and role-order checks",
+                "relative_tolerance": TRUTH_NEUTRINO_RTOL,
+                "absolute_tolerance_GeV": TRUTH_NEUTRINO_ATOL_GEV,
+                "maximum_absolute_difference_GeV_by_model": neutrino_truth_roundoff,
+            },
+        },
         "spin_truth_benchmark": "Hybrid closure: after-FSR truth parents with measured charge-ordered leptons; generator-level lepton truth is unavailable.",
         "spin_definition": json.loads(str(j["attrs"]["spin_definition"])),
-        "models": {
-            model: {
-                "path": str(data["path"]),
-                "size_bytes": data["path"].stat().st_size,
-                "sha256": _sha256(data["path"]),
-                "factorisation": str(data["attrs"].get("factorisation", "")),
-                "sample_semantics": str(data["attrs"].get("sample_semantics", "")),
-                "posterior_semantics": str(data["attrs"].get("posterior_semantics", "")),
-                "posterior_samples_per_event": int(data["sample_count"]),
-            }
-            for model, data in models.items()
+        "models": {model: model_manifest(data) for model, data in models.items()},
+        "factorisation_models": {
+            model: model_manifest(data) for model, data in factorisation_models.items()
         },
+        "factorisation_posterior_samples_per_event": factorisation_k,
     }
     _write_json(output / "metadata/input_manifest.json", input_manifest)
     _write_json(output / "metadata/draw_selection.json", {
@@ -1485,7 +1560,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     for representation in ("posterior_distribution", "posterior_mean"):
         files, rows = _plot_factorisation(
             dirs["factorisation"],
-            models,
+            factorisation_models,
             truth_parent_obs["mttbar"],
             PARENT_OBSERVABLES["mttbar"]["edges"],
             representation=representation,
@@ -1550,6 +1625,14 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "spin_truth_benchmark": "Hybrid closure using after-FSR truth parents and measured charge-ordered leptons; generator-level lepton truth is unavailable.",
         "spin_observable_definition": json.loads(str(j["attrs"]["spin_definition"])),
         "spin_posterior_mean_definition": "The paired spin observables are nonlinear quantities evaluated for each coherent stored posterior hypothesis. The posterior mean is E[O] over those K stored values.",
+        "factorisation_definition": f"The M/C/J factorisation family compares the same representation with a matched K={factorisation_k} posterior samples/event; its model inputs are listed separately in metadata/input_manifest.json.",
+        "cross_device_truth_alignment": {
+            "event_ids_and_role_order": "exact",
+            "parent_truth": "exact",
+            "neutrino_truth_relative_tolerance": TRUTH_NEUTRINO_RTOL,
+            "neutrino_truth_absolute_tolerance_GeV": TRUTH_NEUTRINO_ATOL_GEV,
+            "maximum_absolute_difference_GeV_by_model": neutrino_truth_roundoff,
+        },
         "spin_excluded_control": {"delta_phi_ll": "Excluded from posterior-usage plots because it is the measured lab-frame lepton azimuth difference and is identical for every posterior draw; it remains a useful posterior-insensitive control in the existing spin analysis."},
         "ratio_support": ratio_support,
         "minimum_truth_support_for_ratio_and_migration_bins": MIN_RATIO_SUPPORT,
@@ -1562,12 +1645,15 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     })
     _write_json(output / "metadata/calibration_rank_summary.json", rank_summary)
     _write_json(output / "metadata/one_draw_ensemble_closure.json", ensemble_summary)
-    _plot_core_summary(output / "plotting_summary.md", point_rows, calibration_rows, k, n_events)
+    _plot_core_summary(
+        output / "plotting_summary.md", point_rows, calibration_rows, k, n_events, factorisation_k
+    )
 
     return {
         "output": str(output),
         "events": int(n_events),
         "posterior_samples_per_event": int(k),
+        "factorisation_samples_per_event": int(factorisation_k),
         "draw_selection_sha256": draw_hash,
         "plots": len(plot_paths),
         "mttbar_one_draw_ensemble_closure": ensemble_summary,
