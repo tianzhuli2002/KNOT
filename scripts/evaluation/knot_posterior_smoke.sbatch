@@ -13,7 +13,7 @@ set -euo pipefail
 
 evaluation_root=/net/scratch/w00238tl/knot
 python_bin=/mnt/iusers01/fatpou01/phy01/w00238tl/miniforge3/envs/VyPER_main_20261002/bin/python
-dependency_path=/net/scratch/w00238tl/.knot-pythonpath-20261003
+dependency_path="$evaluation_root/.runtime/pythonpath"
 expected_commit="${KNOT_EVAL_EXPECTED_COMMIT:?KNOT_EVAL_EXPECTED_COMMIT is required}"
 
 case "${SLURM_ARRAY_TASK_ID}" in
