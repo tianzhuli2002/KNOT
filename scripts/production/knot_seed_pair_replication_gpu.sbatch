@@ -6,12 +6,12 @@
 #SBATCH --mem=96G
 #SBATCH --time=04:00:00
 #SBATCH --array=0-3%2
-#SBATCH --output=/net/scratch/w00238tl/JointEventReconstruction_KNOT_evaldev/logs/seed-pair-v2/full-%A_%a.log
+#SBATCH --output=/net/scratch/w00238tl/knot/logs/seed-pair-v2/full-%A_%a.log
 
 set -euo pipefail
 
-frozen_root=/net/scratch/w00238tl/JointEventReconstruction_KNOT
-project_root=/net/scratch/w00238tl/JointEventReconstruction_KNOT_evaldev
+frozen_root=/net/scratch/w00238tl/knot
+project_root=/net/scratch/w00238tl/knot
 python_bin=/mnt/iusers01/fatpou01/phy01/w00238tl/miniforge3/envs/VyPER_main_20261002/bin/python
 dependency_path=/net/scratch/w00238tl/.knot-pythonpath-20261003
 expected_frozen_commit=eebeb524f877388a10432fc72c7831425f6174e9

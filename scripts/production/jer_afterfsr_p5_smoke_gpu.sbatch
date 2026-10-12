@@ -5,14 +5,14 @@
 #SBATCH --cpus-per-task=12
 #SBATCH --mem=64G
 #SBATCH --time=02:00:00
-#SBATCH --output=/net/scratch/w00238tl/JointEventReconstruction_KNOT_evaldev/logs/jer-afterfsr-v1/smoke-%j.log
+#SBATCH --output=/net/scratch/w00238tl/knot/logs/jer-afterfsr-v1/smoke-%j.log
 
 set -euo pipefail
 
 project_root=/net/scratch/w00238tl/JointEventReconstruction
 source_root=/net/scratch/w00238tl/JointEventReconstruction_afterfsr_p5
-evaluation_root=/net/scratch/w00238tl/JointEventReconstruction_KNOT_evaldev
-artifact_root=/net/scratch/w00238tl/JointEventReconstruction_KNOT_evaluator/results/experiments/knot/jer-afterfsr-v1
+evaluation_root=/net/scratch/w00238tl/knot
+artifact_root=/net/scratch/w00238tl/knot/results/experiments/knot/jer-afterfsr-v1
 python_bin=/mnt/iusers01/fatpou01/phy01/w00238tl/miniforge3/envs/VyPER_main_20261002/bin/python
 dependency_path=/net/scratch/w00238tl/.knot-pythonpath-20261003
 expected_source_sha=040bf9c5f51a07157a768738288c94d43210df18

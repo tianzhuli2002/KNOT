@@ -220,7 +220,7 @@ training:
     invisible: 1.0
     partonic: 0.0
     partonic_cfm: 1.0
-  output: /net/scratch/w00238tl/JointEventReconstruction_KNOT/results/experiments/knot/scientific-closure-run2/production/J
+  output: /net/scratch/w00238tl/knot/results/experiments/knot/scientific-closure-run2/production/J
   early_stopping:
     enabled: false
     patience: 20

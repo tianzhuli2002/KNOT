@@ -3,8 +3,8 @@ experiment:
   seed: 42011
 topology: configs/topology/ttbar2L_charge_ordered.yaml
 data:
-  input: /net/scratch/w00238tl/JointEventReconstruction_KNOT_evaluator/results/experiments/knot/jer-afterfsr-v1/data/jer_charge_side_after_fsr_v4.h5
-  cache: /net/scratch/w00238tl/JointEventReconstruction_KNOT_evaluator/results/experiments/knot/jer-afterfsr-v1/cache/jer_charge_side_after_fsr_v4.pt
+  input: /net/scratch/w00238tl/knot/results/experiments/knot/jer-afterfsr-v1/data/jer_charge_side_after_fsr_v4.h5
+  cache: /net/scratch/w00238tl/knot/results/experiments/knot/jer-afterfsr-v1/cache/jer_charge_side_after_fsr_v4.pt
   subset_seed: 42011
   test_size: 0.05
   default_split: validation
@@ -70,7 +70,7 @@ training:
   trainable: [visible, assignment, invisible]
   loss_weights: {assignment: 1.0, invisible: 1.0}
   shared_encoder_gradients: assignment_only
-  output: /net/scratch/w00238tl/JointEventReconstruction_KNOT_evaluator/results/experiments/knot/jer-afterfsr-v1/training/P5
+  output: /net/scratch/w00238tl/knot/results/experiments/knot/jer-afterfsr-v1/training/P5
 inference:
   seed: 42011
   assignment: {top_k: 1}

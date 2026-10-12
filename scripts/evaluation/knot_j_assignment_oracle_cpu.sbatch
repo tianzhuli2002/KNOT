@@ -4,16 +4,16 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=20G
 #SBATCH --time=01:00:00
-#SBATCH --output=/net/scratch/w00238tl/JointEventReconstruction_KNOT_evaldev/logs/j-assignment-oracle-v1/oracle-%j.log
+#SBATCH --output=/net/scratch/w00238tl/knot/logs/j-assignment-oracle-v1/oracle-%j.log
 
 set -euo pipefail
 
-source_root=/net/scratch/w00238tl/JointEventReconstruction_KNOT
-evaluation_root=/net/scratch/w00238tl/JointEventReconstruction_KNOT_evaldev
-artifact_root=/net/scratch/w00238tl/JointEventReconstruction_KNOT_evaluator
+source_root=/net/scratch/w00238tl/knot
+evaluation_root=/net/scratch/w00238tl/knot
+artifact_root=/net/scratch/w00238tl/knot
 python_bin=/mnt/iusers01/fatpou01/phy01/w00238tl/miniforge3/envs/VyPER_main_20261002/bin/python
 dependency_path=/net/scratch/w00238tl/.knot-pythonpath-20261003
-checkpoint=/net/scratch/w00238tl/JointEventReconstruction_KNOT/results/experiments/knot/matched-production-v1/J/checkpoints/best-16-1.213281.ckpt
+checkpoint=/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/J/checkpoints/best-16-1.213281.ckpt
 expected_source_commit=eebeb524f877388a10432fc72c7831425f6174e9
 expected_evaluation_commit=ae0b70a707bd362b7dcbe1857e93ee1a3b31ad44
 

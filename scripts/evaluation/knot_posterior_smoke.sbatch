@@ -7,11 +7,11 @@
 #SBATCH --mem=96G
 #SBATCH --time=04:00:00
 #SBATCH --array=0-2%1
-#SBATCH --output=/net/scratch/w00238tl/JointEventReconstruction_KNOT_evaluator/logs/knot-evaluation-v1/smoke-%A_%a.log
+#SBATCH --output=/net/scratch/w00238tl/knot/logs/knot-evaluation-v1/smoke-%A_%a.log
 
 set -euo pipefail
 
-evaluation_root=/net/scratch/w00238tl/JointEventReconstruction_KNOT_evaluator
+evaluation_root=/net/scratch/w00238tl/knot
 python_bin=/mnt/iusers01/fatpou01/phy01/w00238tl/miniforge3/envs/VyPER_main_20261002/bin/python
 dependency_path=/net/scratch/w00238tl/.knot-pythonpath-20261003
 expected_commit="${KNOT_EVAL_EXPECTED_COMMIT:?KNOT_EVAL_EXPECTED_COMMIT is required}"
@@ -35,7 +35,7 @@ export CUDA_DEVICE_MAX_CONNECTIONS=1
 nvidia-smi --query-gpu=name,memory.total,memory.free --format=csv
 "$python_bin" -c 'import h5py, lgatr, torch; assert torch.cuda.is_available(); print("torch", torch.__version__, "cuda", torch.version.cuda, "lgatr", lgatr.__file__)'
 
-source_root=/net/scratch/w00238tl/JointEventReconstruction_KNOT
+source_root=/net/scratch/w00238tl/knot
 config="$evaluation_root/configs/experiments/knot_scientific_closure/knot_${variant,,}_production.public.yaml"
 research="$evaluation_root/configs/research/knot_${variant,,}_production.yaml"
 manifest="$source_root/results/experiments/knot/matched-production-v1/${variant}/run_manifest.json"

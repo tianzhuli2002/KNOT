@@ -4,13 +4,13 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=20G
 #SBATCH --time=01:00:00
-#SBATCH --output=/net/scratch/w00238tl/JointEventReconstruction_KNOT_evaldev/logs/kk-transfer-v2/j-response-%j.log
+#SBATCH --output=/net/scratch/w00238tl/knot/logs/kk-transfer-v2/j-response-%j.log
 
 set -euo pipefail
 
-source_root=/net/scratch/w00238tl/JointEventReconstruction_KNOT
-evaluation_root=/net/scratch/w00238tl/JointEventReconstruction_KNOT_evaldev
-artifact_root=/net/scratch/w00238tl/JointEventReconstruction_KNOT_evaluator/results/experiments/knot
+source_root=/net/scratch/w00238tl/knot
+evaluation_root=/net/scratch/w00238tl/knot
+artifact_root=/net/scratch/w00238tl/knot/results/experiments/knot
 python_bin=/mnt/iusers01/fatpou01/phy01/w00238tl/miniforge3/envs/VyPER_main_20261002/bin/python
 dependency_path=/net/scratch/w00238tl/.knot-pythonpath-20261003
 expected_source_commit=eebeb524f877388a10432fc72c7831425f6174e9
