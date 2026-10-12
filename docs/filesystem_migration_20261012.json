@@ -7,7 +7,7 @@
   "git": {
     "canonical_KNOT_HEAD": "0f73ab8838295846e22fed1d6ba40b2885e52c1b",
     "canonical_KNOT_branch": "research/knot-production-physics-evaluation-v1",
-    "canonical_KNOT_head_capture_note": "Captured after the source/runtime commit. The final migration documentation commit follows; a manifest cannot contain its own commit hash.",
+    "canonical_KNOT_head_capture_note": "Captured after the source/runtime commit. Documentation-only reseal commits follow; a manifest cannot contain its own/latest commit hash.",
     "canonical_RISE_HEAD": "8fa8e0fa41f6801a14e9c77be21416adc8de817e",
     "canonical_RISE_branch": "research/rise-r0-neural-diagnosis-v1",
     "common_dir": "/net/scratch/w00238tl/JointEventReconstruction/.git",
@@ -409,7 +409,7 @@
         "detached": false
       }
     ],
-    "final_worktree_capture_note": "Paths and HEADs captured before the documentation-only reseal commit."
+    "final_worktree_capture_note": "Worktree paths and HEADs were captured immediately after the source/runtime commit and before the subsequent documentation-only commits."
   },
   "migration": {
     "KNOT_input_data": {
@@ -8481,7 +8481,7 @@
     "filesystem_inventory": {
       "canonical_projects": {
         "/net/scratch/w00238tl/knot": {
-          "filesystem_apparent_size_bytes": 8370542311,
+          "filesystem_apparent_size_bytes": 8370736743,
           "measurement": "du -sb after final migration documentation and runtime relocation; result outputs remain outside Git"
         },
         "/net/scratch/w00238tl/rise": {
@@ -8537,12 +8537,20 @@
       "source_compilation_ruff_git_diff_and_slurm_syntax_passed": true,
       "targeted_statistical_assertions_run_without_pytest": 8,
       "targeted_programmatic_acceptance_checks_passed": 47,
-      "targeted_pytest_status": "not run: pytest is not installed in either default Python 3.12 or pinned production Python 3.13 environment",
+      "targeted_pytest_status": "passed: 8 tests using pytest 9.1.1 installed temporarily under /tmp; no project environment was changed",
       "runtime_dependency_imports_passed": true,
       "topology_query_input_audit_passed": true,
       "checksum_mismatch_audit_passed": true,
       "RISE_source_state_and_R0_outputs_passed": false,
-      "squeue_final_empty": true
+      "squeue_final_empty": true,
+      "targeted_pytest_test_count": 8,
+      "pytest_isolated_temporary_install": {
+        "version": "9.1.1",
+        "location": "/tmp/knot-pytest-20261012",
+        "removed_after_test_run": true,
+        "project_environment_changed": false
+      },
+      "targeted_acceptance_checks_passed": true
     },
     "important_KNOT_artifacts": [
       {

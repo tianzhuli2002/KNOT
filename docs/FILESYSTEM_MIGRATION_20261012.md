@@ -6,7 +6,7 @@ This is the final human-readable record for the canonical filesystem cleanup and
 
 - KNOT: `/net/scratch/w00238tl/knot`, branch `research/knot-production-physics-evaluation-v1`.
 - RISE: `/net/scratch/w00238tl/rise`, branch `research/rise-r0-neural-diagnosis-v1`, HEAD `8fa8e0fa41f6801a14e9c77be21416adc8de817e`.
-- The KNOT source/runtime commit captured by the manifest is `0f73ab8838295846e22fed1d6ba40b2885e52c1b`. The final documentation-only commit follows that capture; the manifest cannot contain its own commit hash.
+- The KNOT source/runtime commit captured by the manifest is `0f73ab8838295846e22fed1d6ba40b2885e52c1b`. The documentation-only reseal commits follow that capture; a manifest cannot contain its own/latest commit hash.
 - Both source trees were clean at capture. The final worktree paths and captured HEADs are listed in the JSON manifest.
 - The obsolete top-level `JointEventReconstruction_KNOT`, `_evaluator`, `_evaldev`, and `JointEventReconstruction_RISE` project roots are absent. Other shared-repository worktrees and retained backup worktrees remain; they are not duplicate canonical KNOT/RISE roots.
 
@@ -102,6 +102,6 @@ The selected draw is unusually high in W1 and KS within this ensemble, so it is 
 
 ## Validation and remaining scientific limits
 
-The final targeted programmatic checks passed: 47 assertions covered event alignment and uniqueness, supported parent/neutrino finiteness, K32/K64 dimensions and truth alignment, deterministic draw replay, event-normalized weights, residual representation policy, histogram integrals, migration normalization, finite convergence tables, output file integrity, and paired plots. `py_compile`, Ruff, `git diff --check`, and `bash -n` passed. The targeted pytest module could not run because `pytest` is not installed in either available Python environment.
+The final targeted checks passed: 47 programmatic assertions covered event alignment and uniqueness, supported parent/neutrino finiteness, K32/K64 dimensions and truth alignment, deterministic draw replay, event-normalized weights, residual representation policy, histogram integrals, migration normalization, finite convergence tables, output file integrity, and paired plots. The targeted pytest module passed all 8 tests using pytest 9.1.1 installed temporarily under `/tmp`; no project environment was changed. `py_compile`, Ruff, `git diff --check`, and `bash -n` passed.
 
 RISE received filesystem and provenance validation only. Its R0 decision and qualification plots match their recorded hashes; no detector-level RISE work was started. The genuine remaining scientific limitation is conditional posterior under-dispersion, especially for the spin helicity cosines; no post-hoc calibration was applied.
