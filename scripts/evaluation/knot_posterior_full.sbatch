@@ -29,6 +29,11 @@ if [[ ! "${samples}" =~ ^[1-9][0-9]*$ ]]; then
     echo "KNOT_POSTERIOR_SAMPLES must be a positive integer, found: ${samples}" >&2
     exit 2
 fi
+device=${KNOT_EVAL_DEVICE:-cuda}
+if [[ "${device}" != cuda && "${device}" != cpu ]]; then
+    echo "KNOT_EVAL_DEVICE must be cuda or cpu, found: ${device}" >&2
+    exit 2
+fi
 
 cd "$evaluation_root"
 [[ "$(git rev-parse HEAD)" == "$expected_commit" ]]
@@ -39,8 +44,12 @@ export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
 export CUDA_DEVICE_MAX_CONNECTIONS=1
 
-nvidia-smi --query-gpu=name,memory.total,memory.free --format=csv
-"$python_bin" -c 'import h5py, lgatr, torch; assert torch.cuda.is_available(); print("torch", torch.__version__, "cuda", torch.version.cuda, "lgatr", lgatr.__file__)'
+if [[ "${device}" == cuda ]]; then
+    nvidia-smi --query-gpu=name,memory.total,memory.free --format=csv
+    "$python_bin" -c 'import h5py, lgatr, torch; assert torch.cuda.is_available(); print("torch", torch.__version__, "cuda", torch.version.cuda, "lgatr", lgatr.__file__)'
+else
+    "$python_bin" -c 'import h5py, lgatr, torch; print("torch", torch.__version__, "device", "cpu", "lgatr", lgatr.__file__)'
+fi
 
 config="$evaluation_root/configs/experiments/knot_scientific_closure/knot_${variant,,}_production.public.yaml"
 research="$evaluation_root/configs/research/knot_${variant,,}_production.yaml"
@@ -67,7 +76,7 @@ fi
     --samples "$samples" \
     --batch-size 64 \
     --seed 42011 \
-    --device cuda
+    --device "$device"
 
 "$python_bin" - "$output/posterior.h5" "$output/metrics.json" "$samples" <<'PY'
 import json
