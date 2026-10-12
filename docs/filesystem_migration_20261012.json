@@ -5,8 +5,9 @@
   },
   "date": "2026-10-12",
   "git": {
-    "canonical_KNOT_HEAD": "1da2b171a8893675df1deed4f447b0457a9c5295",
+    "canonical_KNOT_HEAD": "c72945c78ef414ef0ba74275807547e7ed46024c",
     "canonical_KNOT_branch": "research/knot-production-physics-evaluation-v1",
+    "canonical_KNOT_head_capture_note": "Validated plotting source commit before committing this manifest update; manifest follows in the next canonical KNOT commit.",
     "canonical_RISE_HEAD": "8fa8e0fa41f6801a14e9c77be21416adc8de817e",
     "canonical_RISE_branch": "research/rise-r0-neural-diagnosis-v1",
     "common_dir": "/net/scratch/w00238tl/JointEventReconstruction/.git",
@@ -101,7 +102,7 @@
       },
       {
         "branch": "research/knot-production-physics-evaluation-v1",
-        "tip": "1da2b171a8893675df1deed4f447b0457a9c5295"
+        "tip": "c72945c78ef414ef0ba74275807547e7ed46024c"
       },
       {
         "branch": "research/knot-scientific-closure-v1",
@@ -224,7 +225,7 @@
         "original_head": "37c461d01ce97a28ada2176a9fdc48365cdb8247",
         "original_path": "/net/scratch/w00238tl/JointEventReconstruction_KNOT_evaluator",
         "path_update_commit": null,
-        "preserved_branch_tip": "1da2b171a8893675df1deed4f447b0457a9c5295",
+        "preserved_branch_tip": "c72945c78ef414ef0ba74275807547e7ed46024c",
         "role": "KNOT evaluator",
         "source_preservation_commit": "1da2b171a8893675df1deed4f447b0457a9c5295"
       },
@@ -298,6 +299,425 @@
     ]
   },
   "migration": {
+    "KNOT_input_data": {
+      "cache_rekey": {
+        "accepted_by_frozen_configuration_and_final_evaluation": true,
+        "canonical_cache_key": "0a151eb66467",
+        "canonical_payload_size_bytes": 1909603965,
+        "only_payload_change": "metadata.source_identity.path rewritten to canonical KNOT input path",
+        "original_cache_key": "ac34b7cf1475",
+        "original_payload_sha256": "9739ddeea29b6af41ee6e98c7c517ecbdc2cb969279502afc0e8aeb11cf369e7",
+        "original_payload_size_bytes": 1909603881,
+        "relative_path": "cache/train_validation_measured_maxjets8_v1.pt",
+        "source_raw_input_sha256": "2a8b00216efbf344ceeb47d11b8ed6d514355cae41a3bf5019d499b346893772",
+        "tensor_values_preserved": true
+      },
+      "canonical_dataset_root": "/net/scratch/w00238tl/knot/results/experiments/partonic_ttbar2L_2M_realnu_v1",
+      "classification_counts": {
+        "byte_identical_copy": 25,
+        "cache_rekeyed_path_metadata_only": 1,
+        "canonical_path_metadata_updated": 12
+      },
+      "copied_file_count": 38,
+      "files": [
+        {
+          "canonical_path": "/net/scratch/w00238tl/knot/results/experiments/partonic_ttbar2L_2M_realnu_v1/adapted/development/partonic_ttbar2l_development_maxjets20_v1_manifest.json",
+          "canonical_sha256": "b8bfbe7d697555b9ebb53e51dbf7796a7df37d78c265d6e24d5f4c0e2e8c78a8",
+          "canonical_size_bytes": 4634,
+          "classification": "canonical_path_metadata_updated",
+          "relative_path": "adapted/development/partonic_ttbar2l_development_maxjets20_v1_manifest.json",
+          "source_path": "/net/scratch/w00238tl/repo_backups/JER_cleanup_20261012/worktrees/JointEventReconstruction_topology_queries/results/experiments/partonic_ttbar2L_2M_realnu_v1/adapted/development/partonic_ttbar2l_development_maxjets20_v1_manifest.json",
+          "source_sha256": "116725303356b19dbc41b16ccf54f9ce3de841c3d838e5feb7fe862d0b801691",
+          "source_size_bytes": 4745
+        },
+        {
+          "canonical_path": "/net/scratch/w00238tl/knot/results/experiments/partonic_ttbar2L_2M_realnu_v1/adapted/development/partonic_ttbar2l_development_maxjets20_v1_measured.h5",
+          "canonical_sha256": "093e7a4b6fa95b0263aaafe865a17147d0a7c7a8daf89a24806e067171abe6a3",
+          "canonical_size_bytes": 205078,
+          "classification": "byte_identical_copy",
+          "relative_path": "adapted/development/partonic_ttbar2l_development_maxjets20_v1_measured.h5",
+          "source_path": "/net/scratch/w00238tl/repo_backups/JER_cleanup_20261012/worktrees/JointEventReconstruction_topology_queries/results/experiments/partonic_ttbar2L_2M_realnu_v1/adapted/development/partonic_ttbar2l_development_maxjets20_v1_measured.h5",
+          "source_sha256": "093e7a4b6fa95b0263aaafe865a17147d0a7c7a8daf89a24806e067171abe6a3",
+          "source_size_bytes": 205078
+        },
+        {
+          "canonical_path": "/net/scratch/w00238tl/knot/results/experiments/partonic_ttbar2L_2M_realnu_v1/adapted/development/partonic_ttbar2l_development_maxjets20_v1_supervision.h5",
+          "canonical_sha256": "97094736d4f1a9610ec79a58a100aa746c7ffbb8b3a79a254c707c43f1d0f8a0",
+          "canonical_size_bytes": 89639,
+          "classification": "byte_identical_copy",
+          "relative_path": "adapted/development/partonic_ttbar2l_development_maxjets20_v1_supervision.h5",
+          "source_path": "/net/scratch/w00238tl/repo_backups/JER_cleanup_20261012/worktrees/JointEventReconstruction_topology_queries/results/experiments/partonic_ttbar2L_2M_realnu_v1/adapted/development/partonic_ttbar2l_development_maxjets20_v1_supervision.h5",
+          "source_sha256": "97094736d4f1a9610ec79a58a100aa746c7ffbb8b3a79a254c707c43f1d0f8a0",
+          "source_size_bytes": 89639
+        },
+        {
+          "canonical_path": "/net/scratch/w00238tl/knot/results/experiments/partonic_ttbar2L_2M_realnu_v1/adapted/development/partonic_ttbar2l_development_maxjets20_v1_training_view.h5",
+          "canonical_sha256": "bf0261635e21489e65f38d8b33aca5e99850c7706e1b06e337394754b03d28ac",
+          "canonical_size_bytes": 7672,
+          "classification": "byte_identical_copy",
+          "relative_path": "adapted/development/partonic_ttbar2l_development_maxjets20_v1_training_view.h5",
+          "source_path": "/net/scratch/w00238tl/repo_backups/JER_cleanup_20261012/worktrees/JointEventReconstruction_topology_queries/results/experiments/partonic_ttbar2L_2M_realnu_v1/adapted/development/partonic_ttbar2l_development_maxjets20_v1_training_view.h5",
+          "source_sha256": "bf0261635e21489e65f38d8b33aca5e99850c7706e1b06e337394754b03d28ac",
+          "source_size_bytes": 7672
+        },
+        {
+          "canonical_path": "/net/scratch/w00238tl/knot/results/experiments/partonic_ttbar2L_2M_realnu_v1/adapted/development/partonic_ttbar2l_development_maxjets8_v1_manifest.json",
+          "canonical_sha256": "bd6a428d4321aabd4c0a550351432ce9b7b75585231016c9311f74d50ed776d0",
+          "canonical_size_bytes": 4672,
+          "classification": "canonical_path_metadata_updated",
+          "relative_path": "adapted/development/partonic_ttbar2l_development_maxjets8_v1_manifest.json",
+          "source_path": "/net/scratch/w00238tl/repo_backups/JER_cleanup_20261012/worktrees/JointEventReconstruction_topology_queries/results/experiments/partonic_ttbar2L_2M_realnu_v1/adapted/development/partonic_ttbar2l_development_maxjets8_v1_manifest.json",
+          "source_sha256": "f1b20ae1a83b3dc2901e9e6d545d03c1f7b68471c1bc8ad6d77f5fa67e151d1b",
+          "source_size_bytes": 4783
+        },
+        {
+          "canonical_path": "/net/scratch/w00238tl/knot/results/experiments/partonic_ttbar2L_2M_realnu_v1/adapted/development/partonic_ttbar2l_development_maxjets8_v1_measured.h5",
+          "canonical_sha256": "030a735fedb6969db125741600bc08f695457d6e74f3b9ea4d315df9b9a839e8",
+          "canonical_size_bytes": 200509,
+          "classification": "byte_identical_copy",
+          "relative_path": "adapted/development/partonic_ttbar2l_development_maxjets8_v1_measured.h5",
+          "source_path": "/net/scratch/w00238tl/repo_backups/JER_cleanup_20261012/worktrees/JointEventReconstruction_topology_queries/results/experiments/partonic_ttbar2L_2M_realnu_v1/adapted/development/partonic_ttbar2l_development_maxjets8_v1_measured.h5",
+          "source_sha256": "030a735fedb6969db125741600bc08f695457d6e74f3b9ea4d315df9b9a839e8",
+          "source_size_bytes": 200509
+        },
+        {
+          "canonical_path": "/net/scratch/w00238tl/knot/results/experiments/partonic_ttbar2L_2M_realnu_v1/adapted/development/partonic_ttbar2l_development_maxjets8_v1_supervision.h5",
+          "canonical_sha256": "d51b4f53a4d4dc80b3b1ef47190aabae8d5bbbbff0c34189259b9e0eb000a698",
+          "canonical_size_bytes": 89112,
+          "classification": "byte_identical_copy",
+          "relative_path": "adapted/development/partonic_ttbar2l_development_maxjets8_v1_supervision.h5",
+          "source_path": "/net/scratch/w00238tl/repo_backups/JER_cleanup_20261012/worktrees/JointEventReconstruction_topology_queries/results/experiments/partonic_ttbar2L_2M_realnu_v1/adapted/development/partonic_ttbar2l_development_maxjets8_v1_supervision.h5",
+          "source_sha256": "d51b4f53a4d4dc80b3b1ef47190aabae8d5bbbbff0c34189259b9e0eb000a698",
+          "source_size_bytes": 89112
+        },
+        {
+          "canonical_path": "/net/scratch/w00238tl/knot/results/experiments/partonic_ttbar2L_2M_realnu_v1/adapted/development/partonic_ttbar2l_development_maxjets8_v1_training_view.h5",
+          "canonical_sha256": "2510bc0ca58b6add81b041a08ccafbf403f5aacb26df32da4d487c598808f798",
+          "canonical_size_bytes": 7664,
+          "classification": "byte_identical_copy",
+          "relative_path": "adapted/development/partonic_ttbar2l_development_maxjets8_v1_training_view.h5",
+          "source_path": "/net/scratch/w00238tl/repo_backups/JER_cleanup_20261012/worktrees/JointEventReconstruction_topology_queries/results/experiments/partonic_ttbar2L_2M_realnu_v1/adapted/development/partonic_ttbar2l_development_maxjets8_v1_training_view.h5",
+          "source_sha256": "2510bc0ca58b6add81b041a08ccafbf403f5aacb26df32da4d487c598808f798",
+          "source_size_bytes": 7664
+        },
+        {
+          "canonical_path": "/net/scratch/w00238tl/knot/results/experiments/partonic_ttbar2L_2M_realnu_v1/adapted/development_authoritative_20260926/partonic_ttbar2l_development_maxjets8_v1_manifest.json",
+          "canonical_sha256": "2192984e027fc722f7dc4babfba9f919dfeff281538746f3c47c09134df046b3",
+          "canonical_size_bytes": 4645,
+          "classification": "canonical_path_metadata_updated",
+          "relative_path": "adapted/development_authoritative_20260926/partonic_ttbar2l_development_maxjets8_v1_manifest.json",
+          "source_path": "/net/scratch/w00238tl/repo_backups/JER_cleanup_20261012/worktrees/JointEventReconstruction_topology_queries/results/experiments/partonic_ttbar2L_2M_realnu_v1/adapted/development_authoritative_20260926/partonic_ttbar2l_development_maxjets8_v1_manifest.json",
+          "source_sha256": "ef4f27baaac4653fc27dbb7c9989a4a551dfb136d685e7f4ca5ea6169e30870c",
+          "source_size_bytes": 4756
+        },
+        {
+          "canonical_path": "/net/scratch/w00238tl/knot/results/experiments/partonic_ttbar2L_2M_realnu_v1/adapted/development_authoritative_20260926/partonic_ttbar2l_development_maxjets8_v1_measured.h5",
+          "canonical_sha256": "d1c545c6866ba55e4783c95521dedadf7b1fc262508232911db62ba69a0cf9d4",
+          "canonical_size_bytes": 199743,
+          "classification": "byte_identical_copy",
+          "relative_path": "adapted/development_authoritative_20260926/partonic_ttbar2l_development_maxjets8_v1_measured.h5",
+          "source_path": "/net/scratch/w00238tl/repo_backups/JER_cleanup_20261012/worktrees/JointEventReconstruction_topology_queries/results/experiments/partonic_ttbar2L_2M_realnu_v1/adapted/development_authoritative_20260926/partonic_ttbar2l_development_maxjets8_v1_measured.h5",
+          "source_sha256": "d1c545c6866ba55e4783c95521dedadf7b1fc262508232911db62ba69a0cf9d4",
+          "source_size_bytes": 199743
+        },
+        {
+          "canonical_path": "/net/scratch/w00238tl/knot/results/experiments/partonic_ttbar2L_2M_realnu_v1/adapted/development_authoritative_20260926/partonic_ttbar2l_development_maxjets8_v1_supervision.h5",
+          "canonical_sha256": "eca1726644dd5209e77b9427bf0deabde13f03d7166457848319d9861ee4afd9",
+          "canonical_size_bytes": 89548,
+          "classification": "byte_identical_copy",
+          "relative_path": "adapted/development_authoritative_20260926/partonic_ttbar2l_development_maxjets8_v1_supervision.h5",
+          "source_path": "/net/scratch/w00238tl/repo_backups/JER_cleanup_20261012/worktrees/JointEventReconstruction_topology_queries/results/experiments/partonic_ttbar2L_2M_realnu_v1/adapted/development_authoritative_20260926/partonic_ttbar2l_development_maxjets8_v1_supervision.h5",
+          "source_sha256": "eca1726644dd5209e77b9427bf0deabde13f03d7166457848319d9861ee4afd9",
+          "source_size_bytes": 89548
+        },
+        {
+          "canonical_path": "/net/scratch/w00238tl/knot/results/experiments/partonic_ttbar2L_2M_realnu_v1/adapted/development_authoritative_20260926/partonic_ttbar2l_development_maxjets8_v1_training_view.h5",
+          "canonical_sha256": "2dc5992684d870512d57f3fbb2f1527c078c1e87d9de08038da8a5834ab6e553",
+          "canonical_size_bytes": 7784,
+          "classification": "byte_identical_copy",
+          "relative_path": "adapted/development_authoritative_20260926/partonic_ttbar2l_development_maxjets8_v1_training_view.h5",
+          "source_path": "/net/scratch/w00238tl/repo_backups/JER_cleanup_20261012/worktrees/JointEventReconstruction_topology_queries/results/experiments/partonic_ttbar2L_2M_realnu_v1/adapted/development_authoritative_20260926/partonic_ttbar2l_development_maxjets8_v1_training_view.h5",
+          "source_sha256": "2dc5992684d870512d57f3fbb2f1527c078c1e87d9de08038da8a5834ab6e553",
+          "source_size_bytes": 7784
+        },
+        {
+          "canonical_path": "/net/scratch/w00238tl/knot/results/experiments/partonic_ttbar2L_2M_realnu_v1/adapted/train_validation/partonic_ttbar2l_train_validation_maxjets8_v1_manifest.json",
+          "canonical_sha256": "a7767b3de5073f4d2874b34ebb9f9523fa42ffeb304fd08963120f01a3d774ca",
+          "canonical_size_bytes": 5007,
+          "classification": "canonical_path_metadata_updated",
+          "relative_path": "adapted/train_validation/partonic_ttbar2l_train_validation_maxjets8_v1_manifest.json",
+          "source_path": "/net/scratch/w00238tl/repo_backups/JER_cleanup_20261012/worktrees/JointEventReconstruction_topology_queries/results/experiments/partonic_ttbar2L_2M_realnu_v1/adapted/train_validation/partonic_ttbar2l_train_validation_maxjets8_v1_manifest.json",
+          "source_sha256": "6f42af11a9313c75d03c0d19b8d96e19ed7af47d6373a0b2d3b979d98f0ea4e4",
+          "source_size_bytes": 5118
+        },
+        {
+          "canonical_path": "/net/scratch/w00238tl/knot/results/experiments/partonic_ttbar2L_2M_realnu_v1/adapted/train_validation/partonic_ttbar2l_train_validation_maxjets8_v1_measured.h5",
+          "canonical_sha256": "2a8b00216efbf344ceeb47d11b8ed6d514355cae41a3bf5019d499b346893772",
+          "canonical_size_bytes": 433932910,
+          "classification": "byte_identical_copy",
+          "relative_path": "adapted/train_validation/partonic_ttbar2l_train_validation_maxjets8_v1_measured.h5",
+          "source_path": "/net/scratch/w00238tl/repo_backups/JER_cleanup_20261012/worktrees/JointEventReconstruction_topology_queries/results/experiments/partonic_ttbar2L_2M_realnu_v1/adapted/train_validation/partonic_ttbar2l_train_validation_maxjets8_v1_measured.h5",
+          "source_sha256": "2a8b00216efbf344ceeb47d11b8ed6d514355cae41a3bf5019d499b346893772",
+          "source_size_bytes": 433932910
+        },
+        {
+          "canonical_path": "/net/scratch/w00238tl/knot/results/experiments/partonic_ttbar2L_2M_realnu_v1/adapted/train_validation/partonic_ttbar2l_train_validation_maxjets8_v1_supervision.h5",
+          "canonical_sha256": "11c0f1c5767c1a810b71c7c68ca97c0c78193a06362e90ce0414d1087881f0e6",
+          "canonical_size_bytes": 151329318,
+          "classification": "byte_identical_copy",
+          "relative_path": "adapted/train_validation/partonic_ttbar2l_train_validation_maxjets8_v1_supervision.h5",
+          "source_path": "/net/scratch/w00238tl/repo_backups/JER_cleanup_20261012/worktrees/JointEventReconstruction_topology_queries/results/experiments/partonic_ttbar2L_2M_realnu_v1/adapted/train_validation/partonic_ttbar2l_train_validation_maxjets8_v1_supervision.h5",
+          "source_sha256": "11c0f1c5767c1a810b71c7c68ca97c0c78193a06362e90ce0414d1087881f0e6",
+          "source_size_bytes": 151329318
+        },
+        {
+          "canonical_path": "/net/scratch/w00238tl/knot/results/experiments/partonic_ttbar2L_2M_realnu_v1/adapted/train_validation/partonic_ttbar2l_train_validation_maxjets8_v1_training_view.h5",
+          "canonical_sha256": "35fa1154abff7ab6a92e8009509db1c7617030131db87134df79939e7cf0c510",
+          "canonical_size_bytes": 7712,
+          "classification": "byte_identical_copy",
+          "relative_path": "adapted/train_validation/partonic_ttbar2l_train_validation_maxjets8_v1_training_view.h5",
+          "source_path": "/net/scratch/w00238tl/repo_backups/JER_cleanup_20261012/worktrees/JointEventReconstruction_topology_queries/results/experiments/partonic_ttbar2L_2M_realnu_v1/adapted/train_validation/partonic_ttbar2l_train_validation_maxjets8_v1_training_view.h5",
+          "source_sha256": "35fa1154abff7ab6a92e8009509db1c7617030131db87134df79939e7cf0c510",
+          "source_size_bytes": 7712
+        },
+        {
+          "canonical_path": "/net/scratch/w00238tl/knot/results/experiments/partonic_ttbar2L_2M_realnu_v1/adapted/train_validation/prep.log",
+          "canonical_sha256": "6f42af11a9313c75d03c0d19b8d96e19ed7af47d6373a0b2d3b979d98f0ea4e4",
+          "canonical_size_bytes": 5118,
+          "classification": "byte_identical_copy",
+          "relative_path": "adapted/train_validation/prep.log",
+          "source_path": "/net/scratch/w00238tl/repo_backups/JER_cleanup_20261012/worktrees/JointEventReconstruction_topology_queries/results/experiments/partonic_ttbar2L_2M_realnu_v1/adapted/train_validation/prep.log",
+          "source_sha256": "6f42af11a9313c75d03c0d19b8d96e19ed7af47d6373a0b2d3b979d98f0ea4e4",
+          "source_size_bytes": 5118
+        },
+        {
+          "canonical_path": "/net/scratch/w00238tl/knot/results/experiments/partonic_ttbar2L_2M_realnu_v1/adapted/train_validation_authoritative_20260926/partonic_ttbar2l_train_validation_maxjets8_v1_manifest.json",
+          "canonical_sha256": "82a284e3d359626720cecf8e344f99e2bf8aa87c1189e26072aef70c4db86bf5",
+          "canonical_size_bytes": 4895,
+          "classification": "canonical_path_metadata_updated",
+          "relative_path": "adapted/train_validation_authoritative_20260926/partonic_ttbar2l_train_validation_maxjets8_v1_manifest.json",
+          "source_path": "/net/scratch/w00238tl/repo_backups/JER_cleanup_20261012/worktrees/JointEventReconstruction_topology_queries/results/experiments/partonic_ttbar2L_2M_realnu_v1/adapted/train_validation_authoritative_20260926/partonic_ttbar2l_train_validation_maxjets8_v1_manifest.json",
+          "source_sha256": "f5a476669fe0c54636afb6454c0964b64f856247cd86cbd5306ccc1cb42e1a09",
+          "source_size_bytes": 5006
+        },
+        {
+          "canonical_path": "/net/scratch/w00238tl/knot/results/experiments/partonic_ttbar2L_2M_realnu_v1/adapted/train_validation_authoritative_20260926/partonic_ttbar2l_train_validation_maxjets8_v1_measured.h5",
+          "canonical_sha256": "2bbfcc69af12db46b37c9481dccfa91ed650fdb4443cf43dc64f0a7a938d2954",
+          "canonical_size_bytes": 433932910,
+          "classification": "byte_identical_copy",
+          "relative_path": "adapted/train_validation_authoritative_20260926/partonic_ttbar2l_train_validation_maxjets8_v1_measured.h5",
+          "source_path": "/net/scratch/w00238tl/repo_backups/JER_cleanup_20261012/worktrees/JointEventReconstruction_topology_queries/results/experiments/partonic_ttbar2L_2M_realnu_v1/adapted/train_validation_authoritative_20260926/partonic_ttbar2l_train_validation_maxjets8_v1_measured.h5",
+          "source_sha256": "2bbfcc69af12db46b37c9481dccfa91ed650fdb4443cf43dc64f0a7a938d2954",
+          "source_size_bytes": 433932910
+        },
+        {
+          "canonical_path": "/net/scratch/w00238tl/knot/results/experiments/partonic_ttbar2L_2M_realnu_v1/adapted/train_validation_authoritative_20260926/partonic_ttbar2l_train_validation_maxjets8_v1_supervision.h5",
+          "canonical_sha256": "5abc962cb79cb0856a0b3d51b6b093e6bfe4c0d37d465153e6a85d9fa2e72f65",
+          "canonical_size_bytes": 151329862,
+          "classification": "byte_identical_copy",
+          "relative_path": "adapted/train_validation_authoritative_20260926/partonic_ttbar2l_train_validation_maxjets8_v1_supervision.h5",
+          "source_path": "/net/scratch/w00238tl/repo_backups/JER_cleanup_20261012/worktrees/JointEventReconstruction_topology_queries/results/experiments/partonic_ttbar2L_2M_realnu_v1/adapted/train_validation_authoritative_20260926/partonic_ttbar2l_train_validation_maxjets8_v1_supervision.h5",
+          "source_sha256": "5abc962cb79cb0856a0b3d51b6b093e6bfe4c0d37d465153e6a85d9fa2e72f65",
+          "source_size_bytes": 151329862
+        },
+        {
+          "canonical_path": "/net/scratch/w00238tl/knot/results/experiments/partonic_ttbar2L_2M_realnu_v1/adapted/train_validation_authoritative_20260926/partonic_ttbar2l_train_validation_maxjets8_v1_training_view.h5",
+          "canonical_sha256": "36a1b99b78b4a77fa2dd39c4067dd103025771e19416f2671b49795757d51274",
+          "canonical_size_bytes": 7832,
+          "classification": "byte_identical_copy",
+          "relative_path": "adapted/train_validation_authoritative_20260926/partonic_ttbar2l_train_validation_maxjets8_v1_training_view.h5",
+          "source_path": "/net/scratch/w00238tl/repo_backups/JER_cleanup_20261012/worktrees/JointEventReconstruction_topology_queries/results/experiments/partonic_ttbar2L_2M_realnu_v1/adapted/train_validation_authoritative_20260926/partonic_ttbar2l_train_validation_maxjets8_v1_training_view.h5",
+          "source_sha256": "36a1b99b78b4a77fa2dd39c4067dd103025771e19416f2671b49795757d51274",
+          "source_size_bytes": 7832
+        },
+        {
+          "canonical_path": "/net/scratch/w00238tl/knot/results/experiments/partonic_ttbar2L_2M_realnu_v1/cache/development_measured_maxjets8_v1.json",
+          "canonical_sha256": "67f318b16b9e8b3b7b9d08b651108ec4ec54e1da22e0c28790ed71a9a732988f",
+          "canonical_size_bytes": 7062,
+          "classification": "canonical_path_metadata_updated",
+          "relative_path": "cache/development_measured_maxjets8_v1.json",
+          "source_path": "/net/scratch/w00238tl/repo_backups/JER_cleanup_20261012/worktrees/JointEventReconstruction_topology_queries/results/experiments/partonic_ttbar2L_2M_realnu_v1/cache/development_measured_maxjets8_v1.json",
+          "source_sha256": "7caf65cf96152f834ad51ecc28e1ba780e379c02a34ab516c84afe49800e6bb7",
+          "source_size_bytes": 7173
+        },
+        {
+          "canonical_path": "/net/scratch/w00238tl/knot/results/experiments/partonic_ttbar2L_2M_realnu_v1/cache/development_measured_maxjets8_v1.pt",
+          "canonical_sha256": "6314612f331726e2f4a67c63999d19de864e03d4351aabe1f780b09f71932e53",
+          "canonical_size_bytes": 780067,
+          "classification": "byte_identical_copy",
+          "relative_path": "cache/development_measured_maxjets8_v1.pt",
+          "source_path": "/net/scratch/w00238tl/repo_backups/JER_cleanup_20261012/worktrees/JointEventReconstruction_topology_queries/results/experiments/partonic_ttbar2L_2M_realnu_v1/cache/development_measured_maxjets8_v1.pt",
+          "source_sha256": "6314612f331726e2f4a67c63999d19de864e03d4351aabe1f780b09f71932e53",
+          "source_size_bytes": 780067
+        },
+        {
+          "canonical_path": "/net/scratch/w00238tl/knot/results/experiments/partonic_ttbar2L_2M_realnu_v1/cache/development_measured_maxjets8_v1.pt.lock",
+          "canonical_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "canonical_size_bytes": 0,
+          "classification": "byte_identical_copy",
+          "relative_path": "cache/development_measured_maxjets8_v1.pt.lock",
+          "source_path": "/net/scratch/w00238tl/repo_backups/JER_cleanup_20261012/worktrees/JointEventReconstruction_topology_queries/results/experiments/partonic_ttbar2L_2M_realnu_v1/cache/development_measured_maxjets8_v1.pt.lock",
+          "source_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "source_size_bytes": 0
+        },
+        {
+          "canonical_path": "/net/scratch/w00238tl/knot/results/experiments/partonic_ttbar2L_2M_realnu_v1/cache/train_validation_cache_build.log",
+          "canonical_sha256": "f6fbfe1a63ad3a7083020da254f066ca3b6fd298ccd1ec43dcad2bc73fa05aed",
+          "canonical_size_bytes": 174,
+          "classification": "byte_identical_copy",
+          "relative_path": "cache/train_validation_cache_build.log",
+          "source_path": "/net/scratch/w00238tl/repo_backups/JER_cleanup_20261012/worktrees/JointEventReconstruction_topology_queries/results/experiments/partonic_ttbar2L_2M_realnu_v1/cache/train_validation_cache_build.log",
+          "source_sha256": "f6fbfe1a63ad3a7083020da254f066ca3b6fd298ccd1ec43dcad2bc73fa05aed",
+          "source_size_bytes": 174
+        },
+        {
+          "canonical_path": "/net/scratch/w00238tl/knot/results/experiments/partonic_ttbar2L_2M_realnu_v1/cache/train_validation_measured_maxjets8_v1.json",
+          "canonical_sha256": "5e7765195adb5c53d93bd3f2d8a8fce478d96ad0bae37be4554823c7b66b1e26",
+          "canonical_size_bytes": 7167,
+          "classification": "canonical_path_metadata_updated",
+          "relative_path": "cache/train_validation_measured_maxjets8_v1.json",
+          "source_path": "/net/scratch/w00238tl/repo_backups/JER_cleanup_20261012/worktrees/JointEventReconstruction_topology_queries/results/experiments/partonic_ttbar2L_2M_realnu_v1/cache/train_validation_measured_maxjets8_v1.json",
+          "source_sha256": "b2594e999c5bdd19a333fde9b507723580eba77be81dd3c1191b46f5a27f57d6",
+          "source_size_bytes": 7278
+        },
+        {
+          "canonical_path": "/net/scratch/w00238tl/knot/results/experiments/partonic_ttbar2L_2M_realnu_v1/cache/train_validation_measured_maxjets8_v1.pt",
+          "canonical_sha256": "958ca98b08b2bc9d49967843c82793005b37ebb3e7b287f18cbe628d491d77c7",
+          "canonical_size_bytes": 1909603965,
+          "classification": "cache_rekeyed_path_metadata_only",
+          "relative_path": "cache/train_validation_measured_maxjets8_v1.pt",
+          "source_path": "/net/scratch/w00238tl/repo_backups/JER_cleanup_20261012/worktrees/JointEventReconstruction_topology_queries/results/experiments/partonic_ttbar2L_2M_realnu_v1/cache/train_validation_measured_maxjets8_v1.pt",
+          "source_sha256": "9739ddeea29b6af41ee6e98c7c517ecbdc2cb969279502afc0e8aeb11cf369e7",
+          "source_size_bytes": 1909603881
+        },
+        {
+          "canonical_path": "/net/scratch/w00238tl/knot/results/experiments/partonic_ttbar2L_2M_realnu_v1/cache/train_validation_measured_maxjets8_v1.pt.lock",
+          "canonical_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "canonical_size_bytes": 0,
+          "classification": "byte_identical_copy",
+          "relative_path": "cache/train_validation_measured_maxjets8_v1.pt.lock",
+          "source_path": "/net/scratch/w00238tl/repo_backups/JER_cleanup_20261012/worktrees/JointEventReconstruction_topology_queries/results/experiments/partonic_ttbar2L_2M_realnu_v1/cache/train_validation_measured_maxjets8_v1.pt.lock",
+          "source_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "source_size_bytes": 0
+        },
+        {
+          "canonical_path": "/net/scratch/w00238tl/knot/results/experiments/partonic_ttbar2L_2M_realnu_v1/cpu_development_ids_v1.json",
+          "canonical_sha256": "0e3e1281a666bb754d4461347f1f6d8bf35cc75b83c69e81ad3dc108209dfda5",
+          "canonical_size_bytes": 2130,
+          "classification": "canonical_path_metadata_updated",
+          "relative_path": "cpu_development_ids_v1.json",
+          "source_path": "/net/scratch/w00238tl/repo_backups/JER_cleanup_20261012/worktrees/JointEventReconstruction_topology_queries/results/experiments/partonic_ttbar2L_2M_realnu_v1/cpu_development_ids_v1.json",
+          "source_sha256": "410676223816817734132cd65791912ae6019bbbc74fcce7e531bb92ddd26007",
+          "source_size_bytes": 2167
+        },
+        {
+          "canonical_path": "/net/scratch/w00238tl/knot/results/experiments/partonic_ttbar2L_2M_realnu_v1/cpu_development_ids_v1.npz",
+          "canonical_sha256": "72e0716c293f3469e03e6f737006ee278ae0609f02015ea9dda2f57c7a8f54e7",
+          "canonical_size_bytes": 6465,
+          "classification": "byte_identical_copy",
+          "relative_path": "cpu_development_ids_v1.npz",
+          "source_path": "/net/scratch/w00238tl/repo_backups/JER_cleanup_20261012/worktrees/JointEventReconstruction_topology_queries/results/experiments/partonic_ttbar2L_2M_realnu_v1/cpu_development_ids_v1.npz",
+          "source_sha256": "72e0716c293f3469e03e6f737006ee278ae0609f02015ea9dda2f57c7a8f54e7",
+          "source_size_bytes": 6465
+        },
+        {
+          "canonical_path": "/net/scratch/w00238tl/knot/results/experiments/partonic_ttbar2L_2M_realnu_v1/manifests/source_manifest.json",
+          "canonical_sha256": "7214341163e11d3fa4f6897d0663785e8787e455b808f8b00a2c457451119bf8",
+          "canonical_size_bytes": 39919,
+          "classification": "canonical_path_metadata_updated",
+          "relative_path": "manifests/source_manifest.json",
+          "source_path": "/net/scratch/w00238tl/repo_backups/JER_cleanup_20261012/worktrees/JointEventReconstruction_topology_queries/results/experiments/partonic_ttbar2L_2M_realnu_v1/manifests/source_manifest.json",
+          "source_sha256": "5f4d44cad0b6f8857ebb2a4094d40e3901459c5648cb7464cb9af42279502601",
+          "source_size_bytes": 39956
+        },
+        {
+          "canonical_path": "/net/scratch/w00238tl/knot/results/experiments/partonic_ttbar2L_2M_realnu_v1/manifests/source_manifest_realnu_v1.json",
+          "canonical_sha256": "7214341163e11d3fa4f6897d0663785e8787e455b808f8b00a2c457451119bf8",
+          "canonical_size_bytes": 39919,
+          "classification": "canonical_path_metadata_updated",
+          "relative_path": "manifests/source_manifest_realnu_v1.json",
+          "source_path": "/net/scratch/w00238tl/repo_backups/JER_cleanup_20261012/worktrees/JointEventReconstruction_topology_queries/results/experiments/partonic_ttbar2L_2M_realnu_v1/manifests/source_manifest_realnu_v1.json",
+          "source_sha256": "5f4d44cad0b6f8857ebb2a4094d40e3901459c5648cb7464cb9af42279502601",
+          "source_size_bytes": 39956
+        },
+        {
+          "canonical_path": "/net/scratch/w00238tl/knot/results/experiments/partonic_ttbar2L_2M_realnu_v1/scalers/invisible_train_only_top_antitop_20260926.json",
+          "canonical_sha256": "8a21329afb20666a1aad64629893d2a4ef681b45855cc0baefc201d8ff4f73a5",
+          "canonical_size_bytes": 2516,
+          "classification": "canonical_path_metadata_updated",
+          "relative_path": "scalers/invisible_train_only_top_antitop_20260926.json",
+          "source_path": "/net/scratch/w00238tl/repo_backups/JER_cleanup_20261012/worktrees/JointEventReconstruction_topology_queries/results/experiments/partonic_ttbar2L_2M_realnu_v1/scalers/invisible_train_only_top_antitop_20260926.json",
+          "source_sha256": "9ee7af744591c6ab66554db946a4f3dea9fc92f61937dbd359ad17d5f8ca8fdd",
+          "source_size_bytes": 2553
+        },
+        {
+          "canonical_path": "/net/scratch/w00238tl/knot/results/experiments/partonic_ttbar2L_2M_realnu_v1/source_manifest_v1.json",
+          "canonical_sha256": "7214341163e11d3fa4f6897d0663785e8787e455b808f8b00a2c457451119bf8",
+          "canonical_size_bytes": 39919,
+          "classification": "canonical_path_metadata_updated",
+          "relative_path": "source_manifest_v1.json",
+          "source_path": "/net/scratch/w00238tl/repo_backups/JER_cleanup_20261012/worktrees/JointEventReconstruction_topology_queries/results/experiments/partonic_ttbar2L_2M_realnu_v1/source_manifest_v1.json",
+          "source_sha256": "5f4d44cad0b6f8857ebb2a4094d40e3901459c5648cb7464cb9af42279502601",
+          "source_size_bytes": 39956
+        },
+        {
+          "canonical_path": "/net/scratch/w00238tl/knot/results/experiments/partonic_ttbar2L_2M_realnu_v1/split_membership_v1.npz",
+          "canonical_sha256": "260af7bda73383dc2d5d5adf95f628e71f081642964ea7b875746d7d08225374",
+          "canonical_size_bytes": 10070153,
+          "classification": "byte_identical_copy",
+          "relative_path": "split_membership_v1.npz",
+          "source_path": "/net/scratch/w00238tl/repo_backups/JER_cleanup_20261012/worktrees/JointEventReconstruction_topology_queries/results/experiments/partonic_ttbar2L_2M_realnu_v1/split_membership_v1.npz",
+          "source_sha256": "260af7bda73383dc2d5d5adf95f628e71f081642964ea7b875746d7d08225374",
+          "source_size_bytes": 10070153
+        },
+        {
+          "canonical_path": "/net/scratch/w00238tl/knot/results/experiments/partonic_ttbar2L_2M_realnu_v1/splits/neutrino_role_support_train_validation_realnu_v1.npz",
+          "canonical_sha256": "b53a7234b49d4cf6a7dc827145e6824d409381df739575a8701d1b12029593bd",
+          "canonical_size_bytes": 6498788,
+          "classification": "byte_identical_copy",
+          "relative_path": "splits/neutrino_role_support_train_validation_realnu_v1.npz",
+          "source_path": "/net/scratch/w00238tl/repo_backups/JER_cleanup_20261012/worktrees/JointEventReconstruction_topology_queries/results/experiments/partonic_ttbar2L_2M_realnu_v1/splits/neutrino_role_support_train_validation_realnu_v1.npz",
+          "source_sha256": "b53a7234b49d4cf6a7dc827145e6824d409381df739575a8701d1b12029593bd",
+          "source_size_bytes": 6498788
+        },
+        {
+          "canonical_path": "/net/scratch/w00238tl/knot/results/experiments/partonic_ttbar2L_2M_realnu_v1/splits/reserved_test_event_ids_realnu_v1.npz",
+          "canonical_sha256": "36dfe550fdbaaa401e07021315d82f0a77bf617a50a68bba87227dabee2c6d88",
+          "canonical_size_bytes": 613774,
+          "classification": "byte_identical_copy",
+          "relative_path": "splits/reserved_test_event_ids_realnu_v1.npz",
+          "source_path": "/net/scratch/w00238tl/repo_backups/JER_cleanup_20261012/worktrees/JointEventReconstruction_topology_queries/results/experiments/partonic_ttbar2L_2M_realnu_v1/splits/reserved_test_event_ids_realnu_v1.npz",
+          "source_sha256": "36dfe550fdbaaa401e07021315d82f0a77bf617a50a68bba87227dabee2c6d88",
+          "source_size_bytes": 613774
+        },
+        {
+          "canonical_path": "/net/scratch/w00238tl/knot/results/experiments/partonic_ttbar2L_2M_realnu_v1/splits/split_membership_realnu_v1.npz",
+          "canonical_sha256": "260af7bda73383dc2d5d5adf95f628e71f081642964ea7b875746d7d08225374",
+          "canonical_size_bytes": 10070153,
+          "classification": "byte_identical_copy",
+          "relative_path": "splits/split_membership_realnu_v1.npz",
+          "source_path": "/net/scratch/w00238tl/repo_backups/JER_cleanup_20261012/worktrees/JointEventReconstruction_topology_queries/results/experiments/partonic_ttbar2L_2M_realnu_v1/splits/split_membership_realnu_v1.npz",
+          "source_sha256": "260af7bda73383dc2d5d5adf95f628e71f081642964ea7b875746d7d08225374",
+          "source_size_bytes": 10070153
+        }
+      ],
+      "path_conflicts": [],
+      "prior_split_membership": {
+        "canonical_path": "/net/scratch/w00238tl/knot/results/experiments/partonic_ttbar2L_2M_v1/split_membership_v1.npz",
+        "canonical_sha256": "14bdecb1fcb64560c07f3d3a99bdca32e3a988f9a670bdf15b05fe5a1db1993c",
+        "canonical_size_bytes": 10070153,
+        "classification": "byte_identical_copy",
+        "source_path": "/net/scratch/w00238tl/repo_backups/JER_cleanup_20261012/worktrees/JointEventReconstruction_topology_queries/results/experiments/partonic_ttbar2L_2M_v1/split_membership_v1.npz",
+        "source_sha256": "14bdecb1fcb64560c07f3d3a99bdca32e3a988f9a670bdf15b05fe5a1db1993c",
+        "source_size_bytes": 10070153
+      },
+      "source_HEAD": "a4bbbc23db68c9934ea1bf1f112c18f462158354",
+      "source_branch": "research/partonic-query-cfm-realnu-v1",
+      "source_only_files_not_copied": 4906,
+      "source_only_reason": "Independent JER production/results from the preserved topology-query worktree were not duplicated into KNOT; the source worktree remains under repo_backups. Only KNOT frozen input, split, scaler, manifest, and cache files were copied.",
+      "source_result_tree_file_count": 4944,
+      "source_worktree": "/net/scratch/w00238tl/repo_backups/JER_cleanup_20261012/worktrees/JointEventReconstruction_topology_queries"
+    },
     "KNOT_logs": {
       "file_count": 50,
       "files": {
@@ -2458,12 +2878,14 @@
         },
         "experiments/knot/matched-production-v1/C/run_manifest.json": {
           "canonical_path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/C/run_manifest.json",
-          "classification": "unique_result",
-          "sha256": "882cd111996c090f6abb078c5fae04ce84fe462dc45818827b2495bfe00ffa62",
-          "size_bytes": 14229,
+          "classification": "path_normalised_result_manifest",
+          "sha256": "631b248c3145d59c69e06ede1b7a15f857776583ad0c70d2485192dc74b66400",
+          "size_bytes": 14079,
           "source_copies": [
             "production"
-          ]
+          ],
+          "source_sha256_before_path_normalisation": "882cd111996c090f6abb078c5fae04ce84fe462dc45818827b2495bfe00ffa62",
+          "source_size_bytes_before_path_normalisation": 14229
         },
         "experiments/knot/matched-production-v1/J/checkpoints/best-16-1.213281.ckpt": {
           "canonical_path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/J/checkpoints/best-16-1.213281.ckpt",
@@ -2521,12 +2943,14 @@
         },
         "experiments/knot/matched-production-v1/J/run_manifest.json": {
           "canonical_path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/J/run_manifest.json",
-          "classification": "unique_result",
-          "sha256": "5adab9b04ebc63064272e3dcc546a2ab644a2ef00851bcf538178aaac410da63",
-          "size_bytes": 14228,
+          "classification": "path_normalised_result_manifest",
+          "sha256": "864dbe9c8a17d97beb1b29d825144f0bf805c791da89a3e2643685aa68b08738",
+          "size_bytes": 14078,
           "source_copies": [
             "production"
-          ]
+          ],
+          "source_sha256_before_path_normalisation": "5adab9b04ebc63064272e3dcc546a2ab644a2ef00851bcf538178aaac410da63",
+          "source_size_bytes_before_path_normalisation": 14228
         },
         "experiments/knot/matched-production-v1/M/checkpoints/best-19-1.330055.ckpt": {
           "canonical_path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/M/checkpoints/best-19-1.330055.ckpt",
@@ -2584,12 +3008,14 @@
         },
         "experiments/knot/matched-production-v1/M/run_manifest.json": {
           "canonical_path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/M/run_manifest.json",
-          "classification": "unique_result",
-          "sha256": "df1abf8ba8eeece60172d892b43cbcd9b8e34263a813e349e5940ba557b4e711",
-          "size_bytes": 14229,
+          "classification": "path_normalised_result_manifest",
+          "sha256": "1ef556ee289de682459cb7687748c499428dd7ce3eab6d4923c20dbffcde4ad7",
+          "size_bytes": 14079,
           "source_copies": [
             "production"
-          ]
+          ],
+          "source_sha256_before_path_normalisation": "df1abf8ba8eeece60172d892b43cbcd9b8e34263a813e349e5940ba557b4e711",
+          "source_size_bytes_before_path_normalisation": 14229
         },
         "experiments/knot/matched-production-v1/evaluation-v1/a100-smoke-analysis/assignment_by_jet_multiplicity.png": {
           "canonical_path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/a100-smoke-analysis/assignment_by_jet_multiplicity.png",
@@ -3214,12 +3640,14 @@
         },
         "experiments/knot/matched-production-v1/evaluation-v1/full-10k/C/evaluation_manifest.json": {
           "canonical_path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/C/evaluation_manifest.json",
-          "classification": "unique_result",
-          "sha256": "b01f21975276ac7bdb69f1a351f78f6950275c20ff1a4ac7458f2e44bf882b15",
-          "size_bytes": 1322,
+          "classification": "path_normalised_result_manifest",
+          "sha256": "5221e56f22edc660b74cd125c47e7176dcf86eda2aefcd7c1f9daccf82c31ff4",
+          "size_bytes": 1227,
           "source_copies": [
             "evaluator"
-          ]
+          ],
+          "source_sha256_before_path_normalisation": "b01f21975276ac7bdb69f1a351f78f6950275c20ff1a4ac7458f2e44bf882b15",
+          "source_size_bytes_before_path_normalisation": 1322
         },
         "experiments/knot/matched-production-v1/evaluation-v1/full-10k/C/metrics.json": {
           "canonical_path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/C/metrics.json",
@@ -3259,12 +3687,14 @@
         },
         "experiments/knot/matched-production-v1/evaluation-v1/full-10k/J/evaluation_manifest.json": {
           "canonical_path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/J/evaluation_manifest.json",
-          "classification": "unique_result",
-          "sha256": "c39374c45e66565871adf5226a9a9d541fc295470c6f4ee256f2e337011ef7d8",
-          "size_bytes": 1323,
+          "classification": "path_normalised_result_manifest",
+          "sha256": "ced2b66a294803f683fca373e724479697f4027e19417ddf19d7f48f0537b976",
+          "size_bytes": 1228,
           "source_copies": [
             "evaluator"
-          ]
+          ],
+          "source_sha256_before_path_normalisation": "c39374c45e66565871adf5226a9a9d541fc295470c6f4ee256f2e337011ef7d8",
+          "source_size_bytes_before_path_normalisation": 1323
         },
         "experiments/knot/matched-production-v1/evaluation-v1/full-10k/J/metrics.json": {
           "canonical_path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/J/metrics.json",
@@ -3304,12 +3734,14 @@
         },
         "experiments/knot/matched-production-v1/evaluation-v1/full-10k/M/evaluation_manifest.json": {
           "canonical_path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/M/evaluation_manifest.json",
-          "classification": "unique_result",
-          "sha256": "af8bd6e27b43e8f5693e7ff62417a103c44f7889505deafb76f5aa1502946637",
-          "size_bytes": 1322,
+          "classification": "path_normalised_result_manifest",
+          "sha256": "bca1cd17832ea52f84de0a02bdf69976ce2cd2a1ad3effdb28d8251cd28bc4a3",
+          "size_bytes": 1227,
           "source_copies": [
             "evaluator"
-          ]
+          ],
+          "source_sha256_before_path_normalisation": "af8bd6e27b43e8f5693e7ff62417a103c44f7889505deafb76f5aa1502946637",
+          "source_size_bytes_before_path_normalisation": 1322
         },
         "experiments/knot/matched-production-v1/evaluation-v1/full-10k/M/metrics.json": {
           "canonical_path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/M/metrics.json",
@@ -7008,6 +7440,257 @@
         }
       }
     },
+    "cache_cleanup_after_validation": {
+      "cache_directories_removed": 32,
+      "file_count": 246,
+      "paths": [
+        {
+          "classification": "reproducible Python/linter cache removed after final checks",
+          "files": 7,
+          "relative_path": ".ruff_cache",
+          "size_bytes": 1410,
+          "worktree": "/net/scratch/w00238tl/knot"
+        },
+        {
+          "classification": "reproducible Python/linter cache removed after final checks",
+          "files": 3,
+          "relative_path": "scripts/__pycache__",
+          "size_bytes": 39670,
+          "worktree": "/net/scratch/w00238tl/knot"
+        },
+        {
+          "classification": "reproducible Python/linter cache removed after final checks",
+          "files": 2,
+          "relative_path": "tests/__pycache__",
+          "size_bytes": 13070,
+          "worktree": "/net/scratch/w00238tl/knot"
+        },
+        {
+          "classification": "reproducible Python/linter cache removed after final checks",
+          "files": 9,
+          "relative_path": "src/joint_event_reconstruction/__pycache__",
+          "size_bytes": 216627,
+          "worktree": "/net/scratch/w00238tl/knot"
+        },
+        {
+          "classification": "reproducible Python/linter cache removed after final checks",
+          "files": 2,
+          "relative_path": "src/joint_event_reconstruction/cli/__pycache__",
+          "size_bytes": 67332,
+          "worktree": "/net/scratch/w00238tl/knot"
+        },
+        {
+          "classification": "reproducible Python/linter cache removed after final checks",
+          "files": 2,
+          "relative_path": "src/joint_event_reconstruction/training/__pycache__",
+          "size_bytes": 38043,
+          "worktree": "/net/scratch/w00238tl/knot"
+        },
+        {
+          "classification": "reproducible Python/linter cache removed after final checks",
+          "files": 2,
+          "relative_path": "src/joint_event_reconstruction/m0/__pycache__",
+          "size_bytes": 53475,
+          "worktree": "/net/scratch/w00238tl/knot"
+        },
+        {
+          "classification": "reproducible Python/linter cache removed after final checks",
+          "files": 7,
+          "relative_path": "src/joint_event_reconstruction/topology/__pycache__",
+          "size_bytes": 107053,
+          "worktree": "/net/scratch/w00238tl/knot"
+        },
+        {
+          "classification": "reproducible Python/linter cache removed after final checks",
+          "files": 9,
+          "relative_path": "src/joint_event_reconstruction/models/__pycache__",
+          "size_bytes": 162635,
+          "worktree": "/net/scratch/w00238tl/knot"
+        },
+        {
+          "classification": "reproducible Python/linter cache removed after final checks",
+          "files": 3,
+          "relative_path": "src/joint_event_reconstruction/flows/__pycache__",
+          "size_bytes": 8282,
+          "worktree": "/net/scratch/w00238tl/knot"
+        },
+        {
+          "classification": "reproducible Python/linter cache removed after final checks",
+          "files": 5,
+          "relative_path": "src/joint_event_reconstruction/data/__pycache__",
+          "size_bytes": 113871,
+          "worktree": "/net/scratch/w00238tl/knot"
+        },
+        {
+          "classification": "reproducible Python/linter cache removed after final checks",
+          "files": 6,
+          "relative_path": "src/joint_event_reconstruction/m0/data/__pycache__",
+          "size_bytes": 232950,
+          "worktree": "/net/scratch/w00238tl/knot"
+        },
+        {
+          "classification": "reproducible Python/linter cache removed after final checks",
+          "files": 12,
+          "relative_path": "src/joint_event_reconstruction/models/invisible/__pycache__",
+          "size_bytes": 127126,
+          "worktree": "/net/scratch/w00238tl/knot"
+        },
+        {
+          "classification": "reproducible Python/linter cache removed after final checks",
+          "files": 6,
+          "relative_path": "src/joint_event_reconstruction/models/visible/__pycache__",
+          "size_bytes": 32101,
+          "worktree": "/net/scratch/w00238tl/knot"
+        },
+        {
+          "classification": "reproducible Python/linter cache removed after final checks",
+          "files": 3,
+          "relative_path": "src/joint_event_reconstruction/models/reconstruction/__pycache__",
+          "size_bytes": 28061,
+          "worktree": "/net/scratch/w00238tl/knot"
+        },
+        {
+          "classification": "reproducible Python/linter cache removed after final checks",
+          "files": 10,
+          "relative_path": "scripts/evaluation/__pycache__",
+          "size_bytes": 653203,
+          "worktree": "/net/scratch/w00238tl/knot"
+        },
+        {
+          "classification": "reproducible Python/linter cache removed after final checks",
+          "files": 8,
+          "relative_path": ".ruff_cache",
+          "size_bytes": 2982,
+          "worktree": "/net/scratch/w00238tl/rise"
+        },
+        {
+          "classification": "reproducible Python/linter cache removed after final checks",
+          "files": 5,
+          "relative_path": "scripts/__pycache__",
+          "size_bytes": 34761,
+          "worktree": "/net/scratch/w00238tl/rise"
+        },
+        {
+          "classification": "reproducible Python/linter cache removed after final checks",
+          "files": 12,
+          "relative_path": "src/joint_event_reconstruction/__pycache__",
+          "size_bytes": 371772,
+          "worktree": "/net/scratch/w00238tl/rise"
+        },
+        {
+          "classification": "reproducible Python/linter cache removed after final checks",
+          "files": 4,
+          "relative_path": "src/joint_event_reconstruction/cli/__pycache__",
+          "size_bytes": 133807,
+          "worktree": "/net/scratch/w00238tl/rise"
+        },
+        {
+          "classification": "reproducible Python/linter cache removed after final checks",
+          "files": 4,
+          "relative_path": "src/joint_event_reconstruction/training/__pycache__",
+          "size_bytes": 73835,
+          "worktree": "/net/scratch/w00238tl/rise"
+        },
+        {
+          "classification": "reproducible Python/linter cache removed after final checks",
+          "files": 4,
+          "relative_path": "src/joint_event_reconstruction/m0/__pycache__",
+          "size_bytes": 106306,
+          "worktree": "/net/scratch/w00238tl/rise"
+        },
+        {
+          "classification": "reproducible Python/linter cache removed after final checks",
+          "files": 14,
+          "relative_path": "src/joint_event_reconstruction/topology/__pycache__",
+          "size_bytes": 212393,
+          "worktree": "/net/scratch/w00238tl/rise"
+        },
+        {
+          "classification": "reproducible Python/linter cache removed after final checks",
+          "files": 18,
+          "relative_path": "src/joint_event_reconstruction/models/__pycache__",
+          "size_bytes": 323255,
+          "worktree": "/net/scratch/w00238tl/rise"
+        },
+        {
+          "classification": "reproducible Python/linter cache removed after final checks",
+          "files": 6,
+          "relative_path": "src/joint_event_reconstruction/flows/__pycache__",
+          "size_bytes": 16483,
+          "worktree": "/net/scratch/w00238tl/rise"
+        },
+        {
+          "classification": "reproducible Python/linter cache removed after final checks",
+          "files": 5,
+          "relative_path": "src/joint_event_reconstruction/data/__pycache__",
+          "size_bytes": 112338,
+          "worktree": "/net/scratch/w00238tl/rise"
+        },
+        {
+          "classification": "reproducible Python/linter cache removed after final checks",
+          "files": 12,
+          "relative_path": "src/joint_event_reconstruction/m0/data/__pycache__",
+          "size_bytes": 462273,
+          "worktree": "/net/scratch/w00238tl/rise"
+        },
+        {
+          "classification": "reproducible Python/linter cache removed after final checks",
+          "files": 24,
+          "relative_path": "src/joint_event_reconstruction/models/invisible/__pycache__",
+          "size_bytes": 252759,
+          "worktree": "/net/scratch/w00238tl/rise"
+        },
+        {
+          "classification": "reproducible Python/linter cache removed after final checks",
+          "files": 11,
+          "relative_path": "src/joint_event_reconstruction/models/visible/__pycache__",
+          "size_bytes": 52163,
+          "worktree": "/net/scratch/w00238tl/rise"
+        },
+        {
+          "classification": "reproducible Python/linter cache removed after final checks",
+          "files": 6,
+          "relative_path": "src/joint_event_reconstruction/models/reconstruction/__pycache__",
+          "size_bytes": 54530,
+          "worktree": "/net/scratch/w00238tl/rise"
+        },
+        {
+          "classification": "reproducible Python/linter cache removed after final checks",
+          "files": 24,
+          "relative_path": "scripts/validation/__pycache__",
+          "size_bytes": 375079,
+          "worktree": "/net/scratch/w00238tl/rise"
+        },
+        {
+          "classification": "reproducible Python/linter cache removed after final checks",
+          "files": 1,
+          "relative_path": "scripts/data/__pycache__",
+          "size_bytes": 14891,
+          "worktree": "/net/scratch/w00238tl/rise"
+        }
+      ],
+      "size_bytes": 4494536
+    },
+    "canonical_path_audit": {
+      "KNOT Slurm wrappers_use_canonical_root": [
+        "scripts/evaluation/knot_posterior_full.sbatch",
+        "scripts/evaluation/knot_posterior_smoke.sbatch",
+        "scripts/production/knot_matched_gpu_smoke.sbatch",
+        "scripts/production/knot_matched_training.sbatch"
+      ],
+      "legacy_JER_specific_scripts": "Historical JER/PCFM scripts retain their own JER project paths; those independent workflows were not rewritten under the explicit scope constraint.",
+      "old_KNOT_or_RISE_top_level_roots_found_in_active_project_sources": false,
+      "source_and_operational_docs_checked": [
+        "KNOT src/",
+        "KNOT scripts/",
+        "KNOT configs/",
+        "KNOT docs/",
+        "RISE src/",
+        "RISE scripts/",
+        "RISE configs/",
+        "RISE docs/"
+      ]
+    },
     "files_intentionally_discarded_as_reproducible_cache_temp": [
       {
         "classification": "reproducible Python/linter cache",
@@ -7456,8 +8139,273 @@
         "relative_path": "scripts/data/__pycache__",
         "size_bytes": 14891,
         "worktree": "/net/scratch/w00238tl/rise"
+      },
+      {
+        "classification": "reproducible Python/linter cache removed after final checks",
+        "files": 7,
+        "relative_path": ".ruff_cache",
+        "size_bytes": 1410,
+        "worktree": "/net/scratch/w00238tl/knot"
+      },
+      {
+        "classification": "reproducible Python/linter cache removed after final checks",
+        "files": 3,
+        "relative_path": "scripts/__pycache__",
+        "size_bytes": 39670,
+        "worktree": "/net/scratch/w00238tl/knot"
+      },
+      {
+        "classification": "reproducible Python/linter cache removed after final checks",
+        "files": 2,
+        "relative_path": "tests/__pycache__",
+        "size_bytes": 13070,
+        "worktree": "/net/scratch/w00238tl/knot"
+      },
+      {
+        "classification": "reproducible Python/linter cache removed after final checks",
+        "files": 9,
+        "relative_path": "src/joint_event_reconstruction/__pycache__",
+        "size_bytes": 216627,
+        "worktree": "/net/scratch/w00238tl/knot"
+      },
+      {
+        "classification": "reproducible Python/linter cache removed after final checks",
+        "files": 2,
+        "relative_path": "src/joint_event_reconstruction/cli/__pycache__",
+        "size_bytes": 67332,
+        "worktree": "/net/scratch/w00238tl/knot"
+      },
+      {
+        "classification": "reproducible Python/linter cache removed after final checks",
+        "files": 2,
+        "relative_path": "src/joint_event_reconstruction/training/__pycache__",
+        "size_bytes": 38043,
+        "worktree": "/net/scratch/w00238tl/knot"
+      },
+      {
+        "classification": "reproducible Python/linter cache removed after final checks",
+        "files": 2,
+        "relative_path": "src/joint_event_reconstruction/m0/__pycache__",
+        "size_bytes": 53475,
+        "worktree": "/net/scratch/w00238tl/knot"
+      },
+      {
+        "classification": "reproducible Python/linter cache removed after final checks",
+        "files": 7,
+        "relative_path": "src/joint_event_reconstruction/topology/__pycache__",
+        "size_bytes": 107053,
+        "worktree": "/net/scratch/w00238tl/knot"
+      },
+      {
+        "classification": "reproducible Python/linter cache removed after final checks",
+        "files": 9,
+        "relative_path": "src/joint_event_reconstruction/models/__pycache__",
+        "size_bytes": 162635,
+        "worktree": "/net/scratch/w00238tl/knot"
+      },
+      {
+        "classification": "reproducible Python/linter cache removed after final checks",
+        "files": 3,
+        "relative_path": "src/joint_event_reconstruction/flows/__pycache__",
+        "size_bytes": 8282,
+        "worktree": "/net/scratch/w00238tl/knot"
+      },
+      {
+        "classification": "reproducible Python/linter cache removed after final checks",
+        "files": 5,
+        "relative_path": "src/joint_event_reconstruction/data/__pycache__",
+        "size_bytes": 113871,
+        "worktree": "/net/scratch/w00238tl/knot"
+      },
+      {
+        "classification": "reproducible Python/linter cache removed after final checks",
+        "files": 6,
+        "relative_path": "src/joint_event_reconstruction/m0/data/__pycache__",
+        "size_bytes": 232950,
+        "worktree": "/net/scratch/w00238tl/knot"
+      },
+      {
+        "classification": "reproducible Python/linter cache removed after final checks",
+        "files": 12,
+        "relative_path": "src/joint_event_reconstruction/models/invisible/__pycache__",
+        "size_bytes": 127126,
+        "worktree": "/net/scratch/w00238tl/knot"
+      },
+      {
+        "classification": "reproducible Python/linter cache removed after final checks",
+        "files": 6,
+        "relative_path": "src/joint_event_reconstruction/models/visible/__pycache__",
+        "size_bytes": 32101,
+        "worktree": "/net/scratch/w00238tl/knot"
+      },
+      {
+        "classification": "reproducible Python/linter cache removed after final checks",
+        "files": 3,
+        "relative_path": "src/joint_event_reconstruction/models/reconstruction/__pycache__",
+        "size_bytes": 28061,
+        "worktree": "/net/scratch/w00238tl/knot"
+      },
+      {
+        "classification": "reproducible Python/linter cache removed after final checks",
+        "files": 10,
+        "relative_path": "scripts/evaluation/__pycache__",
+        "size_bytes": 653203,
+        "worktree": "/net/scratch/w00238tl/knot"
+      },
+      {
+        "classification": "reproducible Python/linter cache removed after final checks",
+        "files": 8,
+        "relative_path": ".ruff_cache",
+        "size_bytes": 2982,
+        "worktree": "/net/scratch/w00238tl/rise"
+      },
+      {
+        "classification": "reproducible Python/linter cache removed after final checks",
+        "files": 5,
+        "relative_path": "scripts/__pycache__",
+        "size_bytes": 34761,
+        "worktree": "/net/scratch/w00238tl/rise"
+      },
+      {
+        "classification": "reproducible Python/linter cache removed after final checks",
+        "files": 12,
+        "relative_path": "src/joint_event_reconstruction/__pycache__",
+        "size_bytes": 371772,
+        "worktree": "/net/scratch/w00238tl/rise"
+      },
+      {
+        "classification": "reproducible Python/linter cache removed after final checks",
+        "files": 4,
+        "relative_path": "src/joint_event_reconstruction/cli/__pycache__",
+        "size_bytes": 133807,
+        "worktree": "/net/scratch/w00238tl/rise"
+      },
+      {
+        "classification": "reproducible Python/linter cache removed after final checks",
+        "files": 4,
+        "relative_path": "src/joint_event_reconstruction/training/__pycache__",
+        "size_bytes": 73835,
+        "worktree": "/net/scratch/w00238tl/rise"
+      },
+      {
+        "classification": "reproducible Python/linter cache removed after final checks",
+        "files": 4,
+        "relative_path": "src/joint_event_reconstruction/m0/__pycache__",
+        "size_bytes": 106306,
+        "worktree": "/net/scratch/w00238tl/rise"
+      },
+      {
+        "classification": "reproducible Python/linter cache removed after final checks",
+        "files": 14,
+        "relative_path": "src/joint_event_reconstruction/topology/__pycache__",
+        "size_bytes": 212393,
+        "worktree": "/net/scratch/w00238tl/rise"
+      },
+      {
+        "classification": "reproducible Python/linter cache removed after final checks",
+        "files": 18,
+        "relative_path": "src/joint_event_reconstruction/models/__pycache__",
+        "size_bytes": 323255,
+        "worktree": "/net/scratch/w00238tl/rise"
+      },
+      {
+        "classification": "reproducible Python/linter cache removed after final checks",
+        "files": 6,
+        "relative_path": "src/joint_event_reconstruction/flows/__pycache__",
+        "size_bytes": 16483,
+        "worktree": "/net/scratch/w00238tl/rise"
+      },
+      {
+        "classification": "reproducible Python/linter cache removed after final checks",
+        "files": 5,
+        "relative_path": "src/joint_event_reconstruction/data/__pycache__",
+        "size_bytes": 112338,
+        "worktree": "/net/scratch/w00238tl/rise"
+      },
+      {
+        "classification": "reproducible Python/linter cache removed after final checks",
+        "files": 12,
+        "relative_path": "src/joint_event_reconstruction/m0/data/__pycache__",
+        "size_bytes": 462273,
+        "worktree": "/net/scratch/w00238tl/rise"
+      },
+      {
+        "classification": "reproducible Python/linter cache removed after final checks",
+        "files": 24,
+        "relative_path": "src/joint_event_reconstruction/models/invisible/__pycache__",
+        "size_bytes": 252759,
+        "worktree": "/net/scratch/w00238tl/rise"
+      },
+      {
+        "classification": "reproducible Python/linter cache removed after final checks",
+        "files": 11,
+        "relative_path": "src/joint_event_reconstruction/models/visible/__pycache__",
+        "size_bytes": 52163,
+        "worktree": "/net/scratch/w00238tl/rise"
+      },
+      {
+        "classification": "reproducible Python/linter cache removed after final checks",
+        "files": 6,
+        "relative_path": "src/joint_event_reconstruction/models/reconstruction/__pycache__",
+        "size_bytes": 54530,
+        "worktree": "/net/scratch/w00238tl/rise"
+      },
+      {
+        "classification": "reproducible Python/linter cache removed after final checks",
+        "files": 24,
+        "relative_path": "scripts/validation/__pycache__",
+        "size_bytes": 375079,
+        "worktree": "/net/scratch/w00238tl/rise"
+      },
+      {
+        "classification": "reproducible Python/linter cache removed after final checks",
+        "files": 1,
+        "relative_path": "scripts/data/__pycache__",
+        "size_bytes": 14891,
+        "worktree": "/net/scratch/w00238tl/rise"
       }
     ],
+    "filesystem_inventory": {
+      "canonical_projects": {
+        "/net/scratch/w00238tl/knot": {
+          "filesystem_apparent_size_bytes": 8173557776,
+          "measurement": "du -sb after cache cleanup, before final manifest commit"
+        },
+        "/net/scratch/w00238tl/rise": {
+          "filesystem_apparent_size_bytes": 39071899,
+          "measurement": "du -sb after cache cleanup, before final manifest commit"
+        }
+      },
+      "dependency_tree_not_a_project": "/net/scratch/w00238tl/.knot-pythonpath-20261003",
+      "no_permanent_compatibility_symlinks": true,
+      "old_top_level_worktrees_removed": [
+        "/net/scratch/w00238tl/JointEventReconstruction_KNOT",
+        "/net/scratch/w00238tl/JointEventReconstruction_KNOT_evaluator",
+        "/net/scratch/w00238tl/JointEventReconstruction_KNOT_evaldev",
+        "/net/scratch/w00238tl/JointEventReconstruction_RISE"
+      ]
+    },
+    "final_validation": {
+      "PNG_PDF_stems_match": true,
+      "all_csv_numeric_values_finite": true,
+      "all_manifested_hashes_match": true,
+      "all_plot_files_nonempty": true,
+      "counts": {
+        "K64_plotting_output": 103,
+        "K64_posterior_and_evaluation": 5,
+        "KNOT_logs": 50,
+        "KNOT_results": 629,
+        "RISE_results": 165,
+        "canonical_frozen_inputs_and_split_membership": 39,
+        "preserved_K32_validation_output": 102
+      },
+      "coverage_and_migration_validation_passed": true,
+      "draw_hash_independent_replay_passed": true,
+      "manifested_scientific_files_reverified_by_size_and_SHA256": 1093,
+      "pytest_module_available": false,
+      "source_compilation_ruff_git_diff_and_slurm_syntax_passed": true,
+      "targeted_statistical_assertions_run_without_pytest": 8
+    },
     "important_KNOT_artifacts": [
       {
         "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/J/posterior.h5",
@@ -7488,6 +8436,21 @@
         "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/physics-analysis-v11/posterior_coverage.png",
         "sha256": "0515d34469df28c7f4c0670136022c25adaa580f3c1a5f8797e4eb1039690441",
         "size_bytes": 169723
+      },
+      {
+        "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/J-K64/posterior.h5",
+        "sha256": "ecce7812111e9fdb89e39ddfa7b57bb002b45f7c4a430a2fea4952f9cf7243b7",
+        "size_bytes": 152346864
+      },
+      {
+        "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/J-K64/metrics.json",
+        "sha256": "f8c680ac3679ed8fe606601d6742bba8e815b6e3509943dd977cd0df0370a5a4",
+        "size_bytes": 26005
+      },
+      {
+        "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/J-K64/evaluation_manifest.json",
+        "sha256": "f6a475a3e54aa6c8a78c9f80dd0e0def25c2add33cb44977c053ded28b4ac219",
+        "size_bytes": 1210
       }
     ],
     "important_RISE_artifacts": [
@@ -7508,15 +8471,1596 @@
       }
     ],
     "jobs": {
+      "P5_baseline": "not cancelled; IDs 22314112 and 22314926 invalid at preflight; no change",
       "P5_baseline_cancelled": false,
-      "queue_actions": [],
+      "queue_actions": [
+        {
+          "action": "own K64 GPU request cancelled after Slurm AssocGrpGRES; inference did not start",
+          "job_id": "22826838",
+          "state": "CANCELLED"
+        },
+        {
+          "action": "pre-inference stale project_root config; fixed canonical site config",
+          "job_id": "22827203",
+          "state": "FAILED"
+        },
+        {
+          "action": "pre-inference old topology-query input path; input copied into KNOT and configs updated",
+          "job_id": "22827447",
+          "state": "FAILED"
+        },
+        {
+          "action": "pre-inference cache-key mismatch; re-keyed path-only cache metadata",
+          "job_id": "22827589",
+          "state": "FAILED"
+        },
+        {
+          "action": "CPU-only J posterior inference, 10,000 events, K=64; no training",
+          "job_id": "22827672",
+          "state": "COMPLETED"
+        }
+      ],
       "scontrol_named_jobs": {
         "22284319": "Invalid job id; no action",
         "22314112": "Invalid job id; no action",
         "22314926": "Invalid job id; no action"
       },
+      "seed_validation_array_22284319": "scontrol reported invalid job ID; not cancelled or otherwise changed; trained seed checkpoints retained",
+      "squeue_final": "empty after K64 job completed; unrelated jobs untouched",
       "squeue_user": "empty at preflight and pre-removal check",
       "unrelated_jobs_touched": false
+    },
+    "path_updated_production_manifests": [
+      {
+        "canonical_sha256": "631b248c3145d59c69e06ede1b7a15f857776583ad0c70d2485192dc74b66400",
+        "canonical_size_bytes": 14079,
+        "change": "absolute project root normalised to /net/scratch/w00238tl/knot",
+        "original_sha256": "882cd111996c090f6abb078c5fae04ce84fe462dc45818827b2495bfe00ffa62",
+        "original_size_bytes": 14229,
+        "relative_path": "experiments/knot/matched-production-v1/C/run_manifest.json"
+      },
+      {
+        "canonical_sha256": "864dbe9c8a17d97beb1b29d825144f0bf805c791da89a3e2643685aa68b08738",
+        "canonical_size_bytes": 14078,
+        "change": "absolute project root normalised to /net/scratch/w00238tl/knot",
+        "original_sha256": "5adab9b04ebc63064272e3dcc546a2ab644a2ef00851bcf538178aaac410da63",
+        "original_size_bytes": 14228,
+        "relative_path": "experiments/knot/matched-production-v1/J/run_manifest.json"
+      },
+      {
+        "canonical_sha256": "1ef556ee289de682459cb7687748c499428dd7ce3eab6d4923c20dbffcde4ad7",
+        "canonical_size_bytes": 14079,
+        "change": "absolute project root normalised to /net/scratch/w00238tl/knot",
+        "original_sha256": "df1abf8ba8eeece60172d892b43cbcd9b8e34263a813e349e5940ba557b4e711",
+        "original_size_bytes": 14229,
+        "relative_path": "experiments/knot/matched-production-v1/M/run_manifest.json"
+      },
+      {
+        "canonical_sha256": "5221e56f22edc660b74cd125c47e7176dcf86eda2aefcd7c1f9daccf82c31ff4",
+        "canonical_size_bytes": 1227,
+        "change": "absolute project root normalised to /net/scratch/w00238tl/knot",
+        "original_sha256": "b01f21975276ac7bdb69f1a351f78f6950275c20ff1a4ac7458f2e44bf882b15",
+        "original_size_bytes": 1322,
+        "relative_path": "experiments/knot/matched-production-v1/evaluation-v1/full-10k/C/evaluation_manifest.json"
+      },
+      {
+        "canonical_sha256": "ced2b66a294803f683fca373e724479697f4027e19417ddf19d7f48f0537b976",
+        "canonical_size_bytes": 1228,
+        "change": "absolute project root normalised to /net/scratch/w00238tl/knot",
+        "original_sha256": "c39374c45e66565871adf5226a9a9d541fc295470c6f4ee256f2e337011ef7d8",
+        "original_size_bytes": 1323,
+        "relative_path": "experiments/knot/matched-production-v1/evaluation-v1/full-10k/J/evaluation_manifest.json"
+      },
+      {
+        "canonical_sha256": "bca1cd17832ea52f84de0a02bdf69976ce2cd2a1ad3effdb28d8251cd28bc4a3",
+        "canonical_size_bytes": 1227,
+        "change": "absolute project root normalised to /net/scratch/w00238tl/knot",
+        "original_sha256": "af8bd6e27b43e8f5693e7ff62417a103c44f7889505deafb76f5aa1502946637",
+        "original_size_bytes": 1322,
+        "relative_path": "experiments/knot/matched-production-v1/evaluation-v1/full-10k/M/evaluation_manifest.json"
+      }
+    ],
+    "posterior_usage_plotting": {
+      "all_numeric_table_values_finite": true,
+      "all_output_files_nonempty": true,
+      "calibration_coverage": {
+        "mttbar": {
+          "0.68": 0.6624,
+          "0.9": 0.89
+        },
+        "neutrino_pz": {
+          "0.68": 0.66635,
+          "0.9": 0.88725
+        },
+        "top_pt": {
+          "0.68": 0.6723,
+          "0.9": 0.89225
+        }
+      },
+      "code_commit": "c72945c78ef414ef0ba74275807547e7ed46024c",
+      "crps": {
+        "mttbar": 37.41679959182311,
+        "neutrino_pt": 19.375299274447936,
+        "neutrino_pz": 40.99294511397844,
+        "ptttbar": 13.927519233826033,
+        "spin/cos_opening": 0.08458464845398629,
+        "spin/cos_theta_minus": 0.42262877338496857,
+        "spin/cos_theta_plus": 0.4199353498228686,
+        "spin/helicity_product": 0.20490802744182784,
+        "top_pt": 21.539791231345518,
+        "yttbar": 0.0909024594537568
+      },
+      "draw_algorithm": "splitmix64_event_id_seed_stream_floor_v1",
+      "draw_seed": 42011,
+      "draw_selection_sha256": "1c9d6b404fb87a282455c2b6bee63dfa79c2ef3c7dbae9f01ebec69e9720dd76",
+      "ensemble_closure": {
+        "closure_passed": true,
+        "max_abs_density_difference": 5.968749999999898e-06,
+        "max_abs_mean_minus_posterior_pull": 2.0653066600653327
+      },
+      "events": 10000,
+      "factorisation_models_K": {
+        "C": 32,
+        "J": 32,
+        "M": 32
+      },
+      "figure_count_png_pdf": 86,
+      "figure_pairing": {
+        "pdf_count": 43,
+        "png_count": 43,
+        "same_relative_stems": true
+      },
+      "file_count": 103,
+      "files": [
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/metadata/calibration_rank_summary.json",
+          "relative_path": "metadata/calibration_rank_summary.json",
+          "sha256": "1e4c7552a2614e2f0c5f8ef30b72ab5559781d76287882fb59963bd3b3676044",
+          "size_bytes": 459
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/metadata/draw_selection.json",
+          "relative_path": "metadata/draw_selection.json",
+          "sha256": "524971d420d0dbd91eb05744699e552cc40f51efb73d86a7020520fb0beee1d0",
+          "size_bytes": 2245
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/metadata/draw_selection_reproducibility.json",
+          "relative_path": "metadata/draw_selection_reproducibility.json",
+          "sha256": "3919547c9e388602c40d17e1dbc9aa46cfdc1a56a096edc57a64c6fd72d97e90",
+          "size_bytes": 467
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/metadata/input_manifest.json",
+          "relative_path": "metadata/input_manifest.json",
+          "sha256": "15b9a1380771e2090ab793c4cc5ef4d0c9f6c0b49b75368e12cbc8c6b6ffc904",
+          "size_bytes": 4461
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/metadata/one_draw_ensemble_closure.json",
+          "relative_path": "metadata/one_draw_ensemble_closure.json",
+          "sha256": "64eb25c6711883b9b5e3fe77fb32490de30d574202c732960a98685acb5aaed4",
+          "size_bytes": 1888
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/metadata/plotting_specification.json",
+          "relative_path": "metadata/plotting_specification.json",
+          "sha256": "bc476afc20cbe1220874e7b52fc8af7d252dbab9e618ba8e250d50924694384f",
+          "size_bytes": 36125
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/metadata/posterior_weight_validation.json",
+          "relative_path": "metadata/posterior_weight_validation.json",
+          "sha256": "4aabadafd2d5d3e7a647f6ce9ec9a7da316f5a8e53920ea4892c3a3515d12086",
+          "size_bytes": 5321
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/plots/calibration/mttbar_coverage.pdf",
+          "relative_path": "plots/calibration/mttbar_coverage.pdf",
+          "sha256": "0e3a53422ef4eda67180cae731a425710aef750f0f98a8a5589ebe3fa733af58",
+          "size_bytes": 11933
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/plots/calibration/mttbar_coverage.png",
+          "relative_path": "plots/calibration/mttbar_coverage.png",
+          "sha256": "b329714e7fe5c82079681f1920d684a337ab89977b8e6632f96fb86b94d7b9e6",
+          "size_bytes": 127089
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/plots/calibration/mttbar_pit_rank.pdf",
+          "relative_path": "plots/calibration/mttbar_pit_rank.pdf",
+          "sha256": "b6447b6cfa440f0c2766408e3c1de6b15b368b0ffb7270213b25cc8f8f128fe0",
+          "size_bytes": 14452
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/plots/calibration/mttbar_pit_rank.png",
+          "relative_path": "plots/calibration/mttbar_pit_rank.png",
+          "sha256": "f73cc04058cfa557727e6dbbb877f5dd905303adef707bf7f13e8712b277bed2",
+          "size_bytes": 81745
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/plots/calibration/neutrino_pz_coverage.pdf",
+          "relative_path": "plots/calibration/neutrino_pz_coverage.pdf",
+          "sha256": "eda047fb577b3bdd137839ade434e03de13c9c0feda4a5f5bf8c23d76859d2de",
+          "size_bytes": 11942
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/plots/calibration/neutrino_pz_coverage.png",
+          "relative_path": "plots/calibration/neutrino_pz_coverage.png",
+          "sha256": "4a99ec0724f142ba4e2e25ac8cf8d716326ba08d9795a7641762cff0482dfecd",
+          "size_bytes": 127852
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/plots/calibration/top_pt_coverage.pdf",
+          "relative_path": "plots/calibration/top_pt_coverage.pdf",
+          "sha256": "00f5187f6a527e7df8d67e221c8c5999acb287e9794d6338847dd05c4b00600f",
+          "size_bytes": 11941
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/plots/calibration/top_pt_coverage.png",
+          "relative_path": "plots/calibration/top_pt_coverage.png",
+          "sha256": "04ac88565898c3c8cfd60849e961f0a74d06c8f45c2ea1cee9b27d98bd32b360",
+          "size_bytes": 127252
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/plots/core/mttbar_differential_bias_response.pdf",
+          "relative_path": "plots/core/mttbar_differential_bias_response.pdf",
+          "sha256": "bb6932edfcd13afec51e39936bc3d28660b8898ced2257c9932655af21579fc0",
+          "size_bytes": 22008
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/plots/core/mttbar_differential_bias_response.png",
+          "relative_path": "plots/core/mttbar_differential_bias_response.png",
+          "sha256": "787329de821f2f8bcc43edcaf4be0340a8942d6b8aa67422e9c85d10f2af3b81",
+          "size_bytes": 235356
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/plots/core/mttbar_one_draw_ensemble.pdf",
+          "relative_path": "plots/core/mttbar_one_draw_ensemble.pdf",
+          "sha256": "c3485759512124df7a135a4dca24b499dc9a40cb84d9db56d7a9e9a307595fda",
+          "size_bytes": 19091
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/plots/core/mttbar_one_draw_ensemble.png",
+          "relative_path": "plots/core/mttbar_one_draw_ensemble.png",
+          "sha256": "8a7946827b53f084ab85a32789610744c0a189621b78c1240017735953ca925e",
+          "size_bytes": 119818
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/plots/core/mttbar_residual.pdf",
+          "relative_path": "plots/core/mttbar_residual.pdf",
+          "sha256": "871a59c1f48a754acbb45dbf5417ddf827b6471a2c03776131f043c56179ed1f",
+          "size_bytes": 15121
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/plots/core/mttbar_residual.png",
+          "relative_path": "plots/core/mttbar_residual.png",
+          "sha256": "e665ce23c66eaa45b099492f41e27385cb7f21514fe0d96a911dfc1335ac8c14",
+          "size_bytes": 113965
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/plots/core/mttbar_shape.pdf",
+          "relative_path": "plots/core/mttbar_shape.pdf",
+          "sha256": "2e3570508579afb5acbfbc91bc05e50799d71bf3e6fdc1f21045ad7443e7a094",
+          "size_bytes": 20575
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/plots/core/mttbar_shape.png",
+          "relative_path": "plots/core/mttbar_shape.png",
+          "sha256": "da38e6dd72cba917e125b8432d8e79c2ab3c9ec3520783c28d50e67a71352cd9",
+          "size_bytes": 153418
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/plots/core/ptttbar_differential_bias_response.pdf",
+          "relative_path": "plots/core/ptttbar_differential_bias_response.pdf",
+          "sha256": "a646051a87335825818cf7bd02450d6d2b2dd230473d1980a4af77e4863aab1f",
+          "size_bytes": 21738
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/plots/core/ptttbar_differential_bias_response.png",
+          "relative_path": "plots/core/ptttbar_differential_bias_response.png",
+          "sha256": "dd903a6e4da5a70df96c311a4de380ab1fe4427a93d8d0447e5d3ac133655a39",
+          "size_bytes": 194487
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/plots/core/ptttbar_residual.pdf",
+          "relative_path": "plots/core/ptttbar_residual.pdf",
+          "sha256": "187906baff527f5e14bcbf8d35a95db9818422d792847a97d833a50022236fa5",
+          "size_bytes": 15698
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/plots/core/ptttbar_residual.png",
+          "relative_path": "plots/core/ptttbar_residual.png",
+          "sha256": "f570104a532486639d160cd4646997aa14fe77ba6e0acc7606dcb6b8b32f2b4a",
+          "size_bytes": 125105
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/plots/core/ptttbar_shape.pdf",
+          "relative_path": "plots/core/ptttbar_shape.pdf",
+          "sha256": "d42c3a5d9fe2db15edf98d7e46f54435b1e1618f9cf8af189cb9c91982d5e302",
+          "size_bytes": 20636
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/plots/core/ptttbar_shape.png",
+          "relative_path": "plots/core/ptttbar_shape.png",
+          "sha256": "ec7c7c091aedf06c59352a5ebdb1676000b38faa580132e5d3b31e911f44e6fc",
+          "size_bytes": 169763
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/plots/core/top_pt_differential_bias_response.pdf",
+          "relative_path": "plots/core/top_pt_differential_bias_response.pdf",
+          "sha256": "be94eead590bff38def79367e235f93090b1fb7e916542120e306bf409583580",
+          "size_bytes": 23455
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/plots/core/top_pt_differential_bias_response.png",
+          "relative_path": "plots/core/top_pt_differential_bias_response.png",
+          "sha256": "568752e231872bdec5c4d1cbe44d82dcf98e8b85076e2d915c84179e16a068b1",
+          "size_bytes": 218433
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/plots/core/top_pt_residual.pdf",
+          "relative_path": "plots/core/top_pt_residual.pdf",
+          "sha256": "8a678dc478acc46723127f85992c82046bfd1ad1192ddfcec30ac4b45203657c",
+          "size_bytes": 15074
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/plots/core/top_pt_residual.png",
+          "relative_path": "plots/core/top_pt_residual.png",
+          "sha256": "924a285126e1aa851574bfba911712c57b67466f1899e9f729ed1517bdfd9703",
+          "size_bytes": 114327
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/plots/core/top_pt_shape.pdf",
+          "relative_path": "plots/core/top_pt_shape.pdf",
+          "sha256": "d36e10d6d960725c36e518c65012e47622bfbccce552ed9b83e887dc7b480614",
+          "size_bytes": 20281
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/plots/core/top_pt_shape.png",
+          "relative_path": "plots/core/top_pt_shape.png",
+          "sha256": "b9bb3be023880432ab00a259ffc9dcfd9dcef91b2f60eb49ebf0981aad5784aa",
+          "size_bytes": 185158
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/plots/core/yttbar_differential_bias_response.pdf",
+          "relative_path": "plots/core/yttbar_differential_bias_response.pdf",
+          "sha256": "321e899873b4f098eed80c5e762a337b275dc330a93a7e6330fefebd5e2df3cc",
+          "size_bytes": 21225
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/plots/core/yttbar_differential_bias_response.png",
+          "relative_path": "plots/core/yttbar_differential_bias_response.png",
+          "sha256": "52a1545ce817129b849a3a04b7a25e40b3e8f4cf5aae2e476f6c599626e55090",
+          "size_bytes": 181848
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/plots/core/yttbar_residual.pdf",
+          "relative_path": "plots/core/yttbar_residual.pdf",
+          "sha256": "121b49c072c26d9aacfc6d5736b9c73ca265ba36830af6d44bd271d86cf2c02d",
+          "size_bytes": 14445
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/plots/core/yttbar_residual.png",
+          "relative_path": "plots/core/yttbar_residual.png",
+          "sha256": "70ec691773e9b1abe9cbc2339ea75ef9186884d578663383efc03c16c88ac923",
+          "size_bytes": 103583
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/plots/core/yttbar_shape.pdf",
+          "relative_path": "plots/core/yttbar_shape.pdf",
+          "sha256": "c46d49d16b992f91a6238de061a20cc063a3e796913e6d6409348a20221e3099",
+          "size_bytes": 20466
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/plots/core/yttbar_shape.png",
+          "relative_path": "plots/core/yttbar_shape.png",
+          "sha256": "34a48d1d42894408371b5ac5921815a7eee1929d948c958e03d4cc5b7e699977",
+          "size_bytes": 203836
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/plots/factorisation/mttbar_factorisation_posterior_distribution.pdf",
+          "relative_path": "plots/factorisation/mttbar_factorisation_posterior_distribution.pdf",
+          "sha256": "dbc9da5cd26b17d5297157cf8ad47c337a00d9aa5d52af23eee68a1e0a675d2b",
+          "size_bytes": 20234
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/plots/factorisation/mttbar_factorisation_posterior_distribution.png",
+          "relative_path": "plots/factorisation/mttbar_factorisation_posterior_distribution.png",
+          "sha256": "dcd150bc38284460c55f607fcd4c49e8937bc2162b871e15e53d51107122ceaa",
+          "size_bytes": 172782
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/plots/factorisation/mttbar_factorisation_posterior_mean.pdf",
+          "relative_path": "plots/factorisation/mttbar_factorisation_posterior_mean.pdf",
+          "sha256": "a4a4b1d0df7fed84412da2398fbaecd668c1112471f7fe617556af5fc7c19603",
+          "size_bytes": 19603
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/plots/factorisation/mttbar_factorisation_posterior_mean.png",
+          "relative_path": "plots/factorisation/mttbar_factorisation_posterior_mean.png",
+          "sha256": "ff87df6f95a2d93dcfe8175387d0691a73d2f4091f56a57b38c8278913f9ff4a",
+          "size_bytes": 141082
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/plots/migration/mttbar_j_draw_migration.pdf",
+          "relative_path": "plots/migration/mttbar_j_draw_migration.pdf",
+          "sha256": "1ce7a2298990180406c3ef2bdb7f63dab71bcef9b6442ffb545b42b6006c6690",
+          "size_bytes": 33189
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/plots/migration/mttbar_j_draw_migration.png",
+          "relative_path": "plots/migration/mttbar_j_draw_migration.png",
+          "sha256": "f4f44dad8b236254309921903fad0b64d932600d65cf9d4515d183fd4281a124",
+          "size_bytes": 143699
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/plots/migration/mttbar_j_mean_migration.pdf",
+          "relative_path": "plots/migration/mttbar_j_mean_migration.pdf",
+          "sha256": "04baa0297e498e4f69eb72e41723066ba82bbd6b8c541371ef61027e406972db",
+          "size_bytes": 31858
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/plots/migration/mttbar_j_mean_migration.png",
+          "relative_path": "plots/migration/mttbar_j_mean_migration.png",
+          "sha256": "3d1438f45fdbfff020d5c1df4c100604468591585816b74c448697b633d791a6",
+          "size_bytes": 143591
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/plots/migration/mttbar_j_migration_comparison.pdf",
+          "relative_path": "plots/migration/mttbar_j_migration_comparison.pdf",
+          "sha256": "5c69783238ece6be34d3dd667df45b949723cc44a905aa5eb4d725f2811bb51b",
+          "size_bytes": 60129
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/plots/migration/mttbar_j_migration_comparison.png",
+          "relative_path": "plots/migration/mttbar_j_migration_comparison.png",
+          "sha256": "2c139b3acaf294be52f337dd177a9983eb64e30f0f61f7f8eabb038a09db2b5d",
+          "size_bytes": 196764
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/plots/migration/mttbar_j_posterior_migration.pdf",
+          "relative_path": "plots/migration/mttbar_j_posterior_migration.pdf",
+          "sha256": "b6bafe5ff01025f48c188d6b98a1cd55f033c53ae4b7bff98523506819adfac7",
+          "size_bytes": 33747
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/plots/migration/mttbar_j_posterior_migration.png",
+          "relative_path": "plots/migration/mttbar_j_posterior_migration.png",
+          "sha256": "c23344cd1c1316f67913bc4a2d9863282e506bc240fa3fb48ef77c7a075a506f",
+          "size_bytes": 143693
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/plots/migration/top_pt_j_draw_migration.pdf",
+          "relative_path": "plots/migration/top_pt_j_draw_migration.pdf",
+          "sha256": "e56643e0ca58762f507263b004b4e142fc0f1d87b6ee1347cd655ea546dd93e5",
+          "size_bytes": 34027
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/plots/migration/top_pt_j_draw_migration.png",
+          "relative_path": "plots/migration/top_pt_j_draw_migration.png",
+          "sha256": "ae9300fa309cb94d886cf0ef78824588387eccde81cdd3be4910ff603a4b2507",
+          "size_bytes": 142229
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/plots/migration/top_pt_j_mean_migration.pdf",
+          "relative_path": "plots/migration/top_pt_j_mean_migration.pdf",
+          "sha256": "3da6d3c38ec5b3432b21ac670aa39b1a6bcdf963dac9c363037f91f181ec9200",
+          "size_bytes": 33704
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/plots/migration/top_pt_j_mean_migration.png",
+          "relative_path": "plots/migration/top_pt_j_mean_migration.png",
+          "sha256": "b2accb6714f7de9bf875f46bc1413b408f8de96ee075610389ffc52cb8d252d8",
+          "size_bytes": 142168
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/plots/migration/top_pt_j_migration_comparison.pdf",
+          "relative_path": "plots/migration/top_pt_j_migration_comparison.pdf",
+          "sha256": "930702aba951c7b94b02d32c5ed91b8eedc3fa642b0862244ab142e496a78d20",
+          "size_bytes": 62866
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/plots/migration/top_pt_j_migration_comparison.png",
+          "relative_path": "plots/migration/top_pt_j_migration_comparison.png",
+          "sha256": "35f770fc38552de78c2f80485742c28215710f8627e6af7db1aa17733628585b",
+          "size_bytes": 196937
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/plots/migration/top_pt_j_posterior_migration.pdf",
+          "relative_path": "plots/migration/top_pt_j_posterior_migration.pdf",
+          "sha256": "b02f3c7554d639498cc5f190d6c52d4ed8de7f28cdaea2cd60455539b587fccc",
+          "size_bytes": 34108
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/plots/migration/top_pt_j_posterior_migration.png",
+          "relative_path": "plots/migration/top_pt_j_posterior_migration.png",
+          "sha256": "138c3e7732f528639b372c48c003071228386a711451ded1121530dfbc9c51be",
+          "size_bytes": 142200
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/plots/neutrino/neutrino_pt_residual.pdf",
+          "relative_path": "plots/neutrino/neutrino_pt_residual.pdf",
+          "sha256": "b1b07b5e931be13a4d6bf4fe092075ed0254e0389427906301a7789a744c906e",
+          "size_bytes": 15214
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/plots/neutrino/neutrino_pt_residual.png",
+          "relative_path": "plots/neutrino/neutrino_pt_residual.png",
+          "sha256": "53b3022e6ff80a60b9b590f460c0977a940a8e946508a76b319661ec2f601544",
+          "size_bytes": 117288
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/plots/neutrino/neutrino_pt_shape.pdf",
+          "relative_path": "plots/neutrino/neutrino_pt_shape.pdf",
+          "sha256": "0d803605f1a95d10c974d6cf8e7ace70474218c2a281dca540be62b39a466765",
+          "size_bytes": 19636
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/plots/neutrino/neutrino_pt_shape.png",
+          "relative_path": "plots/neutrino/neutrino_pt_shape.png",
+          "sha256": "b64b4ffc3c74a08cfdfd7f5e5c2987f6abfc7d5989ee8da14988db4e641d2394",
+          "size_bytes": 152812
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/plots/neutrino/neutrino_pz_residual.pdf",
+          "relative_path": "plots/neutrino/neutrino_pz_residual.pdf",
+          "sha256": "ce11401d854e8da8a4cc1433d146f99e49968372ab3bbedc2cf2932537cf6ec2",
+          "size_bytes": 15293
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/plots/neutrino/neutrino_pz_residual.png",
+          "relative_path": "plots/neutrino/neutrino_pz_residual.png",
+          "sha256": "847b12efcd8eab872464674fb55cb488b4fc39da87f5b6a10938749fa56d1a7d",
+          "size_bytes": 107128
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/plots/neutrino/neutrino_pz_shape.pdf",
+          "relative_path": "plots/neutrino/neutrino_pz_shape.pdf",
+          "sha256": "02307bad6ded1c03ecd13bcbf4dbce77e3e053ccd7882164328732f423a92814",
+          "size_bytes": 19763
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/plots/neutrino/neutrino_pz_shape.png",
+          "relative_path": "plots/neutrino/neutrino_pz_shape.png",
+          "sha256": "adc3c25c9d909838cda0b686a30ea623b973de7d2e4148e664a3fe9da712bdcc",
+          "size_bytes": 154884
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/plots/spin/cos_opening_coverage.pdf",
+          "relative_path": "plots/spin/cos_opening_coverage.pdf",
+          "sha256": "20b6463cfb46c19cfdd15f9bc1d0a22fb3d4485ed2b1bcf096f42f38768b2a26",
+          "size_bytes": 11937
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/plots/spin/cos_opening_coverage.png",
+          "relative_path": "plots/spin/cos_opening_coverage.png",
+          "sha256": "2e926d329e30d89f3eb6053da9aa23d6e0e0c633f61654d41f9b57eec392ae15",
+          "size_bytes": 126283
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/plots/spin/cos_theta_minus_coverage.pdf",
+          "relative_path": "plots/spin/cos_theta_minus_coverage.pdf",
+          "sha256": "95052aceda041c3bd4045306af6f2a62fced78be44ed2c0370c06211e25f7fef",
+          "size_bytes": 11936
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/plots/spin/cos_theta_minus_coverage.png",
+          "relative_path": "plots/spin/cos_theta_minus_coverage.png",
+          "sha256": "7e26495e2fac698364758cb5722203e37fab2c1c741228582fe88366c5131ce4",
+          "size_bytes": 135089
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/plots/spin/cos_theta_plus_coverage.pdf",
+          "relative_path": "plots/spin/cos_theta_plus_coverage.pdf",
+          "sha256": "1332310dc52490fa74988f39b32f3a5f3393131044c355f93488f88d8b4bdb9b",
+          "size_bytes": 11947
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/plots/spin/cos_theta_plus_coverage.png",
+          "relative_path": "plots/spin/cos_theta_plus_coverage.png",
+          "sha256": "2ba2d19c7431b4315dccb01a7fad4e39212abfb8953cccb8fb45e7326a5184ac",
+          "size_bytes": 134453
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/plots/spin/helicity_product_coverage.pdf",
+          "relative_path": "plots/spin/helicity_product_coverage.pdf",
+          "sha256": "6390e184c74f019f43addf1bd2f49ed48470136accacc93ad7b3b8a01969ef08",
+          "size_bytes": 11938
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/plots/spin/helicity_product_coverage.png",
+          "relative_path": "plots/spin/helicity_product_coverage.png",
+          "sha256": "5d8bfbc47fb73825e6f2e7dfd125d43df2f20d0552ee6139ce077ddf6ec92486",
+          "size_bytes": 129097
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/plots/spin/spin_cos_opening_residual.pdf",
+          "relative_path": "plots/spin/spin_cos_opening_residual.pdf",
+          "sha256": "22f1b1e0870f392312059613f89b3e3e88670c0971ae851327da2ec047dda0b2",
+          "size_bytes": 14662
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/plots/spin/spin_cos_opening_residual.png",
+          "relative_path": "plots/spin/spin_cos_opening_residual.png",
+          "sha256": "1c0ec9c42d820f1597dae7630ab64acd2290a607f081d11032d6f4653f9c4846",
+          "size_bytes": 100679
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/plots/spin/spin_cos_opening_shape.pdf",
+          "relative_path": "plots/spin/spin_cos_opening_shape.pdf",
+          "sha256": "15a1db6e0333a2086e7d140a3c9487e1bd62ef97aa30d07f139c128a97e34de9",
+          "size_bytes": 17096
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/plots/spin/spin_cos_opening_shape.png",
+          "relative_path": "plots/spin/spin_cos_opening_shape.png",
+          "sha256": "6c1466888ed30e71df3731fddb5f5bae1cec37f352bb70e5271fd2bdde8307e6",
+          "size_bytes": 259419
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/plots/spin/spin_cos_theta_minus_residual.pdf",
+          "relative_path": "plots/spin/spin_cos_theta_minus_residual.pdf",
+          "sha256": "295b1226e7a74af2a7834f09429031399c1ecd00f8559dd2d6bd9fd317f4b390",
+          "size_bytes": 15308
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/plots/spin/spin_cos_theta_minus_residual.png",
+          "relative_path": "plots/spin/spin_cos_theta_minus_residual.png",
+          "sha256": "b3bccb997e5a754b4668e5803614d88a1275e2e010f39a4d5a07822eda9b464f",
+          "size_bytes": 118913
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/plots/spin/spin_cos_theta_minus_shape.pdf",
+          "relative_path": "plots/spin/spin_cos_theta_minus_shape.pdf",
+          "sha256": "72e5ac6ea9abefdc33dbf59fa5ca94add80a7e917ea363980d1816c7fcaf0f2e",
+          "size_bytes": 17007
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/plots/spin/spin_cos_theta_minus_shape.png",
+          "relative_path": "plots/spin/spin_cos_theta_minus_shape.png",
+          "sha256": "6d51b98779001df097ab79d7ca64c23994730edecce7f16b506a56534d82409e",
+          "size_bytes": 178644
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/plots/spin/spin_cos_theta_plus_residual.pdf",
+          "relative_path": "plots/spin/spin_cos_theta_plus_residual.pdf",
+          "sha256": "64836c3b491f389bc51a27dfaef099db770f6d8afda695a4e774c5dc167b2697",
+          "size_bytes": 15258
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/plots/spin/spin_cos_theta_plus_residual.png",
+          "relative_path": "plots/spin/spin_cos_theta_plus_residual.png",
+          "sha256": "519bb2a86c14b6b5ec249478c8cdd9c129963e03aa31df18f6784cf5e90c645d",
+          "size_bytes": 117551
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/plots/spin/spin_cos_theta_plus_shape.pdf",
+          "relative_path": "plots/spin/spin_cos_theta_plus_shape.pdf",
+          "sha256": "e8d3deb7239f214842e272289208c7d99861649050d1d486ed6ca714c3e6a6ef",
+          "size_bytes": 16813
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/plots/spin/spin_cos_theta_plus_shape.png",
+          "relative_path": "plots/spin/spin_cos_theta_plus_shape.png",
+          "sha256": "15a015543e005077a145eb016486eefef3a72b4f4635728bfb03dd8ce11102a3",
+          "size_bytes": 172607
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/plots/spin/spin_helicity_product_residual.pdf",
+          "relative_path": "plots/spin/spin_helicity_product_residual.pdf",
+          "sha256": "301505028b9d132ae7d37552edc957ac15edc2d03cd6683295abdc161ff4b0d2",
+          "size_bytes": 14998
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/plots/spin/spin_helicity_product_residual.png",
+          "relative_path": "plots/spin/spin_helicity_product_residual.png",
+          "sha256": "1c6f262117078f400db26fd5b0b05fe30bddbe47f1c9a7be119b9a11d0e3bbf8",
+          "size_bytes": 111223
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/plots/spin/spin_helicity_product_shape.pdf",
+          "relative_path": "plots/spin/spin_helicity_product_shape.pdf",
+          "sha256": "50b7bb72709c3ff55c957018425319b9bf6c9d7e0e581a5b708ddf61096fae3b",
+          "size_bytes": 16735
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/plots/spin/spin_helicity_product_shape.png",
+          "relative_path": "plots/spin/spin_helicity_product_shape.png",
+          "sha256": "0d70d7de122d19c7bb4c2f635af443024d30c7372e0f2ad6c3903c62333f693c",
+          "size_bytes": 170010
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/plotting_summary.md",
+          "relative_path": "plotting_summary.md",
+          "sha256": "712114eed50fa93759a1b6119ea9b5455671c1857a7872bf4f4d5744a8947363",
+          "size_bytes": 3117
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/tables/calibration_metrics.csv",
+          "relative_path": "tables/calibration_metrics.csv",
+          "sha256": "31f32cd183c7d1d203754385b0b8c6d3cc2bb4b49db17cd8b825ecd7ebabe456",
+          "size_bytes": 11442
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/tables/differential_bias_response.csv",
+          "relative_path": "tables/differential_bias_response.csv",
+          "sha256": "2d2cdd0d5d272b55199c46670f4b3f9a7bdc6eec3c935bb0b723b04199f287b7",
+          "size_bytes": 12150
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/tables/migration_cells.csv",
+          "relative_path": "tables/migration_cells.csv",
+          "sha256": "432c38c991c0f3533bf39e16092457e4e711541e2bbadd0436a409ab3ce8ef81",
+          "size_bytes": 24160
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/tables/migration_summary.csv",
+          "relative_path": "tables/migration_summary.csv",
+          "sha256": "787e39453718acc712ed026d6392e0b72eeadd05c32547d7a81c86585bb2b95c",
+          "size_bytes": 3425
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/tables/mttbar_one_draw_ensemble.csv",
+          "relative_path": "tables/mttbar_one_draw_ensemble.csv",
+          "sha256": "3741a5029f3dfa4747dd63e3c9916c9ef157818da8c593acb88352d67c63585e",
+          "size_bytes": 8570
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/tables/point_metrics.csv",
+          "relative_path": "tables/point_metrics.csv",
+          "sha256": "af5a2de67a36966cc030421412cc1381b7d1b46c3fb72fcd7fa79dd7d718f292",
+          "size_bytes": 2403
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/tables/residual_histograms.csv",
+          "relative_path": "tables/residual_histograms.csv",
+          "sha256": "0c42cc6e28a02790e91a22f90c2d2a2d66384fc580d8df240c74e7e787903e53",
+          "size_bytes": 107710
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/tables/spectrum_histograms.csv",
+          "relative_path": "tables/spectrum_histograms.csv",
+          "sha256": "db6922d28c8e01d2ef0d115602f914c3aa44458708427a75e0c645ec915b0773",
+          "size_bytes": 155132
+        },
+        {
+          "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/tables/spectrum_metrics.csv",
+          "relative_path": "tables/spectrum_metrics.csv",
+          "sha256": "4e34a420930de0704ad08336e738d54310daf6b1b3fb01b18f8db9b30c54b66a",
+          "size_bytes": 11457
+        }
+      ],
+      "independent_draw_replay_passed": true,
+      "k32_validation_output": {
+        "file_count": 102,
+        "files": [
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/metadata/calibration_rank_summary.json",
+            "relative_path": "metadata/calibration_rank_summary.json",
+            "sha256": "c2afbb217886a52d47a51850afb8daa04719139cda363ee784ddffa968832035",
+            "size_bytes": 470
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/metadata/draw_selection.json",
+            "relative_path": "metadata/draw_selection.json",
+            "sha256": "d3b4abf1ce7c7e3d7491ac75a6e6dba402592a8a9201f1f4823b00dd995da2f2",
+            "size_bytes": 2245
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/metadata/input_manifest.json",
+            "relative_path": "metadata/input_manifest.json",
+            "sha256": "17964d84c82adec42a525c9a7b133fd52eed171a1f1bf3073059456cd0bd8f60",
+            "size_bytes": 2572
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/metadata/one_draw_ensemble_closure.json",
+            "relative_path": "metadata/one_draw_ensemble_closure.json",
+            "sha256": "1c854de67fb6a67538f761fb0674bb2bcc77239f20a671b340cfc3f6677100d1",
+            "size_bytes": 1888
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/metadata/plotting_specification.json",
+            "relative_path": "metadata/plotting_specification.json",
+            "sha256": "240ac23c97544a6aeec2cd490c11ae6f35aa7479361c0b76ad01d03c6f2dbeb0",
+            "size_bytes": 35547
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/metadata/posterior_weight_validation.json",
+            "relative_path": "metadata/posterior_weight_validation.json",
+            "sha256": "f4a5faf37483f4d3acadec8d79a12dc7548ae877152be23ea82274c3775a23b8",
+            "size_bytes": 5359
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/plots/calibration/mttbar_coverage.pdf",
+            "relative_path": "plots/calibration/mttbar_coverage.pdf",
+            "sha256": "27deccad445195649a3a58860246e6730eb3b908a2f9709feaf2de75d76ac0b4",
+            "size_bytes": 12160
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/plots/calibration/mttbar_coverage.png",
+            "relative_path": "plots/calibration/mttbar_coverage.png",
+            "sha256": "24eef15fed22f87de81658787f0e40b854f3eb2521bad72d28d5499d245d27e3",
+            "size_bytes": 130974
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/plots/calibration/mttbar_pit_rank.pdf",
+            "relative_path": "plots/calibration/mttbar_pit_rank.pdf",
+            "sha256": "49718ed24d12521405e3e0b8e1ce42db649bca44cdf63899340adb8cb4ff1ef2",
+            "size_bytes": 35584
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/plots/calibration/mttbar_pit_rank.png",
+            "relative_path": "plots/calibration/mttbar_pit_rank.png",
+            "sha256": "aa7e45f2234d7b37d64649f7e39e2c6caa373319c1061db00594c897ac5c963f",
+            "size_bytes": 77224
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/plots/calibration/neutrino_pz_coverage.pdf",
+            "relative_path": "plots/calibration/neutrino_pz_coverage.pdf",
+            "sha256": "10900ed6355ff6e87ba5bfa1059033df8eada880e47e2e2f033a1914b0bf4d24",
+            "size_bytes": 12158
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/plots/calibration/neutrino_pz_coverage.png",
+            "relative_path": "plots/calibration/neutrino_pz_coverage.png",
+            "sha256": "fb58a8df6747a5ed3e46d4014f10b9628935514ebc2e7e609110094dc3574c86",
+            "size_bytes": 131672
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/plots/calibration/top_pt_coverage.pdf",
+            "relative_path": "plots/calibration/top_pt_coverage.pdf",
+            "sha256": "3baf3fbca7425c523d355a2ad9b7e7f3740ec7337b421cc69b0bd6a896108eba",
+            "size_bytes": 12163
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/plots/calibration/top_pt_coverage.png",
+            "relative_path": "plots/calibration/top_pt_coverage.png",
+            "sha256": "f7a611f9daff1a1a0230877cc24b669a42045c39392110edd564d8b9e0ab769a",
+            "size_bytes": 131046
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/plots/core/mttbar_differential_bias_response.pdf",
+            "relative_path": "plots/core/mttbar_differential_bias_response.pdf",
+            "sha256": "041bfe15ce59cc24b9fc66bf7219925cc564740cb552bdc9bf00b7c3a92c434f",
+            "size_bytes": 41045
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/plots/core/mttbar_differential_bias_response.png",
+            "relative_path": "plots/core/mttbar_differential_bias_response.png",
+            "sha256": "0634368da291d6f4006098d81a293e9f8a0c83e45db290902918bef0e47e7ad3",
+            "size_bytes": 238367
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/plots/core/mttbar_one_draw_ensemble.pdf",
+            "relative_path": "plots/core/mttbar_one_draw_ensemble.pdf",
+            "sha256": "18888d285c2919cbf3de0a9a1ab0f242f8bc6431716be5e15afa33e5415e5f78",
+            "size_bytes": 41603
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/plots/core/mttbar_one_draw_ensemble.png",
+            "relative_path": "plots/core/mttbar_one_draw_ensemble.png",
+            "sha256": "f89c392e7ed442beb202d6851573d72db1ebaf7baa474681c934d5a399bc67d7",
+            "size_bytes": 120084
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/plots/core/mttbar_residual.pdf",
+            "relative_path": "plots/core/mttbar_residual.pdf",
+            "sha256": "20c0610ba73831c80d961dc5b3244356f3c8d73bcd0893ca00a6155b9a2591b2",
+            "size_bytes": 30729
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/plots/core/mttbar_residual.png",
+            "relative_path": "plots/core/mttbar_residual.png",
+            "sha256": "be29a2787d0ba09fa48842fbf65167506c2fc3363f2897bf1b58db1573aa5944",
+            "size_bytes": 112990
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/plots/core/mttbar_shape.pdf",
+            "relative_path": "plots/core/mttbar_shape.pdf",
+            "sha256": "4818e6fe33031e6ced792ead5f43e83eb9ffa469873dd763b7a7a292dddd34af",
+            "size_bytes": 43170
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/plots/core/mttbar_shape.png",
+            "relative_path": "plots/core/mttbar_shape.png",
+            "sha256": "f3f7accaaa2bdd0c5ccd1a47230aabb96112f3b076b2d59db5f39133920644a0",
+            "size_bytes": 153429
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/plots/core/ptttbar_differential_bias_response.pdf",
+            "relative_path": "plots/core/ptttbar_differential_bias_response.pdf",
+            "sha256": "7c5383db0a13fbd5b5800896c368d5903b0a56ac940c9e59aa338281f7b00102",
+            "size_bytes": 40550
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/plots/core/ptttbar_differential_bias_response.png",
+            "relative_path": "plots/core/ptttbar_differential_bias_response.png",
+            "sha256": "3078c369c2f001f985adbf0610f8dc0fca2dd99c4ff50683652965b4cb045771",
+            "size_bytes": 180594
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/plots/core/ptttbar_residual.pdf",
+            "relative_path": "plots/core/ptttbar_residual.pdf",
+            "sha256": "627906c4961509192cce5cfc7d12d2e606d4d91c53cc0fd0514d52594411f934",
+            "size_bytes": 30953
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/plots/core/ptttbar_residual.png",
+            "relative_path": "plots/core/ptttbar_residual.png",
+            "sha256": "3db2f2fbe49cfbc88b4f14ba67420bc2337a55257f28f52063d28e1c68837cd6",
+            "size_bytes": 117499
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/plots/core/ptttbar_shape.pdf",
+            "relative_path": "plots/core/ptttbar_shape.pdf",
+            "sha256": "851be7469c1b6597c6f10947e8edde118e1a07610d1fe70b770c84e5c51357d3",
+            "size_bytes": 43317
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/plots/core/ptttbar_shape.png",
+            "relative_path": "plots/core/ptttbar_shape.png",
+            "sha256": "d62c4aac4b7b9607156493043c08a1d35cce119f155aaab9402544e62aff0aa3",
+            "size_bytes": 172904
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/plots/core/top_pt_differential_bias_response.pdf",
+            "relative_path": "plots/core/top_pt_differential_bias_response.pdf",
+            "sha256": "8ea1f51c29ccc82368e378a857e2e2524eb29c756db5f3ddf1ef35d9ce7d9dd1",
+            "size_bytes": 42546
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/plots/core/top_pt_differential_bias_response.png",
+            "relative_path": "plots/core/top_pt_differential_bias_response.png",
+            "sha256": "3f158e0d509b42e928a136acad2a5d40fcb23e7e3d5992959db456aea903cb6f",
+            "size_bytes": 217509
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/plots/core/top_pt_residual.pdf",
+            "relative_path": "plots/core/top_pt_residual.pdf",
+            "sha256": "3dd313e8654ea390982d8a15fe0081a12e7c7fe73ecc5bc6969b34884e8f8f8e",
+            "size_bytes": 30680
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/plots/core/top_pt_residual.png",
+            "relative_path": "plots/core/top_pt_residual.png",
+            "sha256": "ca89b3d8355198bde95c256805124d32a68c88e139c5bd96c071ab76fc9718a7",
+            "size_bytes": 115080
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/plots/core/top_pt_shape.pdf",
+            "relative_path": "plots/core/top_pt_shape.pdf",
+            "sha256": "022e18bfaa5417868159279310e62f577868ecf9f0892c34d8f86f1dcc50eb4d",
+            "size_bytes": 42873
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/plots/core/top_pt_shape.png",
+            "relative_path": "plots/core/top_pt_shape.png",
+            "sha256": "ede2190fbaf4d1111576012ec5c12d4b95ce98576d6683f8100140d440a3cf4b",
+            "size_bytes": 176524
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/plots/core/yttbar_differential_bias_response.pdf",
+            "relative_path": "plots/core/yttbar_differential_bias_response.pdf",
+            "sha256": "fede61939aba8bfa01be3d12eabb7a9c9b43ea4c2cb77d37f169cf5b4a30a697",
+            "size_bytes": 36247
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/plots/core/yttbar_differential_bias_response.png",
+            "relative_path": "plots/core/yttbar_differential_bias_response.png",
+            "sha256": "18c13b3de8031bd1a0eb821e5d7d44a38802f7bd302baf9f01bc669981f670e2",
+            "size_bytes": 181651
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/plots/core/yttbar_residual.pdf",
+            "relative_path": "plots/core/yttbar_residual.pdf",
+            "sha256": "ca5f6abf1d154b3652e4257e3f2d4d93eedc8b9e7a25499a74abe3183c1bba43",
+            "size_bytes": 29123
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/plots/core/yttbar_residual.png",
+            "relative_path": "plots/core/yttbar_residual.png",
+            "sha256": "defb3473fa368e02f00acbde2e999b4cc87f050426854e583a744d7d2c25ebc7",
+            "size_bytes": 104340
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/plots/core/yttbar_shape.pdf",
+            "relative_path": "plots/core/yttbar_shape.pdf",
+            "sha256": "4dd9128f2e5ecf5d58861c778cc1bd85ce8e845170ffd380c828f42bfce37d55",
+            "size_bytes": 42741
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/plots/core/yttbar_shape.png",
+            "relative_path": "plots/core/yttbar_shape.png",
+            "sha256": "d4e688d751249b365d3b7332880a212b4a5589d96320a5fdc15d02bfa96934b1",
+            "size_bytes": 193876
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/plots/factorisation/mttbar_factorisation_posterior_distribution.pdf",
+            "relative_path": "plots/factorisation/mttbar_factorisation_posterior_distribution.pdf",
+            "sha256": "7df7bcb717ff30729bf04cbfab232382abe9526a6e919afb7becdcde1bee6058",
+            "size_bytes": 36278
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/plots/factorisation/mttbar_factorisation_posterior_distribution.png",
+            "relative_path": "plots/factorisation/mttbar_factorisation_posterior_distribution.png",
+            "sha256": "d266352ca12cea7f9aa167a947daf9adbc9cdd22c21f7b7539042dcce9be358a",
+            "size_bytes": 172782
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/plots/factorisation/mttbar_factorisation_posterior_mean.pdf",
+            "relative_path": "plots/factorisation/mttbar_factorisation_posterior_mean.pdf",
+            "sha256": "79a47c1e2abfd873449c5d56e20af1f42404b0c8efc65a3ff9eaddbde0ec511b",
+            "size_bytes": 35669
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/plots/factorisation/mttbar_factorisation_posterior_mean.png",
+            "relative_path": "plots/factorisation/mttbar_factorisation_posterior_mean.png",
+            "sha256": "be817bbfa6974bc9392fb1de6134a659ae871386f0deaa838dc86363be650f12",
+            "size_bytes": 141082
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/plots/migration/mttbar_j_draw_migration.pdf",
+            "relative_path": "plots/migration/mttbar_j_draw_migration.pdf",
+            "sha256": "83e42d0f519c604a3d46132b3250bdc19b0ed2450b5958b613eb212182ee03f1",
+            "size_bytes": 50225
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/plots/migration/mttbar_j_draw_migration.png",
+            "relative_path": "plots/migration/mttbar_j_draw_migration.png",
+            "sha256": "b0e6e03074d9be645e842d65810a7239b1177f06c6d8dedfba764cc352572d5c",
+            "size_bytes": 143695
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/plots/migration/mttbar_j_mean_migration.pdf",
+            "relative_path": "plots/migration/mttbar_j_mean_migration.pdf",
+            "sha256": "1af9d5b6f54667aa1338577b5c3680b7aa205bd52497f33268c72ea61f84e099",
+            "size_bytes": 48279
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/plots/migration/mttbar_j_mean_migration.png",
+            "relative_path": "plots/migration/mttbar_j_mean_migration.png",
+            "sha256": "75c22c7a4365e551ff79d2b2279fb89a5745217bf00d7e1a4828dab5f93af3cd",
+            "size_bytes": 143622
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/plots/migration/mttbar_j_migration_comparison.pdf",
+            "relative_path": "plots/migration/mttbar_j_migration_comparison.pdf",
+            "sha256": "755889cf1c9e1488a489e34b8934448c03ca1e9a9897b9a4e6d40247aabdb29f",
+            "size_bytes": 83726
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/plots/migration/mttbar_j_migration_comparison.png",
+            "relative_path": "plots/migration/mttbar_j_migration_comparison.png",
+            "sha256": "13e9bef2cd2f46208d4cae6cc296792b9d5bc6fc97b33d9daa8b7e354860f957",
+            "size_bytes": 196778
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/plots/migration/mttbar_j_posterior_migration.pdf",
+            "relative_path": "plots/migration/mttbar_j_posterior_migration.pdf",
+            "sha256": "b42fb134e79f367934633d031c09c02d7df2f8242dfd25e97e3531465209f7d5",
+            "size_bytes": 49669
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/plots/migration/mttbar_j_posterior_migration.png",
+            "relative_path": "plots/migration/mttbar_j_posterior_migration.png",
+            "sha256": "77ad2c1ca69fd58cc743ff86465f73da160d4f1e2c08badeb5d827d1c8e10a40",
+            "size_bytes": 143700
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/plots/migration/top_pt_j_draw_migration.pdf",
+            "relative_path": "plots/migration/top_pt_j_draw_migration.pdf",
+            "sha256": "de6c4d4837cfb63953e7f25b386828f8efe2332ecbc03c0c1cebfd4102729692",
+            "size_bytes": 50112
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/plots/migration/top_pt_j_draw_migration.png",
+            "relative_path": "plots/migration/top_pt_j_draw_migration.png",
+            "sha256": "331c278d83f877ec58b78d5676d9119598def301a5756384fc9be9a48069ae94",
+            "size_bytes": 142204
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/plots/migration/top_pt_j_mean_migration.pdf",
+            "relative_path": "plots/migration/top_pt_j_mean_migration.pdf",
+            "sha256": "6dd0ddbd35703ebb7d294b905702e0d8832b09d5dc3ed78e0d889c46a37bfee4",
+            "size_bytes": 49719
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/plots/migration/top_pt_j_mean_migration.png",
+            "relative_path": "plots/migration/top_pt_j_mean_migration.png",
+            "sha256": "80c7f36ae03cc82bfbbd1b58da9494c952a5ecbb6c3d517c4f02f17e03b18870",
+            "size_bytes": 142168
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/plots/migration/top_pt_j_migration_comparison.pdf",
+            "relative_path": "plots/migration/top_pt_j_migration_comparison.pdf",
+            "sha256": "37e0e01e5abc4a7c84ba8b625b2a99d28841a946aeaaa6bf8983b7c04aaf0a0e",
+            "size_bytes": 85547
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/plots/migration/top_pt_j_migration_comparison.png",
+            "relative_path": "plots/migration/top_pt_j_migration_comparison.png",
+            "sha256": "a8326efc5adc63ef2fce65bda59de186f6104fed73d386cc2b40812d270a7df7",
+            "size_bytes": 196927
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/plots/migration/top_pt_j_posterior_migration.pdf",
+            "relative_path": "plots/migration/top_pt_j_posterior_migration.pdf",
+            "sha256": "135babaa367dcce90da4955b26207ed8f11102f1acc3c5d4050ae26f3b02b85a",
+            "size_bytes": 50526
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/plots/migration/top_pt_j_posterior_migration.png",
+            "relative_path": "plots/migration/top_pt_j_posterior_migration.png",
+            "sha256": "b38367f34f7ce6bbcd5630de9a3f5da157b1e668371d9938f6ca4ff053b50c13",
+            "size_bytes": 142208
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/plots/neutrino/neutrino_pt_residual.pdf",
+            "relative_path": "plots/neutrino/neutrino_pt_residual.pdf",
+            "sha256": "25e1b8327df440b902a261f93c5eff847e447293840e15d84b1c18a2eb9b20dd",
+            "size_bytes": 30847
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/plots/neutrino/neutrino_pt_residual.png",
+            "relative_path": "plots/neutrino/neutrino_pt_residual.png",
+            "sha256": "f561dbd20c4aadd34e17c4ae5163d70debf1b41342337c8c32aa4a2c503a7eb5",
+            "size_bytes": 117560
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/plots/neutrino/neutrino_pt_shape.pdf",
+            "relative_path": "plots/neutrino/neutrino_pt_shape.pdf",
+            "sha256": "4fc8dc3bc9673107bf509e7aca286ead4250a977764233b662cb048723ecce8f",
+            "size_bytes": 42073
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/plots/neutrino/neutrino_pt_shape.png",
+            "relative_path": "plots/neutrino/neutrino_pt_shape.png",
+            "sha256": "e1f5a70ca53325cbd970f939f72bd1360e8fa673860921c8ca52564f576185b3",
+            "size_bytes": 152252
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/plots/neutrino/neutrino_pz_residual.pdf",
+            "relative_path": "plots/neutrino/neutrino_pz_residual.pdf",
+            "sha256": "8069de694316974abe669b89b8ece62e7992ae307c2da2be3cec465452b657df",
+            "size_bytes": 30909
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/plots/neutrino/neutrino_pz_residual.png",
+            "relative_path": "plots/neutrino/neutrino_pz_residual.png",
+            "sha256": "ea80d26632fd1b1ef267a49eb181b40fef0455932407242fb59199d85a2a6671",
+            "size_bytes": 111278
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/plots/neutrino/neutrino_pz_shape.pdf",
+            "relative_path": "plots/neutrino/neutrino_pz_shape.pdf",
+            "sha256": "9d0b81eb1103bb98621aedd9c9cf136f86950f13a20e124aa2a189957191357c",
+            "size_bytes": 42217
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/plots/neutrino/neutrino_pz_shape.png",
+            "relative_path": "plots/neutrino/neutrino_pz_shape.png",
+            "sha256": "0f053f1846ba1162aadb495ccfc50fd26130263f5248c10ca8e15693150164d5",
+            "size_bytes": 155544
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/plots/spin/cos_opening_coverage.pdf",
+            "relative_path": "plots/spin/cos_opening_coverage.pdf",
+            "sha256": "2c0c8a65a910887d6c2ec37ad3c5a5bb748e430df6d56c3635efe9a3c7dc59fe",
+            "size_bytes": 12162
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/plots/spin/cos_opening_coverage.png",
+            "relative_path": "plots/spin/cos_opening_coverage.png",
+            "sha256": "cc38eea031914b6abbcc4b255c6f1522f806075a86acee9db9c13851e3496947",
+            "size_bytes": 128835
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/plots/spin/cos_theta_minus_coverage.pdf",
+            "relative_path": "plots/spin/cos_theta_minus_coverage.pdf",
+            "sha256": "2dbc4d2fa2a1446cea9d466305ce4f961e58fe6b613d7a9aac48c501e7d30850",
+            "size_bytes": 12161
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/plots/spin/cos_theta_minus_coverage.png",
+            "relative_path": "plots/spin/cos_theta_minus_coverage.png",
+            "sha256": "7402ebe7749285da0957eaaf15137a1dade81014b61c33ff371efa88abe03587",
+            "size_bytes": 133858
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/plots/spin/cos_theta_plus_coverage.pdf",
+            "relative_path": "plots/spin/cos_theta_plus_coverage.pdf",
+            "sha256": "5a45d9c66cbc24c1726c8415bfca518066581c2b4085cdbc942491324ce474d2",
+            "size_bytes": 12154
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/plots/spin/cos_theta_plus_coverage.png",
+            "relative_path": "plots/spin/cos_theta_plus_coverage.png",
+            "sha256": "49b4efecfa546063787bad22aeaeccd10e20ba0500986d0a73192d80d4e1244d",
+            "size_bytes": 131628
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/plots/spin/helicity_product_coverage.pdf",
+            "relative_path": "plots/spin/helicity_product_coverage.pdf",
+            "sha256": "1b58bd7c9df08a7f08d82c0b2aa9ddd5c9be880e9d3407d0c881fa7e07c3be8a",
+            "size_bytes": 12149
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/plots/spin/helicity_product_coverage.png",
+            "relative_path": "plots/spin/helicity_product_coverage.png",
+            "sha256": "af789b5ffb4694957533bc8b58878352d1938c0913fffaee4c74ffeec89646ac",
+            "size_bytes": 130798
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/plots/spin/spin_cos_opening_residual.pdf",
+            "relative_path": "plots/spin/spin_cos_opening_residual.pdf",
+            "sha256": "8bde74dd2875ba85cd603a792de87019ef951561eccce8d830789b1af964e237",
+            "size_bytes": 29277
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/plots/spin/spin_cos_opening_residual.png",
+            "relative_path": "plots/spin/spin_cos_opening_residual.png",
+            "sha256": "41616445da864d646962ab8565f75f51af658b399bf8407fccfcbb10b591d1cb",
+            "size_bytes": 98413
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/plots/spin/spin_cos_opening_shape.pdf",
+            "relative_path": "plots/spin/spin_cos_opening_shape.pdf",
+            "sha256": "d9f7ca513444c8f0b0711077204e7ac3ad86978c97bd25614cfac706be594468",
+            "size_bytes": 39459
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/plots/spin/spin_cos_opening_shape.png",
+            "relative_path": "plots/spin/spin_cos_opening_shape.png",
+            "sha256": "98423f5d695bfc80a5b9cbcdeecdf1270f0dbcae56eb664dcbc374b8d0823023",
+            "size_bytes": 270507
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/plots/spin/spin_cos_theta_minus_residual.pdf",
+            "relative_path": "plots/spin/spin_cos_theta_minus_residual.pdf",
+            "sha256": "fe8acfef5d274b85cc2770ed39f648974d1547322b96cd127b038d853540b2d8",
+            "size_bytes": 29773
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/plots/spin/spin_cos_theta_minus_residual.png",
+            "relative_path": "plots/spin/spin_cos_theta_minus_residual.png",
+            "sha256": "122a29706eb505ffabb87c78da287fb01f5be451508005072b50dab6332e2da9",
+            "size_bytes": 119619
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/plots/spin/spin_cos_theta_minus_shape.pdf",
+            "relative_path": "plots/spin/spin_cos_theta_minus_shape.pdf",
+            "sha256": "6e3fd51beeb67fe0f6c59c778cca25ee4b549f6c040b873d363a791522ee999b",
+            "size_bytes": 39618
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/plots/spin/spin_cos_theta_minus_shape.png",
+            "relative_path": "plots/spin/spin_cos_theta_minus_shape.png",
+            "sha256": "e6a412155eb8eb0d19ccf5282e45f97bdbf572f276ae644008a8bc3c7dabc26f",
+            "size_bytes": 179503
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/plots/spin/spin_cos_theta_plus_residual.pdf",
+            "relative_path": "plots/spin/spin_cos_theta_plus_residual.pdf",
+            "sha256": "04e7a1ab41d4c20f08b91088fde045dbe637575ae5096a7031bac0d8d3c95be3",
+            "size_bytes": 29721
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/plots/spin/spin_cos_theta_plus_residual.png",
+            "relative_path": "plots/spin/spin_cos_theta_plus_residual.png",
+            "sha256": "3e7371068642fefb2bbcc0fe4b58ea93de72bb5946bba564f8d6dd89a7981196",
+            "size_bytes": 118827
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/plots/spin/spin_cos_theta_plus_shape.pdf",
+            "relative_path": "plots/spin/spin_cos_theta_plus_shape.pdf",
+            "sha256": "934aaa73f60ff8e9f8caa9a4a14270b9818c85b91127d73247951e46d909a5dd",
+            "size_bytes": 39013
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/plots/spin/spin_cos_theta_plus_shape.png",
+            "relative_path": "plots/spin/spin_cos_theta_plus_shape.png",
+            "sha256": "d1f739cb3a7660718260e167ed63edfdfce343297c48f56aff109fc5298295ee",
+            "size_bytes": 171570
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/plots/spin/spin_helicity_product_residual.pdf",
+            "relative_path": "plots/spin/spin_helicity_product_residual.pdf",
+            "sha256": "ee58d9e18a63d1ac8dbf61673a62f4eeb5593d580ab2cead6ad5028b7c39f22e",
+            "size_bytes": 29453
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/plots/spin/spin_helicity_product_residual.png",
+            "relative_path": "plots/spin/spin_helicity_product_residual.png",
+            "sha256": "6cd77e5530051f41fcf21d81f5cbe1f4ab2162f9d1f0117809b5ac3925e2c84b",
+            "size_bytes": 110109
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/plots/spin/spin_helicity_product_shape.pdf",
+            "relative_path": "plots/spin/spin_helicity_product_shape.pdf",
+            "sha256": "50a8e8477bfc771dfcdb4f82c6a393bb6ec381b014acef67d614fa7b9d6001df",
+            "size_bytes": 39007
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/plots/spin/spin_helicity_product_shape.png",
+            "relative_path": "plots/spin/spin_helicity_product_shape.png",
+            "sha256": "281fb445bbce7252c632b569a57874881b8595e0130649be4ffb0f2a8ac43ffc",
+            "size_bytes": 176071
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/plotting_summary.md",
+            "relative_path": "plotting_summary.md",
+            "sha256": "dc38ff5559348a1581dc6760a1aca57d60831b8a0ee8f7a83fa2e0899a6b77da",
+            "size_bytes": 2633
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/tables/calibration_metrics.csv",
+            "relative_path": "tables/calibration_metrics.csv",
+            "sha256": "b9504b86d473d577bd31bcf855ee4776d17e9929ad0bb538994251bf2e3becba",
+            "size_bytes": 9988
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/tables/differential_bias_response.csv",
+            "relative_path": "tables/differential_bias_response.csv",
+            "sha256": "951b5cf719493e73ec912dab37989a03fc06ffffb51fcfa0b6f4b098bfa16df0",
+            "size_bytes": 12151
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/tables/migration_cells.csv",
+            "relative_path": "tables/migration_cells.csv",
+            "sha256": "0e83c595489bde4ec799c694f6d56bd5ddc18b1a229e821b19a6a6a2670ca3bc",
+            "size_bytes": 24111
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/tables/migration_summary.csv",
+            "relative_path": "tables/migration_summary.csv",
+            "sha256": "c779b9b2309bcc781fc93174f5f7165e80ca2b0429cc9f7c2e08b6725e94deab",
+            "size_bytes": 3702
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/tables/mttbar_one_draw_ensemble.csv",
+            "relative_path": "tables/mttbar_one_draw_ensemble.csv",
+            "sha256": "dfb34533510ca705cc59591567f9f3c4de15edd5a63f14d21e17b7e9c2f091a5",
+            "size_bytes": 8249
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/tables/point_metrics.csv",
+            "relative_path": "tables/point_metrics.csv",
+            "sha256": "f3e2c76ebc30a2db5bc481da757ffc58f968b01ffa715dc32782e4649832cc22",
+            "size_bytes": 2405
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/tables/residual_histograms.csv",
+            "relative_path": "tables/residual_histograms.csv",
+            "sha256": "6495b1c62c12b1e8845d99b524e8fff6fd33823ef43d7d8abbddc0dff1ac0d0d",
+            "size_bytes": 106627
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/tables/spectrum_histograms.csv",
+            "relative_path": "tables/spectrum_histograms.csv",
+            "sha256": "d103c3e6c44a061511a572a4d23b251b4e22feb478dd1e27b5e59494bf766b9f",
+            "size_bytes": 154472
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1/tables/spectrum_metrics.csv",
+            "relative_path": "tables/spectrum_metrics.csv",
+            "sha256": "486abd233252cd84fa281fd1f6ac11085320bc71d22f79aa309d01acc08cea29",
+            "size_bytes": 11398
+          }
+        ],
+        "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-K32-validation-v1"
+      },
+      "mttbar_point_metrics": {
+        "one_draw": {
+          "bias": 4.959104245159596,
+          "mae": 74.21945495342288,
+          "residual_sigma": 107.85340749132469,
+          "rmse": 107.96735720764907
+        },
+        "posterior_mean": {
+          "bias": 4.669519366958485,
+          "mae": 53.64123836921898,
+          "residual_sigma": 78.47659801182945,
+          "rmse": 78.61539827939991
+        }
+      },
+      "mttbar_population_metrics": {
+        "one_draw": {
+          "central_68_width_ratio": 1.0198247263694535,
+          "iqr_ratio": 1.0327237396361677,
+          "ks_distance": 0.025999999999999968,
+          "q90_tail_fraction_ratio": 1.011988011988012,
+          "q95_tail_fraction_ratio": 1.0558882235528944,
+          "q99_tail_fraction_ratio": 0.8514851485148515,
+          "wasserstein_1": 6.668718321931133
+        },
+        "posterior_distribution": {
+          "central_68_width_ratio": 1.0221436221909685,
+          "iqr_ratio": 1.0445425422867936,
+          "ks_distance": 0.019320312499999992,
+          "q90_tail_fraction_ratio": 1.035964035964036,
+          "q95_tail_fraction_ratio": 1.06187624750499,
+          "q99_tail_fraction_ratio": 0.9729269801980198,
+          "wasserstein_1": 5.639360092662432
+        },
+        "posterior_mean": {
+          "central_68_width_ratio": 0.9083645214346646,
+          "iqr_ratio": 0.9311069484290915,
+          "ks_distance": 0.0821,
+          "q90_tail_fraction_ratio": 0.9100899100899101,
+          "q95_tail_fraction_ratio": 0.9141716566866268,
+          "q99_tail_fraction_ratio": 0.7326732673267328,
+          "wasserstein_1": 12.386075760893148
+        }
+      },
+      "plotting_script": "/net/scratch/w00238tl/knot/scripts/evaluation/plot_knot_posterior_usage.py",
+      "posterior_samples_per_event": 64,
+      "posterior_weight_validation": {
+        "all_population_spectrum_integrals_equal_truth_support": true,
+        "all_representations_share_exact_bin_edges": true,
+        "full_posterior_residual_rejected": true,
+        "max_event_weight_closure_error": 0.0,
+        "max_migration_truth_column_error_percent": 1.4210854715202004e-14,
+        "migrations": {
+          "mttbar": {
+            "one_draw": {
+              "maximum_event_weight_closure_error": 0.0,
+              "maximum_truth-column_normalization_error_percent": 1.4210854715202004e-14,
+              "total_weight": 10000.0,
+              "truth_equivalent_support_per_bin": [
+                985.0,
+                2293.0,
+                2019.0,
+                2793.0,
+                1451.0,
+                459.0
+              ]
+            },
+            "posterior_distribution": {
+              "maximum_event_weight_closure_error": 0.0,
+              "maximum_truth-column_normalization_error_percent": 0.0,
+              "total_weight": 10000.0,
+              "truth_equivalent_support_per_bin": [
+                985.0,
+                2293.0,
+                2019.0,
+                2793.0,
+                1451.0,
+                459.0
+              ]
+            },
+            "posterior_mean": {
+              "maximum_event_weight_closure_error": 0.0,
+              "maximum_truth-column_normalization_error_percent": 0.0,
+              "total_weight": 10000.0,
+              "truth_equivalent_support_per_bin": [
+                985.0,
+                2293.0,
+                2019.0,
+                2793.0,
+                1451.0,
+                459.0
+              ]
+            }
+          },
+          "top_pt": {
+            "one_draw": {
+              "maximum_event_weight_closure_error": 0.0,
+              "maximum_truth-column_normalization_error_percent": 1.4210854715202004e-14,
+              "total_weight": 10000.0,
+              "truth_equivalent_support_per_bin": [
+                1574.0,
+                2071.0,
+                2461.5,
+                2184.5,
+                1206.5,
+                456.0,
+                46.5
+              ]
+            },
+            "posterior_distribution": {
+              "maximum_event_weight_closure_error": 0.0,
+              "maximum_truth-column_normalization_error_percent": 1.4210854715202004e-14,
+              "total_weight": 10000.0,
+              "truth_equivalent_support_per_bin": [
+                1574.0,
+                2071.0,
+                2461.5,
+                2184.5,
+                1206.5,
+                456.0,
+                46.5
+              ]
+            },
+            "posterior_mean": {
+              "maximum_event_weight_closure_error": 0.0,
+              "maximum_truth-column_normalization_error_percent": 1.4210854715202004e-14,
+              "total_weight": 10000.0,
+              "truth_equivalent_support_per_bin": [
+                1574.0,
+                2071.0,
+                2461.5,
+                2184.5,
+                1206.5,
+                456.0,
+                46.5
+              ]
+            }
+          }
+        },
+        "support_aware_ratio_bins_recorded": true,
+        "total_event_weight": 10000.0
+      },
+      "primary_model": "J",
+      "primary_posterior": {
+        "files": [
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/J-K64/evaluation_manifest.json",
+            "relative_path": "evaluation_manifest.json",
+            "sha256": "f6a475a3e54aa6c8a78c9f80dd0e0def25c2add33cb44977c053ded28b4ac219",
+            "size_bytes": 1210
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/J-K64/metrics.json",
+            "relative_path": "metrics.json",
+            "sha256": "f8c680ac3679ed8fe606601d6742bba8e815b6e3509943dd977cd0df0370a5a4",
+            "size_bytes": 26005
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/J-K64/physics_distributions.png",
+            "relative_path": "physics_distributions.png",
+            "sha256": "b9f93f6d3df4b0bca1b8f3f4b0931ffaa7528e094da46a83aa26d287af242e3d",
+            "size_bytes": 84977
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/J-K64/posterior.h5",
+            "relative_path": "posterior.h5",
+            "sha256": "ecce7812111e9fdb89e39ddfa7b57bb002b45f7c4a430a2fea4952f9cf7243b7",
+            "size_bytes": 152346864
+          },
+          {
+            "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/J-K64/spin_distributions.png",
+            "relative_path": "spin_distributions.png",
+            "sha256": "9faa60ba72787a22771c8ef3d51b36351c2c3d8e792d3816a839844f210648f5",
+            "size_bytes": 70584
+          }
+        ],
+        "path": "/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/J-K64/posterior.h5",
+        "sha256": "ecce7812111e9fdb89e39ddfa7b57bb002b45f7c4a430a2fea4952f9cf7243b7",
+        "size_bytes": 152346864
+      },
+      "pseudo_dataset_count": 128,
+      "pseudo_dataset_seed_range": [
+        42012,
+        42139
+      ],
+      "rank_summary": {
+        "chi_square": 146.838,
+        "degrees_of_freedom": 64,
+        "events": 10000,
+        "p_value": 1.866065655447986e-08,
+        "posterior_samples_per_event": 64,
+        "rank_bins": 65,
+        "rank_definition": "number of posterior draws below truth; exact ties are broken uniformly over allowed discrete ranks using event-keyed SplitMix64",
+        "rank_fraction_max_abs_deviation_from_uniform": 0.005315384615384614,
+        "rank_fraction_rms_deviation_from_uniform": 0.001864257391376463
+      },
+      "residual_histogram_representations": [
+        "one_draw",
+        "posterior_mean"
+      ],
+      "style_helper": "/net/scratch/w00238tl/knot/src/joint_event_reconstruction/plotting_style.py",
+      "test_file": "/net/scratch/w00238tl/knot/tests/test_knot_posterior_usage.py",
+      "visual_inspection": [
+        "plots/core/mttbar_shape.png",
+        "plots/core/mttbar_residual.png",
+        "plots/core/mttbar_differential_bias_response.png",
+        "plots/core/mttbar_one_draw_ensemble.png",
+        "plots/migration/mttbar_j_migration_comparison.png",
+        "plots/neutrino/neutrino_pz_shape.png",
+        "plots/calibration/mttbar_coverage.png",
+        "plots/factorisation/mttbar_factorisation_posterior_distribution.png"
+      ]
     },
     "temporary_symlinks": []
   },

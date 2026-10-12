@@ -1,26 +1,79 @@
-# KNOT/RISE filesystem migration (2026-10-12)
+# KNOT/RISE filesystem migration and posterior-usage evaluation
 
-## Canonical worktrees
+## Canonical projects
 
-- KNOT: `/net/scratch/w00238tl/knot` on `research/knot-production-physics-evaluation-v1`.
-- RISE: `/net/scratch/w00238tl/rise` on `research/rise-r0-neural-diagnosis-v1`.
-- The four KNOT/RISE worktrees shared `/net/scratch/w00238tl/JointEventReconstruction/.git`; their existing branch histories were already in one repository. Source-only dirty/untracked work was committed on each original branch before the redundant worktrees were retired. Exact old HEADs, preservation commits, current branch tips, and all local branches are in the JSON manifest.
+- KNOT is `/net/scratch/w00238tl/knot`, on `research/knot-production-physics-evaluation-v1`.
+- RISE is `/net/scratch/w00238tl/rise`, on `research/rise-r0-neural-diagnosis-v1`.
+- The old KNOT evaluator, KNOT evaldev, KNOT production, and RISE project directories have been removed after their work was verified in the canonical worktrees. No compatibility symlinks remain.
+- After cache cleanup, the canonical KNOT tree occupied 8,173,557,776 bytes and RISE occupied 39,071,899 bytes (`du -sb`, before the final manifest commit).
+- The old worktrees shared `/net/scratch/w00238tl/JointEventReconstruction/.git`. Branches and commits were retained in that Git repository; the JSON manifest records each original path, branch, HEAD, dirt summary, preservation commit, and result-file checksum.
 
-## Result preservation
+## Source and Git preservation
 
-The three KNOT result trees contained **629 distinct relative paths**. All source copies had matching size and SHA256 when a relative path was shared; there were no differing same-path files. The evaluator tree already held 385 paths. We copied 244 missing paths and 40 missing Slurm logs, then rechecked size/SHA256 for all 629 result paths and all 50 log paths after moving the evaluator worktree to `knot`. Identical duplicate result paths were deduplicated in the canonical tree. The large 2 GB JER feature cache was retained as a reproducibility input.
+- Production KNOT HEAD `eebeb524f877388a10432fc72c7831425f6174e9` remains on `research/knot-production-launch-v1`; canonical path updates are in `1904b1c64400311ce2f1ed07e9751c7c988e0ffd`.
+- Evaluator HEAD `37c461d01ce97a28ada2176a9fdc48365cdb8247` remains on the canonical evaluator branch. Four untracked analysis scripts were preserved in `1da2b171a8893675df1deed4f447b0457a9c5295`.
+- Evaldev HEAD `ae0b70a707bd362b7dcbe1857e93ee1a3b31ad44` remains on `research/knot-physics-analysis-dev-v1`. Four tracked changes and 28 source/config/Slurm files were committed in `ff89eba`, followed by path updates in `95f34f18cd5dea7f3c18982a9d7fc620703c6979`.
+- RISE HEAD `91fb9bfd5d6bd0f69b37a23484d652a707ab97c7` remains on `research/rise-r0-neural-diagnosis-v1`. Six tracked qualification updates and one adapter were committed in `06b02e0`; canonical path updates are in `8fa8e0fa41f6801a14e9c77be21416adc8de817e`.
+- KNOT plotting code and canonical production-input path changes are recorded in Git; the machine manifest records the exact source commit used to generate the plots.
 
-RISE moved intact to `rise`. Its full result inventory, including `R0/decision.json`, both `R0-qualification` figures, and the updated qualification results, is hashed in the JSON manifest. RISE remains blocked at neural stochastic R0; no detector-level RISE training was started.
+The initial merge covered 629 KNOT result paths and 50 logs. Shared paths were byte-identical; 31 duplicate groups were deduplicated, 244 missing result paths and 40 missing logs were brought into the canonical tree, and no differing same-path results were found. RISE's 165 result files are checksum inventoried. Six production JSON manifests were edited only to normalize absolute paths; both their old and canonical checksums are recorded. The large result trees, physics summaries, audits, checkpoints, logs, and provenance remain outside Git as data.
 
-## Git/source preservation
+The prepared real-neutrino input tree and its split-membership file were copied from the preserved topology-query source worktree into KNOT because the frozen KNOT configurations require them. Every source/canonical size and SHA256 is in the JSON manifest. The 1.9 GB measured-feature cache was re-keyed because its path identity changed; only `metadata.source_identity.path` changed in the tensor payload, and the frozen loader accepted the canonical cache for the final evaluation.
 
-- KNOT production old HEAD `eebeb524f877388a10432fc72c7831425f6174e9` remains an ancestor on `research/knot-production-launch-v1`; operational project paths were updated in commit `1904b1c64400311ce2f1ed07e9751c7c988e0ffd`.
-- KNOT evaluator old HEAD `37c461d01ce97a28ada2176a9fdc48365cdb8247` remains in `research/knot-production-physics-evaluation-v1`; four untracked analysis/evidence scripts were committed in `1da2b171a8893675df1deed4f447b0457a9c5295`. This is the canonical KNOT worktree.
-- KNOT evaldev old HEAD `ae0b70a707bd362b7dcbe1857e93ee1a3b31ad44` remains an ancestor on `research/knot-physics-analysis-dev-v1`; its four tracked changes and 28 untracked source/config/Slurm files were committed in `ff89eba`, and operational paths were updated in `95f34f18cd5dea7f3c18982a9d7fc620703c6979`.
-- RISE old HEAD `91fb9bfd5d6bd0f69b37a23484d652a707ab97c7` remains an ancestor on `research/rise-r0-neural-diagnosis-v1`; six tracked R0 qualification updates and `scripts/adapt_canonical_sbi_sidecar.py` were committed in `06b02e0`, with canonical path updates in `8fa8e0fa41f6801a14e9c77be21416adc8de817e`.
+## Queue actions
 
-## Queue and removal record
+At preflight and before retiring worktrees, `squeue -u "$USER"` was empty. `scontrol` reported the named jobs `22314112`, `22314926`, and `22284319` as invalid, so they were not changed. In particular, the KNOT seed-validation array was not started or cancelled, and the P5 baseline was not cancelled. No unrelated job was touched.
 
-`squeue -u "$USER"` was empty both before path changes and before removal. `scontrol show job` reported IDs `22314112`, `22314926`, and `22284319` invalid. No job was cancelled, resubmitted, or otherwise touched; the P5 baseline was not cancelled. Temporary symlinks were not used.
+The task's own K64 attempts are recorded in the JSON manifest: one unstartable GPU request was cancelled after the association resource limit, three attempts failed before inference while canonical paths/cache identity were being corrected, and job `22827672` completed the CPU-only J posterior inference. The final queue was empty. No training was run.
 
-Only reproducible `__pycache__`, `.ruff_cache`, and similar local caches/build temporaries were excluded from scientific migration; their worktree-relative paths, counts, and byte sizes are recorded in the JSON manifest.
+## Posterior-usage plotting
+
+The plotting style helper at `src/joint_event_reconstruction/plotting_style.py` is a small KNOT-local port of the audited PCFM helper. `scripts/evaluation/plot_knot_posterior_usage.py` keeps physics extraction separate from the style layer and uses an observable registry. Tests are in `tests/test_knot_posterior_usage.py`.
+
+The primary evaluation uses the stored 10,000-event KNOT-J posterior with K=64 at:
+
+`results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/J-K64/`
+
+It was generated by CPU inference from the frozen J checkpoint. M/C/J factorisation figures use matched K=32 posteriors. The independent `posterior-usage-plotting-K32-validation-v1/` result remains preserved as a separate validation output.
+
+The statistical definitions are:
+
+- **One draw:** SplitMix64 event-keyed selection, seed `42011`, algorithm version `splitmix64_event_id_seed_stream_floor_v1`. Selection is independent of row/batch order and uses one sample index for the coupled parents, neutrinos, and derived quantities. The order-independent event/draw SHA256 is `1c9d6b404fb87a282455c2b6bee63dfa79c2ef3c7dbae9f01ebec69e9720dd76`; an independent process replay matched it.
+- **Posterior mean:** compute the observable from each sample, then average those observable values, (E[O(y)]). This is explicit for nonlinear kinematic and spin observables.
+- **Full posterior:** every event contributes total weight one, with each draw weighted (1/K); particle-role distributions use (1/(2K)). Ordinary residual histograms accept only the one-draw and mean estimators and reject full posterior arrays.
+
+The output root is:
+
+`results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/posterior-usage-plotting-v1/`
+
+It contains 43 PNG/PDF figure pairs, point/population/calibration tables, draw-selection metadata, input hashes, event-weight and migration validation, and the 128-pseudo-dataset closure record. The mttbar shape, residual, differential response, draw ensemble, three migration matrices and comparison, neutrino-pz shape, mttbar coverage, and factorisation figures were visually inspected. Figures use muted truth fills, stable method colors, solid reconstruction lines, support-aware ratio panels, and clipped-ratio markers.
+
+The mttbar point-estimator results (10,000 events) are:
+
+| Estimator | Bias [GeV] | Residual sigma [GeV] | RMSE [GeV] | MAE [GeV] |
+| --- | ---: | ---: | ---: | ---: |
+| One draw | 4.959 | 107.853 | 107.967 | 74.219 |
+| Posterior mean | 4.670 | 78.477 | 78.615 | 53.641 |
+
+Population-spectrum results keep full-posterior quality separate from point-estimator RMSE:
+
+| Representation | W1 [GeV] | KS | IQR ratio | Central-68% width ratio | q90/q95/q99 truth-tail fraction ratios |
+| --- | ---: | ---: | ---: | ---: | --- |
+| One draw | 6.669 | 0.0260 | 1.0327 | 1.0198 | 1.012 / 1.056 / 0.851 |
+| Posterior mean | 12.386 | 0.0821 | 0.9311 | 0.9084 | 0.910 / 0.914 / 0.733 |
+| Full posterior | 5.639 | 0.0193 | 1.0445 | 1.0221 | 1.036 / 1.062 / 0.973 |
+
+Across 128 one-draw pseudo-datasets (seeds `42012`–`42139`), the largest binwise mean-minus-posterior pull was 2.07σ, below the 5σ closure threshold. The maximum absolute density difference was `5.97e-6`.
+
+Posterior calibration is shown without smoothing: empirical coverage at nominal 68%/90% is `0.662/0.890` for mttbar, `0.672/0.892` for top pT, and `0.666/0.887` for neutrino pz. The mttbar CRPS is `37.417 GeV`; top-pT and neutrino-pz CRPS are `21.540 GeV` and `40.993 GeV`. The 64-draw mttbar rank diagnostic has χ²=`146.838` for 64 degrees of freedom, p=`1.87e-8`, and maximum absolute rank-fraction deviation `0.00532`, so the remaining calibration mismatch is visible.
+
+## Validation and remaining limits
+
+- The output contains 10,000 aligned events and K=64 draws; parent truth and EVENT_ID alignment are exact. The CPU/GPU neutrino truth discrepancy is bounded to `1.22e-4 GeV` and accepted only under the documented float32 decoding tolerance after exact event and role checks.
+- Every CSV numeric value is finite; all output files are non-empty; PNG and PDF stems pair exactly. Migration matrices use common truth/reco edges, total event weight 10,000, and maximum truth-column normalization error below `1.5e-14%`. One event's posterior weights close exactly to one.
+- A final size/SHA256 pass reverified 1,093 files across KNOT results/logs, RISE results, frozen inputs, K64 evaluation, and both K64/K32 plotting outputs.
+- The ordinary residual output contains only one-draw and posterior-mean entries. The full-posterior residual rejection, row-order-invariant draw selection, and repeated-run hash were verified.
+- `py_compile`, Ruff, and `git diff --check` pass. The targeted pytest module could not run because `pytest` is not installed in the analysis environment; the plotting run and independent numerical checks exercised its core contracts.
+- RISE remains scientifically blocked at neural stochastic R0. No detector-level RISE training was started.
+
+The machine-readable record, including old HEADs, branch preservation, result hashes, input-data hashes, generated-output hashes, queue actions, and validation details, is `docs/filesystem_migration_20261012.json`.
