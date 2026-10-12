@@ -261,19 +261,10 @@ class StructuredCollator:
             template = self._templates[node_name]
             ownership = template["leaf_ownership"]
             ownership_edges = template["ownership_edges"].to(device=padding.device)
-            blocked = torch.zeros(
-                (batch_size, len(ownership)), dtype=torch.int32, device=padding.device
-            )
-            if ownership_edges.numel():
-                candidate_indices = ownership_edges[:, 0]
-                token_indices = ownership_edges[:, 1]
-                padded_owned = padding[:, token_indices].to(dtype=torch.int32)
-                blocked.scatter_add_(
-                    1,
-                    candidate_indices.unsqueeze(0).expand(batch_size, -1),
-                    padded_owned,
-                )
-            candidate_mask = blocked == 0
+            owned_tokens = ownership.to(device=padding.device)
+            candidate_mask = ~(
+                padding[:, None, :].bool() & owned_tokens[None, :, :]
+            ).any(dim=-1)
             candidate_truth = torch.zeros(
                 (batch_size, len(ownership)), dtype=torch.bool, device=padding.device
             )

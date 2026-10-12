@@ -173,18 +173,29 @@ def make_module(config, visible, research, data):
     if knot_config.model.get("parent_cfm") is not None:
         knot_config.model.parent_cfm.enabled = False
     torch.manual_seed(int(config.experiment.seed))
+    invisible_store = data.structured_collator.invisible_store
     return KnotModule(
         knot_config,
         visible,
         research=research,
         invisible_scaler=data.invisible_scaler,
         partonic_scaler=data.partonic_scaler,
-        synthetic_data=data.structured_collator.invisible_store.synthetic,
+        synthetic_data=(
+            bool(invisible_store.synthetic) if invisible_store is not None else False
+        ),
     )
 
 
 def validate_frozen_configuration(args, config, research, freeze):
     variant = research["variant"]
+    seed_override = getattr(args, "seed_override", None)
+    if seed_override is not None and (
+        variant not in {"C", "J"} or int(seed_override) not in {42012, 42013}
+    ):
+        raise ValueError(
+            "The authorized additional KNOT seed pairs are C/J at 42012 and C/J at 42013; "
+            f"variant={variant}, seed={seed_override}"
+        )
     paths = freeze["configs"][variant]
     if Path(args.config).resolve() != (ROOT / paths["experiment"]).resolve():
         raise ValueError(f"KNOT {variant} public config differs from matched freeze")
@@ -220,7 +231,11 @@ def validate_frozen_configuration(args, config, research, freeze):
         "inference_solver": str(config.inference.invisible.flow_matching.solver),
     }
     expected = {
-        "seed": int(freeze["training"]["shared_initialization"]["seed"]),
+        "seed": (
+            int(seed_override)
+            if seed_override is not None
+            else int(freeze["training"]["shared_initialization"]["seed"])
+        ),
         "subset_seed": int(freeze["training"]["shared_initialization"]["seed"]),
         "batch_size": int(common["batch_size"]),
         "epochs": int(common["epochs"]),
@@ -337,6 +352,7 @@ def main():
     parser.add_argument("--output", required=True)
     parser.add_argument("--checkpoint")
     parser.add_argument("--steps", type=int, help="Bounded optimizer-step cap")
+    parser.add_argument("--seed-override", type=int, choices=(42012, 42013), help="Authorized extra C/J replication seed; data subset membership stays frozen")
     parser.add_argument("--accelerator", choices=("cpu", "gpu"), default="cpu")
     parser.add_argument("--samples", type=int, default=3)
     parser.add_argument("--batches", type=int, default=2)
@@ -347,6 +363,8 @@ def main():
         parser.error("Positive steps/batches required")
     if args.smoke and (args.action != "train" or args.accelerator != "gpu"):
         parser.error("--smoke requires train --accelerator gpu")
+    if args.seed_override is not None and args.action != "train":
+        parser.error("--seed-override is only valid for a training run")
     if args.resume and args.action != "train":
         parser.error("--resume is only valid for training")
 
@@ -360,6 +378,10 @@ def main():
     variant = str(research["variant"])
     if variant not in {"M", "C", "J"}:
         raise ValueError(f"Invalid KNOT variant in research config: {variant}")
+    if args.seed_override is not None:
+        if variant not in {"C", "J"} or int(args.seed_override) not in {42012, 42013}:
+            parser.error("Additional seed pair requires C and J at seed 42012 or 42013")
+        config.experiment.seed = int(args.seed_override)
     if args.action == "train":
         freeze = json.loads(FREEZE_PATH.read_text())
         validate_frozen_configuration(args, config, research, freeze)
@@ -401,20 +423,21 @@ def main():
         torch.manual_seed(int(config.experiment.seed))
         module = make_module(config, visible, research, data)
         initialization = parameter_summary(module)
-        expected_shared = freeze["training"]["shared_initialization"]["parameter_tensor_sha256"]
-        if initialization["shared_initialization_sha256"] != expected_shared:
-            raise ValueError(
-                "KNOT shared initialization differs from matched production freeze: "
-                f"expected={expected_shared}, observed={initialization['shared_initialization_sha256']}"
-            )
-        expected_components = freeze["training"]["shared_initialization"]["components"]
-        for observed_name, expected_name in (
-            ("visible", "measured_encoder_and_shared_projections"),
-            ("topology_queries", "topology_queries"),
-            ("reconstruction", "assignment"),
-        ):
-            if initialization["shared_component_sha256"][observed_name] != expected_components[expected_name]:
-                raise ValueError(f"KNOT shared initialization mismatch in {observed_name}")
+        if args.seed_override is None:
+            expected_shared = freeze["training"]["shared_initialization"]["parameter_tensor_sha256"]
+            if initialization["shared_initialization_sha256"] != expected_shared:
+                raise ValueError(
+                    "KNOT shared initialization differs from matched production freeze: "
+                    f"expected={expected_shared}, observed={initialization['shared_initialization_sha256']}"
+                )
+            expected_components = freeze["training"]["shared_initialization"]["components"]
+            for observed_name, expected_name in (
+                ("visible", "measured_encoder_and_shared_projections"),
+                ("topology_queries", "topology_queries"),
+                ("reconstruction", "assignment"),
+            ):
+                if initialization["shared_component_sha256"][observed_name] != expected_components[expected_name]:
+                    raise ValueError(f"KNOT shared initialization mismatch in {observed_name}")
         expected_counts = freeze["training"]["parameter_counts"][variant]
         if (
             initialization["total_parameters"] != expected_counts["total"]
@@ -434,9 +457,13 @@ def main():
                 "split_metadata": data.split_metadata,
                 "initialization": initialization,
                 "seed": int(config.experiment.seed),
-                "variant_initialization_seed": int(
-                    freeze["training"]["variant_initialization_seeds"][variant]
+                "variant_initialization_seed": int(config.experiment.seed),
+                "additional_seed_replication": args.seed_override is not None,
+                "matched_seed_pair": (
+                    f"C/J seed {int(args.seed_override)}" if args.seed_override is not None else None
                 ),
+                "frozen_reference_seed": int(freeze["training"]["shared_initialization"]["seed"]),
+                "fixed_subset_seed": int(config.data.subset_seed),
                 "batch_size": int(config.training.batch_size),
                 "epochs": int(config.training.epochs),
                 "precision": str(config.training.precision),
@@ -455,6 +482,8 @@ def main():
                 "gpu_name": torch.cuda.get_device_name(0) if args.accelerator == "gpu" else None,
                 "sealed_test_used": False,
                 "training_status": "running",
+                "source_worktree_dirty": bool(git_value("status", "--porcelain", "--untracked-files=all")),
+                "run_script_sha256": hashlib.sha256(Path(__file__).resolve().read_bytes()).hexdigest(),
                 "start_utc": utc_now(),
                 "smoke": bool(args.smoke),
             }

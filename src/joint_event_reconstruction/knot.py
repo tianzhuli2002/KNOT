@@ -577,13 +577,19 @@ class KnotModule(JointEventModule):
             generator=generator,
         )
         if oracle is not None:
-            if self.variant != "C" or oracle not in {
+            if self.variant == "C" and oracle in {
                 "truth_assignment_truth_neutrino",
                 "predicted_assignment_truth_neutrino",
             }:
-                raise ValueError("Parent oracle endpoints are defined only for KNOT-C")
-            if oracle == "truth_assignment_truth_neutrino":
+                if oracle == "truth_assignment_truth_neutrino":
+                    states = space.truth_state[:, None].expand(-1, samples)
+            elif self.variant == "J" and oracle == "truth_assignment":
                 states = space.truth_state[:, None].expand(-1, samples)
+            else:
+                raise ValueError(
+                    "C parent oracles are limited to KNOT-C; the J assignment oracle is "
+                    "oracle='truth_assignment'"
+                )
         b, m = states.shape
         repeated = self.repeat_visible(visible, m)
         invisible = self.event_model.invisible

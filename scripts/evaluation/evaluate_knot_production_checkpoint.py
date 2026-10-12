@@ -25,6 +25,8 @@ matplotlib.use("Agg")
 
 from joint_event_reconstruction.cli.run import build_data, load_visible_config
 from joint_event_reconstruction.configuration import load_experiment
+from joint_event_reconstruction.data.invisible import InvisibleScaler
+from joint_event_reconstruction.data.partonic import PartonicScaler
 from joint_event_reconstruction.data.subsets import deterministic_subset_positions
 from joint_event_reconstruction.knot import EventPosterior
 from joint_event_reconstruction.knot_physics import (
@@ -48,6 +50,10 @@ ROOT = Path(__file__).resolve().parents[2]
 
 def as_numpy(value):
     return value.detach().cpu().numpy() if torch.is_tensor(value) else np.asarray(value)
+
+
+def sha256_file(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def concatenate(posteriors):
@@ -372,9 +378,37 @@ def evaluate(args):
     )
 
     checkpoint = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
+    # Use the exact training-fitted scalers serialized in the checkpoint.
+    # Re-fitting on CPU can differ in the last floating-point bits across
+    # thread settings, while checkpoint metadata validation is exact.
+    invisible_scaler = checkpoint.get("invisible_scaler")
+    if invisible_scaler is not None:
+        data.invisible_scaler = InvisibleScaler.from_dict(invisible_scaler)
+        data.structured_collator.invisible_scaler = data.invisible_scaler
+    partonic_scaler = checkpoint.get("partonic_scaler")
+    if partonic_scaler is not None:
+        data.partonic_scaler = PartonicScaler.from_dict(partonic_scaler)
+        data.structured_collator.partonic_scaler = data.partonic_scaler
     module = make_module(config, visible, research, data)
-    module.validate_checkpoint_metadata(checkpoint)
+    try:
+        module.validate_checkpoint_metadata(checkpoint)
+    except ValueError as exc:
+        if "partonic target scaling metadata" not in str(exc):
+            raise
+        raise ValueError(
+            f"{exc}; target={config.data.partonic.path}; "
+            f"checkpoint_scaler={json.dumps(checkpoint.get('partonic_scaler'), sort_keys=True)}; "
+            f"evaluation_scaler={json.dumps(module.partonic_scaler_metadata, sort_keys=True)}"
+        ) from exc
     module.load_state_dict(checkpoint["state_dict"])
+    inference_steps = int(research["steps"] if args.inference_steps is None else args.inference_steps)
+    inference_solver = str(research["solver"] if args.inference_solver is None else args.inference_solver)
+    if inference_steps <= 0:
+        raise ValueError("Inference step count must be positive")
+    if inference_solver not in {"euler", "heun"}:
+        raise ValueError(f"Unsupported inference solver: {inference_solver}")
+    # Apply sampler-only overrides after frozen training/checkpoint validation.
+    module.research = {**research, "steps": inference_steps, "solver": inference_solver}
     device = torch.device(args.device)
     if device.type == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("CUDA evaluation requested but torch.cuda.is_available() is false")
@@ -394,10 +428,12 @@ def evaluate(args):
         "truth_assignment": [],
         "predicted_assignment": [],
     }
+    j_assignment_oracle_rows = []
     started = time.perf_counter()
     for batch_index, host_batch in enumerate(loader):
         batch = move_to_device(host_batch, device)
         clean = truth_free_batch(batch)
+        sampling_state = generator.get_state() if args.variant == "J" else None
         posterior = module.posterior(clean, samples=args.samples, generator=generator)
         predictions.append(posterior)
 
@@ -508,6 +544,18 @@ def evaluate(args):
                         oracle=endpoint,
                     )
                     rows.append(as_numpy(oracle.parents))
+        elif args.variant == "J" and args.j_assignment_oracle:
+            matched_generator = torch.Generator(device=device)
+            matched_generator.set_state(sampling_state)
+            oracle = module.posterior(
+                batch,
+                samples=args.samples,
+                generator=matched_generator,
+                oracle="truth_assignment",
+            )
+            j_assignment_oracle_rows.append(
+                (as_numpy(oracle.invisible), as_numpy(oracle.parents))
+            )
 
         if batch_index % 20 == 0:
             print(f"{args.variant} validation batch {batch_index + 1}/{len(loader)}", flush=True)
@@ -629,6 +677,72 @@ def evaluate(args):
             side: {name: value for name, value in deployed_metrics[side].items() if name.startswith("parent_")}
             for side in ("top", "antitop")
         }
+    elif args.variant == "J" and args.j_assignment_oracle:
+        oracle_n = np.concatenate([row[0] for row in j_assignment_oracle_rows], axis=0)
+        oracle_p = np.concatenate([row[1] for row in j_assignment_oracle_rows], axis=0)
+        if oracle_n.shape != n.shape or oracle_p.shape != p.shape:
+            raise ValueError("J truth-assignment oracle changed posterior dimensions")
+        deployed_metrics = reconstruction_metrics(n[support], p[support], tn[support], tp[support])
+        oracle_metrics = reconstruction_metrics(
+            oracle_n[support], oracle_p[support], tn[support], tp[support]
+        )
+        oracle_summary = {
+            "supported_events": int(support.sum()),
+            "posterior_draw_noise_matched_to_deployed": True,
+            "deployed": deployed_metrics,
+            "truth_assignment": oracle_metrics,
+        }
+        rng = np.random.default_rng(args.seed + 42_013)
+        supported_n = n[support]
+        supported_on = oracle_n[support]
+        supported_p = p[support]
+        supported_op = oracle_p[support]
+        supported_tn = tn[support]
+        supported_tp = tp[support]
+        deployed_pair = mass(supported_p.sum(axis=2))
+        oracle_pair = mass(supported_op.sum(axis=2))
+        truth_pair = mass(supported_tp.sum(axis=1))
+        metric_errors = {
+            "top_neutrino_pz": (
+                supported_n[:, :, 0, 3], supported_on[:, :, 0, 3], supported_tn[:, 0, 3]
+            ),
+            "antitop_neutrino_pz": (
+                supported_n[:, :, 1, 3], supported_on[:, :, 1, 3], supported_tn[:, 1, 3]
+            ),
+            "top_parent_pT": (
+                np.hypot(supported_p[:, :, 0, 1], supported_p[:, :, 0, 2]),
+                np.hypot(supported_op[:, :, 0, 1], supported_op[:, :, 0, 2]),
+                np.hypot(supported_tp[:, 0, 1], supported_tp[:, 0, 2]),
+            ),
+            "antitop_parent_pT": (
+                np.hypot(supported_p[:, :, 1, 1], supported_p[:, :, 1, 2]),
+                np.hypot(supported_op[:, :, 1, 1], supported_op[:, :, 1, 2]),
+                np.hypot(supported_tp[:, 1, 1], supported_tp[:, 1, 2]),
+            ),
+            "mttbar": (deployed_pair, oracle_pair, truth_pair),
+        }
+        gain = {}
+        for name, (deployed_values, oracle_values, targets) in metric_errors.items():
+            deployed_event_mse = np.square(deployed_values - targets[:, None]).mean(axis=1)
+            oracle_event_mse = np.square(oracle_values - targets[:, None]).mean(axis=1)
+            difference = np.empty(500, dtype=np.float64)
+            for index in range(len(difference)):
+                rows = rng.integers(0, len(targets), size=len(targets))
+                difference[index] = np.sqrt(oracle_event_mse[rows].mean()) - np.sqrt(
+                    deployed_event_mse[rows].mean()
+                )
+            deployed_rmse = float(np.sqrt(deployed_event_mse.mean()))
+            oracle_rmse = float(np.sqrt(oracle_event_mse.mean()))
+            gain[name] = {
+                "deployed_RMSE_GeV": deployed_rmse,
+                "truth_assignment_RMSE_GeV": oracle_rmse,
+                "truth_assignment_minus_deployed_RMSE_GeV": oracle_rmse - deployed_rmse,
+                "event_bootstrap_95pct_interval_GeV": [
+                    float(value) for value in np.quantile(difference, [0.025, 0.975])
+                ],
+                "bootstrap_resamples": len(difference),
+            }
+        oracle_summary["paired_rmse_gain"] = gain
 
     output.mkdir(parents=True)
     posterior.write(output / "posterior.h5")
@@ -662,6 +776,9 @@ def evaluate(args):
                 add_dataset(saved, f"oracle/{endpoint}/parents", np.concatenate(values, axis=0))
             for endpoint, values in neutrino_oracle_rows.items():
                 add_dataset(saved, f"oracle/neutrino_{endpoint}/invisible", np.concatenate(values, axis=0))
+        elif args.variant == "J" and args.j_assignment_oracle:
+            add_dataset(saved, "oracle/truth_assignment/invisible", oracle_n)
+            add_dataset(saved, "oracle/truth_assignment/parents", oracle_p)
         saved.attrs["spin_definition"] = json.dumps(SPIN_DEFINITION)
         saved.attrs["sealed_test_used"] = False
 
@@ -671,6 +788,7 @@ def evaluate(args):
         "posterior_semantics": {"M": "marginal", "C": "ancestral", "J": "joint"}[args.variant],
         "events": len(event_ids),
         "samples_per_event": int(args.samples),
+        "inference": {"steps": inference_steps, "solver": inference_solver},
         "event_id_sha256_ordered_little_endian_int64": digest,
         "sealed_test_used": False,
         "reconstruction": physics,
@@ -697,6 +815,15 @@ def evaluate(args):
         "evaluation_source_commit": subprocess.check_output(
             ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True
         ).strip(),
+        "evaluation_worktree_root": str(ROOT),
+        "evaluation_worktree_dirty": bool(
+            subprocess.check_output(
+                ["git", "status", "--porcelain", "--untracked-files=all"],
+                cwd=ROOT,
+                text=True,
+            ).strip()
+        ),
+        "evaluation_script_sha256": sha256_file(Path(__file__).resolve()),
         "branch": subprocess.check_output(
             ["git", "branch", "--show-current"], cwd=ROOT, text=True
         ).strip(),
@@ -705,6 +832,10 @@ def evaluate(args):
         "checkpoint": str(args.checkpoint.resolve()),
         "events": len(event_ids),
         "samples_per_event": int(args.samples),
+        "inference_steps": inference_steps,
+        "inference_solver": inference_solver,
+        "inference_override": args.inference_steps is not None or args.inference_solver is not None,
+        "j_assignment_oracle": bool(args.j_assignment_oracle),
         "evaluation_seed": int(args.seed),
         "device": str(device),
         "device_name": device_name,
@@ -732,12 +863,17 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--events", type=int, default=None, help="deterministic validation subset; default is full validation")
     parser.add_argument("--samples", type=int, default=32)
+    parser.add_argument("--inference-steps", type=int, default=None, help="override frozen research-config sampling steps only")
+    parser.add_argument("--inference-solver", choices=("euler", "heun"), default=None, help="override frozen research-config sampling solver only")
+    parser.add_argument("--j-assignment-oracle", action="store_true", help="run a truth-assignment KNOT-J posterior with the deployed posterior noise draws")
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--seed", type=int, default=42011)
     parser.add_argument("--device", choices=("cuda", "cpu"), default="cuda" if torch.cuda.is_available() else "cpu")
     args = parser.parse_args()
-    if args.samples < 2 or args.batch_size <= 0 or (args.events is not None and args.events <= 0):
-        parser.error("at least two samples, positive batch size, and a positive event count are required")
+    if args.samples < 2 or args.batch_size <= 0 or (args.events is not None and args.events <= 0) or (args.inference_steps is not None and args.inference_steps <= 0):
+        parser.error("at least two samples, positive batch size/steps, and a positive event count are required")
+    if args.j_assignment_oracle and args.variant != "J":
+        parser.error("--j-assignment-oracle is defined only for --variant J")
     for path in (args.config, args.research, args.checkpoint):
         if not path.is_file():
             parser.error(f"Required KNOT evaluation input does not exist: {path}")
