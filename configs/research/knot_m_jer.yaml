@@ -5,7 +5,7 @@ data:
     test: null
     train: 16
     validation: 8
-  input: /net/scratch/w00238tl/JointEventReconstruction_KNOT/results/experiments/knot/development/measured.h5
+  input: /net/scratch/w00238tl/knot/results/experiments/knot/development/measured.h5
   loader:
     persistent_workers: false
     pin_memory: false
@@ -134,7 +134,7 @@ model:
       enabled: false
     partonic:
       enabled: true
-      target_path: /net/scratch/w00238tl/JointEventReconstruction_KNOT/results/experiments/knot/development/parents.h5
+      target_path: /net/scratch/w00238tl/knot/results/experiments/knot/development/parents.h5
       targets:
       - role: top_e
         truth_binding: synthetic_hard_process_top_e
@@ -206,7 +206,7 @@ training:
     assignment: 1.0
     invisible: 0.0
     partonic: 0.0
-  output: /net/scratch/w00238tl/JointEventReconstruction_KNOT/results/experiments/knot/development/training
+  output: /net/scratch/w00238tl/knot/results/experiments/knot/development/training
   partonic_shared_encoder_gradients: both
   precision: 32-true
   shared_encoder_gradients: both

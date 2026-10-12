@@ -66,7 +66,7 @@ Source commit: `ec54f6b13817009b5ec0472e084a034f044980a4`. CPU only; sealed_test
   },
   "source_commit": "ec54f6b13817009b5ec0472e084a034f044980a4",
   "branch": "research/knot-implementation-v1",
-  "worktree": "/net/scratch/w00238tl/JointEventReconstruction_KNOT",
+  "worktree": "/net/scratch/w00238tl/knot",
   "sealed_test_used": false,
   "population": "32 synthetic events, 24 train / 8 validation; no test rows",
   "knot_c_coherent_ancestral_sampling": "PASS",
@@ -80,8 +80,8 @@ Source commit: `ec54f6b13817009b5ec0472e084a034f044980a4`. CPU only; sealed_test
     "configs/research/knot_m_jer.yaml": "a983fa9d726a951d1190b2eadaf0d7881aeb657a0309396b80402bc00affd6bd"
   },
   "inputs": {
-    "/net/scratch/w00238tl/JointEventReconstruction_KNOT/results/experiments/knot/development/measured.h5": "d2bb76f0555e6ea1820ee97248ccca0ca2091928cdd9cf402050b09edee98bee",
-    "/net/scratch/w00238tl/JointEventReconstruction_KNOT/results/experiments/knot/development/parents.h5": "8affdf33119af9b215ff610efb2567e6da9fc3dfeeaacd1ec9b2490e3a82066b"
+    "/net/scratch/w00238tl/knot/results/experiments/knot/development/measured.h5": "d2bb76f0555e6ea1820ee97248ccca0ca2091928cdd9cf402050b09edee98bee",
+    "/net/scratch/w00238tl/knot/results/experiments/knot/development/parents.h5": "8affdf33119af9b215ff610efb2567e6da9fc3dfeeaacd1ec9b2490e3a82066b"
   },
   "syntax_import_config": "PASS",
   "ruff": "PASS",

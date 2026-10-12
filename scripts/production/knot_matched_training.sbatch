@@ -7,11 +7,11 @@
 #SBATCH --mem=96G
 #SBATCH --time=1-00:00:00
 #SBATCH --array=0-2%2
-#SBATCH --output=/net/scratch/w00238tl/JointEventReconstruction_KNOT/results/experiments/knot/matched-production-v1/slurm/train-%A_%a.log
+#SBATCH --output=/net/scratch/w00238tl/knot/results/experiments/knot/matched-production-v1/slurm/train-%A_%a.log
 
 set -euo pipefail
 
-project_root=/net/scratch/w00238tl/JointEventReconstruction_KNOT
+project_root=/net/scratch/w00238tl/knot
 python_bin=/mnt/iusers01/fatpou01/phy01/w00238tl/miniforge3/envs/VyPER_main_20261002/bin/python
 dependency_path=/net/scratch/w00238tl/.knot-pythonpath-20261003
 expected_commit="${KNOT_EXPECTED_COMMIT:?KNOT_EXPECTED_COMMIT is required}"

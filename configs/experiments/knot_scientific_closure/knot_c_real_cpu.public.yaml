@@ -3,10 +3,10 @@ experiment:
   seed: 20261002
 topology: configs/topology/ttbar2L_charge_side_v1.yaml
 data:
-  input: /net/scratch/w00238tl/JointEventReconstruction_KNOT/results/experiments/knot/scientific-closure-run2/real_sample/adapted/partonic_ttbar2l_train_validation_maxjets8_v1_measured.h5
-  inference_input: /net/scratch/w00238tl/JointEventReconstruction_KNOT/results/experiments/knot/scientific-closure-run2/real_sample/adapted/partonic_ttbar2l_train_validation_maxjets8_v1_measured.h5
-  visible_truth: /net/scratch/w00238tl/JointEventReconstruction_KNOT/results/experiments/knot/scientific-closure-run2/real_sample/adapted/partonic_ttbar2l_train_validation_maxjets8_v1_supervision.h5
-  invisible_truth: /net/scratch/w00238tl/JointEventReconstruction_KNOT/results/experiments/knot/scientific-closure-run2/real_sample/adapted/partonic_ttbar2l_train_validation_maxjets8_v1_supervision.h5
+  input: /net/scratch/w00238tl/knot/results/experiments/knot/scientific-closure-run2/real_sample/adapted/partonic_ttbar2l_train_validation_maxjets8_v1_measured.h5
+  inference_input: /net/scratch/w00238tl/knot/results/experiments/knot/scientific-closure-run2/real_sample/adapted/partonic_ttbar2l_train_validation_maxjets8_v1_measured.h5
+  visible_truth: /net/scratch/w00238tl/knot/results/experiments/knot/scientific-closure-run2/real_sample/adapted/partonic_ttbar2l_train_validation_maxjets8_v1_supervision.h5
+  invisible_truth: /net/scratch/w00238tl/knot/results/experiments/knot/scientific-closure-run2/real_sample/adapted/partonic_ttbar2l_train_validation_maxjets8_v1_supervision.h5
   allow_synthetic: false
   cache: null
   subset_seed: 20260925
@@ -175,7 +175,7 @@ model:
   parent_cfm:
     enabled: true
     conditioning: P2
-    target_path: /net/scratch/w00238tl/JointEventReconstruction_KNOT/results/experiments/knot/scientific-closure-run2/real_sample/adapted/partonic_ttbar2l_train_validation_maxjets8_v1_supervision.h5
+    target_path: /net/scratch/w00238tl/knot/results/experiments/knot/scientific-closure-run2/real_sample/adapted/partonic_ttbar2l_train_validation_maxjets8_v1_supervision.h5
     layers: 1
     d_feedforward: 64
     p2_neutrino_steps: 2

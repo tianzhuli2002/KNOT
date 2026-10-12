@@ -7,12 +7,12 @@
 #SBATCH --mem=96G
 #SBATCH --time=12:00:00
 #SBATCH --array=0-2%1
-#SBATCH --output=/net/scratch/w00238tl/JointEventReconstruction_KNOT_evaluator/logs/knot-evaluation-v1/full-%A_%a.log
+#SBATCH --output=/net/scratch/w00238tl/knot/logs/knot-evaluation-v1/full-%A_%a.log
 
 set -euo pipefail
 
-evaluation_root=/net/scratch/w00238tl/JointEventReconstruction_KNOT_evaluator
-source_root=/net/scratch/w00238tl/JointEventReconstruction_KNOT
+evaluation_root=/net/scratch/w00238tl/knot
+source_root=/net/scratch/w00238tl/knot
 python_bin=/mnt/iusers01/fatpou01/phy01/w00238tl/miniforge3/envs/VyPER_main_20261002/bin/python
 dependency_path=/net/scratch/w00238tl/.knot-pythonpath-20261003
 expected_commit="${KNOT_EVAL_EXPECTED_COMMIT:?KNOT_EVAL_EXPECTED_COMMIT is required}"
@@ -23,6 +23,12 @@ case "${SLURM_ARRAY_TASK_ID}" in
     2) variant=J ;;
     *) echo "Unexpected KNOT evaluation array task: ${SLURM_ARRAY_TASK_ID}" >&2; exit 2 ;;
 esac
+
+samples=${KNOT_POSTERIOR_SAMPLES:-32}
+if [[ ! "${samples}" =~ ^[1-9][0-9]*$ ]]; then
+    echo "KNOT_POSTERIOR_SAMPLES must be a positive integer, found: ${samples}" >&2
+    exit 2
+fi
 
 cd "$evaluation_root"
 [[ "$(git rev-parse HEAD)" == "$expected_commit" ]]
@@ -46,6 +52,9 @@ print(json.load(open(sys.argv[1]))["best_checkpoint"])
 PY
 )
 output="$evaluation_root/results/experiments/knot/matched-production-v1/evaluation-v1/full-10k/${variant}"
+if [[ "${samples}" != 32 ]]; then
+    output="${output}-K${samples}"
+fi
 [[ ! -e "$output" ]]
 
 /usr/bin/time -v srun "$python_bin" scripts/evaluation/evaluate_knot_production_checkpoint.py \
@@ -55,26 +64,27 @@ output="$evaluation_root/results/experiments/knot/matched-production-v1/evaluati
     --checkpoint "$checkpoint" \
     --output "$output" \
     --events 10000 \
-    --samples 32 \
+    --samples "$samples" \
     --batch-size 64 \
     --seed 42011 \
     --device cuda
 
-"$python_bin" - "$output/posterior.h5" "$output/metrics.json" <<'PY'
+"$python_bin" - "$output/posterior.h5" "$output/metrics.json" "$samples" <<'PY'
 import json
 import sys
 
 import h5py
 import numpy as np
 
-posterior_path, metrics_path = sys.argv[1:]
+posterior_path, metrics_path = sys.argv[1:3]
+samples = int(sys.argv[3])
 metrics = json.load(open(metrics_path))
-assert metrics["events"] == 10000 and metrics["samples_per_event"] == 32
+assert metrics["events"] == 10000 and metrics["samples_per_event"] == samples
 assert metrics["sealed_test_used"] is False
 with h5py.File(posterior_path, "r") as data:
     assert len(data["EVENT_ID"]) == 10000
-    assert data["invisible"].shape == (10000, 32, 2, 4)
-    assert data["parents"].shape == (10000, 32, 2, 4)
+    assert data["invisible"].shape == (10000, samples, 2, 4)
+    assert data["parents"].shape == (10000, samples, 2, 4)
     assert data["diagnostics/assignment_truth_NLL"].shape == (10000,)
     assert np.isfinite(data["invisible"][:]).all()
     assert np.isfinite(data["parents"][:]).all()

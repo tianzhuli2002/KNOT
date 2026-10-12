@@ -13,8 +13,8 @@ import h5py
 import numpy as np
 
 EVALUATOR_ROOT = Path(__file__).resolve().parents[2]
-FROZEN_ROOT = Path("/net/scratch/w00238tl/JointEventReconstruction_KNOT")
-EVALDEV_ROOT = Path("/net/scratch/w00238tl/JointEventReconstruction_KNOT_evaldev")
+FROZEN_ROOT = Path("/net/scratch/w00238tl/knot")
+EVALDEV_ROOT = Path("/net/scratch/w00238tl/knot")
 DEFAULT_EVALUATION_ROOT = (
     EVALDEV_ROOT / "results/experiments/knot/matched-seed-replication-v1/validation-2000"
 )
