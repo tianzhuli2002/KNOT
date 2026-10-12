@@ -40,6 +40,9 @@ cd "$evaluation_root"
 [[ -z "$(git status --porcelain)" ]]
 [[ -d "$dependency_path/lgatr" ]]
 export PYTHONPATH="$dependency_path:$evaluation_root/src:$evaluation_root"
+export JER_PROJECT_ROOT="$evaluation_root"
+export JER_SOURCE_ROOT="$source_root"
+export JER_SOURCE_SHA="$expected_commit"
 export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
 export CUDA_DEVICE_MAX_CONNECTIONS=1
