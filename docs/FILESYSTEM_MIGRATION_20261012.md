@@ -16,6 +16,8 @@ The KNOT merge still accounts for 629 result paths: 385 were already identical i
 
 The six earlier checksum differences are the expected mutable path/provenance manifests. Their original and current hashes are recorded individually in the JSON manifest; every current hash matches the resealed canonical hash. The J/M evaluation manifests were normalized to ordinary JSON when terminal padding was removed. No immutable scientific payload mismatch was found.
 
+At the final queue audit (`2026-10-12 20:19 UTC`), the queue contained unrelated `vyper-cache` array tasks and a dependent `vyper-cpu-smoke` task. No KNOT/RISE task was queued, and these jobs were left untouched. The earlier queue was empty when the K64 inference completed.
+
 The bounded topology-query audit compared 11 relevant files under `partonic_ttbar2L_2M_v1` and 29 under `partonic_ttbar2L_2M_realnu_v1`, with relative path, size, SHA256, role, and classification recorded. The unique 2M development inputs were recovered into KNOT: source and development manifests, the development event list, and the max-jets-8/20 measured and supervision HDF5 files and join views. The split-membership file was already identical. Both join views now link to canonical KNOT HDF5 paths. Their 384 events split into 256 training and 128 validation events, with no sealed-test events; neutrino supervision remains disabled because its side association is unverified. All scoped real-neutrino source, split, support, and adapted-input candidates are present in KNOT. No additional useful file was missing. The backup remains untouched.
 
 ## Runtime dependency

@@ -8481,7 +8481,7 @@
     "filesystem_inventory": {
       "canonical_projects": {
         "/net/scratch/w00238tl/knot": {
-          "filesystem_apparent_size_bytes": 8370736743,
+          "filesystem_apparent_size_bytes": 8370737385,
           "measurement": "du -sb after final migration documentation and runtime relocation; result outputs remain outside Git"
         },
         "/net/scratch/w00238tl/rise": {
@@ -8541,8 +8541,8 @@
       "runtime_dependency_imports_passed": true,
       "topology_query_input_audit_passed": true,
       "checksum_mismatch_audit_passed": true,
-      "RISE_source_state_and_R0_outputs_passed": false,
-      "squeue_final_empty": true,
+      "RISE_source_state_and_R0_outputs_passed": true,
+      "squeue_final_empty": false,
       "targeted_pytest_test_count": 8,
       "pytest_isolated_temporary_install": {
         "version": "9.1.1",
@@ -8550,7 +8550,34 @@
         "removed_after_test_run": true,
         "project_environment_changed": false
       },
-      "targeted_acceptance_checks_passed": true
+      "targeted_acceptance_checks_passed": true,
+      "squeue_final_observed_utc": "2026-10-12 20:19:38 UTC",
+      "squeue_final_jobs": [
+        {
+          "job_id": "22836938",
+          "name": "vyper-cpu-smoke",
+          "state": "PENDING",
+          "reason": "Dependency"
+        },
+        {
+          "job_id": "22836748_[2-3]",
+          "name": "vyper-cache",
+          "state": "PENDING",
+          "reason": "Priority"
+        },
+        {
+          "job_id": "22836748_1",
+          "name": "vyper-cache",
+          "state": "RUNNING",
+          "node": "node1246"
+        },
+        {
+          "job_id": "22836748_0",
+          "name": "vyper-cache",
+          "state": "RUNNING",
+          "node": "node1245"
+        }
+      ]
     },
     "important_KNOT_artifacts": [
       {
@@ -8652,9 +8679,37 @@
         "22314926": "Invalid job id; no action"
       },
       "seed_validation_array_22284319": "scontrol reported invalid job ID; not cancelled or otherwise changed; trained seed checkpoints retained",
-      "squeue_final": "empty after K64 job completed; unrelated jobs untouched",
+      "squeue_final": "nonempty; only unrelated VyPER cache/smoke jobs listed below; none touched",
       "squeue_user": "empty at preflight and pre-removal check",
-      "unrelated_jobs_touched": false
+      "unrelated_jobs_touched": false,
+      "squeue_after_K64_job": "empty after K64 job completed",
+      "squeue_final_observed_utc": "2026-10-12 20:19:38 UTC",
+      "squeue_final_jobs": [
+        {
+          "job_id": "22836938",
+          "name": "vyper-cpu-smoke",
+          "state": "PENDING",
+          "reason": "Dependency"
+        },
+        {
+          "job_id": "22836748_[2-3]",
+          "name": "vyper-cache",
+          "state": "PENDING",
+          "reason": "Priority"
+        },
+        {
+          "job_id": "22836748_1",
+          "name": "vyper-cache",
+          "state": "RUNNING",
+          "node": "node1246"
+        },
+        {
+          "job_id": "22836748_0",
+          "name": "vyper-cache",
+          "state": "RUNNING",
+          "node": "node1245"
+        }
+      ]
     },
     "path_updated_production_manifests": [
       {
